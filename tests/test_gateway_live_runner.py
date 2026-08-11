@@ -1,0 +1,317 @@
+"""Tests for the gateway runner's demo and live modes.
+
+No test here reads a real credential or token document or contacts Schwab. Token
+documents are synthetic files in ``tmp_path`` and the client factory is never invoked,
+because none of these tests performs a market-data request.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from schwab_token_store import (
+    AtomicFileTokenStore,
+    AtomicTokenManager,
+    TokenManagerState,
+    TokenMissingError,
+)
+
+from schwab_gateway import runner
+from schwab_gateway.api import (
+    CHAIN_UPSTREAM_KEY,
+    SPOT_UPSTREAM_KEY,
+    TOKEN_READINESS_PROVIDER_KEY,
+    UPSTREAM_KEY,
+)
+from schwab_gateway.config import GatewaySettings
+from schwab_gateway.live_provider import TokenReadinessRecovery
+from schwab_gateway.upstream import (
+    DirectSchwabChainMetadataUpstream,
+    DirectSchwabQuoteUpstream,
+    DirectSchwabSpotUpstream,
+)
+
+KEYS_PAYLOAD = {
+    "version": 1,
+    "clients": [
+        {
+            "id": "butterfly-guy",
+            "key_sha256": "a" * 64,
+            "capabilities": ["market_data:read"],
+            "priority_class": "protected",
+        }
+    ],
+}
+
+
+def _keys_file(tmp_path: Path) -> Path:
+    path = tmp_path / "schwab-gateway-keys.json"
+    path.write_text(json.dumps(KEYS_PAYLOAD), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _token_file(tmp_path: Path) -> Path:
+    path = tmp_path / "tokens.json"
+    path.write_text(
+        json.dumps(
+            {
+                "creation_timestamp": int(time.time() - 60),
+                "token": {
+                    "access_token": "synthetic-access",
+                    "refresh_token": "synthetic-refresh",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
+def _settings(tmp_path: Path) -> GatewaySettings:
+    return GatewaySettings(internal_keys_path=_keys_file(tmp_path))
+
+
+def _upstream_settings(token_path: Path) -> runner.GatewayUpstreamSettings:
+    return runner.GatewayUpstreamSettings(
+        SCHWAB_API_KEY="fake-key",
+        SCHWAB_SECRET_KEY="fake-secret",
+        SCHWAB_TOKEN_PATH=str(token_path),
+    )
+
+
+def _unused_factory(*_args: Any, **_kwargs: Any) -> Any:
+    raise AssertionError("no client should be constructed while building the app")
+
+
+# --- Argument gating -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param([], id="no_mode"),
+        pytest.param(["--demo", "--serve-live"], id="both_modes"),
+    ],
+)
+def test_exactly_one_mode_is_required(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        runner.main(argv)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["--serve-live"], id="no_confirmations"),
+        pytest.param(
+            ["--serve-live", "--authorize-real-credential-read"],
+            id="missing_single_writer",
+        ),
+        pytest.param(
+            ["--serve-live", "--confirm-single-token-writer"],
+            id="missing_credential_authorization",
+        ),
+    ],
+)
+def test_live_serving_refuses_without_both_confirmations(argv: list[str]) -> None:
+    """Refusal happens in argparse, before any setting, key file, or token is touched."""
+    with pytest.raises(SystemExit) as exc:
+        runner.main(argv)
+    assert exc.value.code == 2
+
+
+def test_demo_mode_needs_no_confirmations() -> None:
+    parser = runner.build_parser()
+    args = parser.parse_args(["--demo"])
+    assert args.demo is True
+    assert args.serve_live is False
+
+
+# --- Demo mode is unchanged ----------------------------------------------------------
+
+
+def test_demo_app_declares_no_spot_or_chain_upstream(tmp_path: Path) -> None:
+    app = runner.build_demo_app(_settings(tmp_path))
+
+    assert isinstance(app[UPSTREAM_KEY], runner.DemoQuoteUpstream)
+    # The fail-closed stubs, not real upstreams.
+    assert not isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
+    assert not isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+
+
+def test_demo_app_uses_the_static_readiness_provider(tmp_path: Path) -> None:
+    app = runner.build_demo_app(_settings(tmp_path))
+    assert not isinstance(app[TOKEN_READINESS_PROVIDER_KEY], AtomicTokenManager)
+
+
+# --- Live mode -----------------------------------------------------------------------
+
+
+def test_live_app_declares_all_three_real_upstreams(tmp_path: Path) -> None:
+    app = runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+
+    assert isinstance(app[UPSTREAM_KEY], DirectSchwabQuoteUpstream)
+    assert isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
+    assert isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+
+
+def test_live_app_reports_real_manager_readiness(tmp_path: Path) -> None:
+    """The readiness surface must reflect the real token manager, not a static fake."""
+    app = runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+
+    provider = app[TOKEN_READINESS_PROVIDER_KEY]
+    assert isinstance(provider, AtomicTokenManager)
+    assert provider.health().state is TokenManagerState.READY
+
+
+def test_live_app_primes_readiness_before_serving(tmp_path: Path) -> None:
+    """Without the startup load the gateway would never become ready.
+
+    Every route and ``/ready`` gate on ``TokenManagerState.READY``, and the manager only
+    reaches READY inside a transaction. If the app were returned un-primed, no request
+    could be admitted to produce the transaction that would make it ready.
+    """
+    app = runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+    assert app[TOKEN_READINESS_PROVIDER_KEY].health().state is TokenManagerState.READY
+
+
+def test_live_app_refuses_to_build_when_the_token_is_unusable(tmp_path: Path) -> None:
+    """A missing token fails closed at startup rather than serving 503 forever."""
+    missing = tmp_path / "absent-tokens.json"
+
+    with pytest.raises(TokenMissingError):
+        runner.build_live_app(
+            _settings(tmp_path),
+            _upstream_settings(missing),
+            _unused_factory,
+        )
+
+
+def test_live_app_builds_no_client_and_makes_no_request(tmp_path: Path) -> None:
+    """Startup reads the token document; it does not construct a client or call Schwab."""
+    calls: list[tuple] = []
+
+    def recording_factory(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise AssertionError("client construction must not happen at startup")
+
+    runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        recording_factory,
+    )
+    assert calls == []
+
+
+def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
+    app = runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+    assert len(app.cleanup_ctx) == 1
+
+
+def test_demo_app_registers_no_readiness_recovery(tmp_path: Path) -> None:
+    """The demo readiness is a static fake; there is nothing to recover."""
+    app = runner.build_demo_app(_settings(tmp_path))
+    assert list(app.cleanup_ctx) == []
+
+
+# --- Readiness recovery --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_touch_the_token_while_ready(tmp_path: Path) -> None:
+    """A healthy gateway must never take the token lock on the recovery path."""
+    manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
+    manager.load()
+    loads = 0
+
+    original_load = manager.load
+
+    def counting_load():
+        nonlocal loads
+        loads += 1
+        return original_load()
+
+    manager.load = counting_load  # type: ignore[method-assign]
+
+    assert await TokenReadinessRecovery(manager).attempt_once() is True
+    assert loads == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_relifts_a_latched_manager(tmp_path: Path) -> None:
+    """The latch this fixes: a token-level failure that no request can clear.
+
+    Every route and /ready gate on READY, so once the manager leaves READY the request
+    that would have produced a recovering transaction is itself refused.
+    """
+    token = _token_file(tmp_path)
+    manager = AtomicTokenManager(AtomicFileTokenStore(token))
+    manager.load()
+    assert manager.health().state is TokenManagerState.READY
+
+    # Latch it the way a real token-level failure would.
+    token.unlink()
+    with pytest.raises(TokenMissingError):
+        manager.load()
+    assert manager.health().state is not TokenManagerState.READY
+
+    recovery = TokenReadinessRecovery(manager)
+    assert await recovery.attempt_once() is False
+    assert manager.health().state is not TokenManagerState.READY
+
+    # The transient condition clears; the next tick recovers without any request.
+    _token_file(tmp_path)
+    assert await recovery.attempt_once() is True
+    assert manager.health().state is TokenManagerState.READY
+
+
+@pytest.mark.asyncio
+async def test_recovery_leaves_the_recorded_state_alone_when_it_keeps_failing(
+    tmp_path: Path,
+) -> None:
+    manager = AtomicTokenManager(AtomicFileTokenStore(tmp_path / "absent.json"))
+    recovery = TokenReadinessRecovery(manager)
+
+    assert await recovery.attempt_once() is False
+    first = manager.health().state
+    assert await recovery.attempt_once() is False
+    assert manager.health().state is first
+
+
+def test_recovery_interval_must_be_positive(tmp_path: Path) -> None:
+    manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
+    with pytest.raises(ValueError):
+        TokenReadinessRecovery(manager, interval_seconds=0)
+
+
+def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:
+    app = runner.build_live_app(
+        _settings(tmp_path),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+
+    paths = {resource.canonical for resource in app.router.resources()}
+    assert paths == {"/health", "/ready", "/metrics", "/v1/quotes", "/v1/spot", "/v1/chain"}

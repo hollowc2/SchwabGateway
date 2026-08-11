@@ -1,0 +1,49 @@
+# Deploys to /opt/monitoring/prometheus-alerts/schwab-gateway.yml, which is what the
+# running butterfly_prometheus loads (`rule_files: /etc/prometheus/alerts/*.yml`).
+# The repo's infra/prometheus.yml is NOT the live config -- the container binds
+# /opt/monitoring/prometheus.yml -- so this rule cannot live alongside
+# infra/candidate-alerts.yml and be seen.
+#
+# Requires the matching scrape job in /opt/monitoring/prometheus.yml:
+#
+#   - job_name: "schwab_gateway"
+#     static_configs:
+#       - targets: ["schwab-gateway:8011"]
+#     metrics_path: /metrics
+#
+# /metrics is unauthenticated -- the auth middleware guards only /v1/ paths.
+groups:
+  - name: schwab-gateway
+    rules:
+      - alert: SchwabGatewayDown
+        # The gateway is always-on (restart: unless-stopped). This rule is the reason
+        # it is allowed to be: an always-on service with nothing watching it is how a
+        # silently-dead gateway happens.
+        expr: up{job="schwab_gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Schwab gateway is down
+          description: >-
+            schwab_gateway_live has not been scrapeable for 2 minutes.
+            Trading is unaffected -- no consumer depends on the gateway while
+            SCHWAB_ACCESS_MODE and SCHWAB_GATEWAY_SHADOW_READS are at their defaults.
+
+      - alert: SchwabGatewayNotReady
+        # Require a successful scrape so process loss remains the Down alert's concern.
+        # The 2-minute hold is deliberately longer than the 30-second token readiness
+        # recovery interval, avoiding noise from one ordinary recovery cycle.
+        expr: >-
+          (up{job="schwab_gateway"} == 1)
+          unless on(job, instance)
+          (schwab_gateway_token_state{job="schwab_gateway", state="ready"} == 1)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Schwab gateway is running but not ready
+          description: >-
+            schwab_gateway_live has remained scrapeable without a ready
+            token state for 2 minutes. Direct trading remains authoritative unless
+            a separately approved gateway access-mode rollout changes that boundary.

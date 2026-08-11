@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.env
+.env.*
+dist
+build
+evidence
+secrets
+**/tokens.json
+**/credentials.json
+**/schwab-gateway-keys.json
+tests

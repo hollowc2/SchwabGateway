@@ -1,0 +1,244 @@
+openapi: 3.1.0
+info:
+  title: SchwabGateway
+  version: 0.1.0
+  description: Internal market-data-only Schwab gateway; wire schema version 1.0.
+servers:
+  - url: http://schwab-gateway:8011
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GatewayHealthV1"}
+  /ready:
+    get:
+      operationId: ready
+      responses:
+        "200":
+          description: Token manager is ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GatewayReadinessV1"}
+        "503":
+          description: Token manager is not ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GatewayReadinessV1"}
+  /metrics:
+    get:
+      operationId: metrics
+      responses:
+        "200":
+          description: Prometheus exposition.
+          content:
+            text/plain:
+              schema: {type: string}
+  /v1/quotes:
+    get:
+      operationId: quotesV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbols
+          required: true
+          schema: {type: string, minLength: 1}
+      responses:
+        "200": {$ref: "#/components/responses/QuoteResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
+  /v1/spot:
+    get:
+      operationId: spotV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: {$ref: "#/components/schemas/Symbol"}
+      responses:
+        "200": {$ref: "#/components/responses/SpotResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
+  /v1/chain:
+    get:
+      operationId: chainV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: {$ref: "#/components/schemas/Symbol"}
+        - in: query
+          name: expiration
+          required: true
+          schema: {type: string, format: date}
+      responses:
+        "200": {$ref: "#/components/responses/ChainResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    internalApiKey:
+      type: apiKey
+      in: header
+      name: X-Internal-API-Key
+  responses:
+    QuoteResponse:
+      description: Normalized quotes.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/QuoteResponseV1"}
+    SpotResponse:
+      description: Normalized spot value.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/SpotResponseV1"}
+    ChainResponse:
+      description: Bounded chain metadata without contract rows.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ChainMetadataResponseV1"}
+    Error:
+      description: Bounded error.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/GatewayErrorV1"}
+  schemas:
+    SchemaVersion:
+      type: string
+      const: "1.0"
+    Symbol:
+      type: string
+      pattern: "^[A-Z0-9$._/-]{1,32}$"
+    AwareTimestamp:
+      type: string
+      format: date-time
+    QualityFlags:
+      type: array
+      items: {type: string}
+    GatewayHealthV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, service, timestamp]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        status: {type: string, enum: [ok, ready, not_ready]}
+        service: {type: string, const: schwab-gateway}
+        timestamp: {$ref: "#/components/schemas/AwareTimestamp"}
+    GatewayReadinessV1:
+      allOf:
+        - {$ref: "#/components/schemas/GatewayHealthV1"}
+        - type: object
+          required: [token_state, reason]
+          properties:
+            token_state:
+              type: string
+              enum: [uninitialized, ready, refreshing, missing, corrupt, expired, revoked, reauthorization_required, lock_timeout, refresh_failed, persistence_failed]
+            reason:
+              type: string
+              enum: [token_not_checked, token_ready, token_refreshing, token_missing, token_corrupt, refresh_token_expired, token_revoked, token_reauthorization_required, token_lock_timeout, token_refresh_failed, token_persistence_failed, token_readiness_unavailable]
+    QuoteV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, event_timestamp, gateway_received_at, source, session, bid, ask, bid_size, ask_size, last, last_size, mark, volume, stale, age_seconds, data_quality_flags]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        session: {type: [string, "null"]}
+        bid: {type: [number, "null"]}
+        ask: {type: [number, "null"]}
+        bid_size: {type: [integer, "null"]}
+        ask_size: {type: [integer, "null"]}
+        last: {type: [number, "null"]}
+        last_size: {type: [integer, "null"]}
+        mark: {type: [number, "null"]}
+        volume: {type: [integer, "null"]}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    QuoteResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, quotes]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        quotes: {type: array, items: {$ref: "#/components/schemas/QuoteV1"}}
+    SpotV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, price, event_timestamp, gateway_received_at, source, stale, age_seconds, data_quality_flags]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        price: {type: [number, "null"]}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    SpotResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, spot]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        spot: {$ref: "#/components/schemas/SpotV1"}
+    ChainMetadataV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, expiration, underlying_price, call_contract_count, put_contract_count, strike_count, event_timestamp, gateway_received_at, source, stale, age_seconds, data_quality_flags]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        expiration: {type: string, format: date}
+        underlying_price: {type: [number, "null"]}
+        call_contract_count: {type: integer, minimum: 0}
+        put_contract_count: {type: integer, minimum: 0}
+        strike_count: {type: integer, minimum: 0}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    ChainMetadataResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, chain]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        chain: {$ref: "#/components/schemas/ChainMetadataV1"}
+    GatewayErrorV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, error]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}

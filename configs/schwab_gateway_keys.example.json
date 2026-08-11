@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "clients": [
+    {
+      "id": "butterfly-guy",
+      "key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "capabilities": ["market_data:read"],
+      "priority_class": "protected"
+    },
+    {
+      "id": "equity-scanner",
+      "key_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "capabilities": ["market_data:read"],
+      "priority_class": "background"
+    },
+    {
+      "id": "afterhours-lab",
+      "key_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "capabilities": ["market_data:read"],
+      "priority_class": "background"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+name: schwab_gateway
+
+services:
+  demo:
+    profiles: [demo]
+    build: .
+    command: ["--demo"]
+    user: "${SCHWAB_GATEWAY_UID:-1001}:${SCHWAB_GATEWAY_GID:-1001}"
+    environment:
+      SCHWAB_GATEWAY_BIND_HOST: 0.0.0.0
+      SCHWAB_GATEWAY_PORT: 8010
+      SCHWAB_GATEWAY_INTERNAL_KEYS_PATH: /run/secrets/schwab-gateway-keys.json
+      SCHWAB_GATEWAY_ORDER_WRITES_ENABLED: "false"
+    volumes:
+      - "${SCHWAB_GATEWAY_DEMO_KEYS_PATH:-./configs/schwab_gateway_keys.example.json}:/run/secrets/schwab-gateway-keys.json:ro"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    ports: ["127.0.0.1:8010:8010"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  live:
+    profiles: [live]
+    build: .
+    container_name: schwab_gateway_live
+    restart: unless-stopped
+    user: "${SCHWAB_GATEWAY_UID:-1001}:${SCHWAB_GATEWAY_GID:-1001}"
+    environment:
+      SCHWAB_API_KEY: "${SCHWAB_API_KEY:?set the Schwab application key}"
+      SCHWAB_SECRET_KEY: "${SCHWAB_SECRET_KEY:?set the Schwab application secret}"
+      SCHWAB_TOKEN_PATH: "${SCHWAB_GATEWAY_TOKEN_DIR:?set the token directory}/tokens.json"
+      SCHWAB_GATEWAY_BIND_HOST: 0.0.0.0
+      SCHWAB_GATEWAY_PORT: 8011
+      SCHWAB_GATEWAY_INTERNAL_KEYS_PATH: /run/secrets/schwab-gateway-keys.json
+      SCHWAB_GATEWAY_ORDER_WRITES_ENABLED: "false"
+    volumes:
+      - "${SCHWAB_GATEWAY_KEYS_PATH:?set the digest-only keys path}:/run/secrets/schwab-gateway-keys.json:ro"
+      - "${SCHWAB_GATEWAY_TOKEN_DIR:?set the token directory}:${SCHWAB_GATEWAY_TOKEN_DIR:?set the token directory}:rw"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    ports: ["127.0.0.1:8011:8011"]
+    networks:
+      monitoring_net:
+        aliases: [schwab-gateway]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/ready', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+networks:
+  monitoring_net:
+    external: true

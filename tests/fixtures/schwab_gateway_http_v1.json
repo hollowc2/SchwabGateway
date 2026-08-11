@@ -1,0 +1,160 @@
+{
+  "fixture_version": 1,
+  "captured_from_commit": "122c4ba9451a5349d4edd99024342ba9673637a9",
+  "redaction": "Synthetic values only; timestamps are frozen and no runtime credentials or identifiers are present.",
+  "success": {
+    "health": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "status": "ok",
+        "service": "schwab-gateway",
+        "timestamp": "2026-08-10T12:00:00Z"
+      }
+    },
+    "ready": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "status": "ready",
+        "service": "schwab-gateway",
+        "timestamp": "2026-08-10T12:00:00Z",
+        "token_state": "ready",
+        "reason": "token_ready"
+      }
+    },
+    "quotes": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "quotes": [
+          {
+            "symbol": "AAPL",
+            "event_timestamp": "2026-08-10T11:59:59Z",
+            "gateway_received_at": "2026-08-10T12:00:00Z",
+            "source": "synthetic_schwab",
+            "session": "NORMAL",
+            "bid": 100.0,
+            "ask": 100.2,
+            "bid_size": 10,
+            "ask_size": 12,
+            "last": 100.1,
+            "last_size": 3,
+            "mark": 100.1,
+            "volume": 1000,
+            "stale": false,
+            "age_seconds": 1.0,
+            "data_quality_flags": []
+          }
+        ]
+      }
+    },
+    "spot": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "spot": {
+          "symbol": "SPX",
+          "price": 6500.25,
+          "event_timestamp": "2026-08-10T11:59:59Z",
+          "gateway_received_at": "2026-08-10T12:00:00Z",
+          "source": "synthetic_schwab",
+          "stale": false,
+          "age_seconds": 1.0,
+          "data_quality_flags": []
+        }
+      }
+    },
+    "chain": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "chain": {
+          "symbol": "SPX",
+          "expiration": "2026-08-10",
+          "underlying_price": 6500.25,
+          "call_contract_count": 20,
+          "put_contract_count": 20,
+          "strike_count": 21,
+          "event_timestamp": "2026-08-10T11:59:59Z",
+          "gateway_received_at": "2026-08-10T12:00:00Z",
+          "source": "synthetic_schwab",
+          "stale": false,
+          "age_seconds": 1.0,
+          "data_quality_flags": []
+        }
+      }
+    },
+    "metrics": {
+      "status": 200,
+      "content_type_prefix": "text/plain; version=0.0.4"
+    }
+  },
+  "readiness_errors": {
+    "uninitialized": [503, "not_ready", "token_not_checked"],
+    "refreshing": [503, "not_ready", "token_refreshing"],
+    "missing": [503, "not_ready", "token_missing"],
+    "corrupt": [503, "not_ready", "token_corrupt"],
+    "expired": [503, "not_ready", "refresh_token_expired"],
+    "revoked": [503, "not_ready", "token_revoked"],
+    "reauthorization_required": [503, "not_ready", "token_reauthorization_required"],
+    "lock_timeout": [503, "not_ready", "token_lock_timeout"],
+    "refresh_failed": [503, "not_ready", "token_refresh_failed"],
+    "persistence_failed": [503, "not_ready", "token_persistence_failed"],
+    "provider_failure": [503, "not_ready", "token_readiness_unavailable"]
+  },
+  "bounded_errors": {
+    "authentication_required": {
+      "status": 401,
+      "body": {"schema_version": "1.0", "error": {"code": "authentication_required", "message": "valid internal authentication is required"}}
+    },
+    "capability_denied": {
+      "status": 403,
+      "body": {"schema_version": "1.0", "error": {"code": "capability_denied", "message": "the caller lacks the required capability"}}
+    },
+    "invalid_quotes_missing": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "at least one symbol is required"}}
+    },
+    "invalid_spot_missing": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "a symbol is required"}}
+    },
+    "invalid_chain_expiration": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "an expiration is required"}}
+    },
+    "gateway_not_ready": {
+      "status": 503,
+      "body": {"schema_version": "1.0", "error": {"code": "gateway_not_ready", "message": "gateway is not ready"}}
+    },
+    "gateway_capacity_exceeded": {
+      "status": 429,
+      "body": {"schema_version": "1.0", "error": {"code": "gateway_capacity_exceeded", "message": "gateway request capacity is unavailable"}}
+    },
+    "quote_upstream_timeout": {
+      "status": 504,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_timeout", "message": "quote upstream timed out"}}
+    },
+    "quote_upstream_unavailable": {
+      "status": 503,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_unavailable", "message": "quote upstream is unavailable"}}
+    },
+    "quote_upstream_malformed": {
+      "status": 502,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_malformed", "message": "quote upstream returned invalid data"}}
+    },
+    "market_data_upstream_timeout": {
+      "status": 504,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_timeout", "message": "market data upstream timed out"}}
+    },
+    "market_data_upstream_unavailable": {
+      "status": 503,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_unavailable", "message": "market data upstream is unavailable"}}
+    },
+    "market_data_upstream_malformed": {
+      "status": 502,
+      "body": {"schema_version": "1.0", "error": {"code": "upstream_malformed", "message": "market data upstream returned invalid data"}}
+    }
+  }
+}

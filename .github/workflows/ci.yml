@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run ruff check .
+      - run: uv build
+      - run: uv build --package schwab-gateway-sdk
+      - run: uv build --package schwab-token-store
+      - name: Install shared wheels independently
+        run: |
+          uv venv /tmp/sdk-wheel
+          uv pip install --python /tmp/sdk-wheel/bin/python dist/schwab_gateway_sdk-*.whl
+          /tmp/sdk-wheel/bin/python -c 'import schwab_gateway_sdk'
+          uv venv /tmp/token-wheel
+          uv pip install --python /tmp/token-wheel/bin/python dist/schwab_token_store-*.whl
+          /tmp/token-wheel/bin/python -c 'import schwab_token_store'
+      - name: Render Compose
+        env:
+          SCHWAB_API_KEY: synthetic
+          SCHWAB_SECRET_KEY: synthetic
+          SCHWAB_GATEWAY_TOKEN_DIR: /tmp/synthetic-token-dir
+          SCHWAB_GATEWAY_KEYS_PATH: /tmp/synthetic-keys.json
+        run: docker compose --profile demo config --quiet
+      - run: docker build --tag schwab-gateway:ci .
+      - name: Reject ButterflyGuy coupling and secret paths
+        run: |
+          ! grep -R "butterfly_guy" --include='*.py' src packages
+          ! git ls-files | grep -E '(^|/)(\.env|tokens\.json|credentials\.json|schwab-gateway-keys\.json)$'

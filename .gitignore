@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+secrets/
+evidence/
+tokens.json
+tokens.json.lock
+credentials.json
+schwab-gateway-keys.json
