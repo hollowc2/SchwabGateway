@@ -56,3 +56,8 @@ def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:
     assert "cat > /etc/prometheus/prometheus.yml" in helios
     assert "cat > /etc/prometheus/prometheus.yml" in rollback
     assert "butterfly_schwab_gateway_live:8011" in rollback
+    assert "phase6_ports=$(docker inspect" in helios
+    assert "phase6_aliases=$(docker inspect" in helios
+    assert ")phase6_aliases=" not in helios
+    assert "CHECK port-publication" in helios
+    assert "PASS network-alias" in helios

@@ -42,3 +42,33 @@ either file. Before reloading, confirm the host and container views both name th
 target. After reloading, require the Prometheus targets API to report that exact target as
 `up`. The configuration contains no gateway keys or Schwab credentials, but it still must
 not be printed as resolved Compose output.
+
+## Step-labelled production validation
+
+Run each acceptance assertion as a distinct command and print its name before and after it.
+Do not concatenate shell assignments; a missing newline between the port and alias
+assignments caused the 2026-08-15 retry validator—not the gateway—to trigger rollback.
+
+```bash
+phase6_ports=$(docker inspect schwab_gateway_live \
+  --format '{{json .NetworkSettings.Ports}}')
+phase6_aliases=$(docker inspect schwab_gateway_live \
+  --format '{{json .NetworkSettings.Networks}}' | \
+  jq -r '.monitoring_net.Aliases | join(",")')
+
+printf 'CHECK port-publication\n'
+test "$phase6_ports" = \
+  '{"8011/tcp":[{"HostIp":"127.0.0.1","HostPort":"8011"}]}'
+printf 'PASS port-publication\n'
+
+printf 'CHECK network-alias\n'
+printf '%s\n' "$phase6_aliases" | tr ',' '\n' | rg -q '^schwab-gateway$'
+printf 'PASS network-alias\n'
+```
+
+Apply the same `CHECK`/`PASS` markers to image, health, UID/GID, read-only root,
+capabilities, security options, restart policy, each authenticated contract, the bounded
+401 contract, token parsing and metadata, readiness metrics, bounded log checks, and every
+post-crash assertion. If rollback runs, the last `CHECK` without a corresponding `PASS`
+is the exact failed gate. Never print response bodies, credentials, resolved Compose
+environments, or secret-bearing inspection output.
