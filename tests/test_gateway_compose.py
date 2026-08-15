@@ -43,3 +43,14 @@ def test_alert_rules_keep_gateway_metric_names() -> None:
     alerts = Path("infra/alerts.yml").read_text()
     assert "schwab_gateway_token_state" in alerts
     assert 'job="schwab_gateway"' in alerts
+
+
+def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:
+    helios = Path("docs/runbooks/helios.md").read_text()
+    rollback = Path("docs/runbooks/rollback.md").read_text()
+
+    assert "sed -i" in helios
+    assert "Never update" in helios
+    assert "cat > /etc/prometheus/prometheus.yml" in helios
+    assert "cat > /etc/prometheus/prometheus.yml" in rollback
+    assert "butterfly_schwab_gateway_live:8011" in rollback

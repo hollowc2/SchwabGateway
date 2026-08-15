@@ -8,3 +8,18 @@ Prometheus's prior target, validating its configuration, and rechecking health/r
 Record exact image IDs and monitoring state before either action. Do not rebuild the
 legacy image during rollback and do not remove either container or image without explicit
 approval.
+
+The Prometheus configuration is a single-file bind mount. Restore it in place in both the
+host and running-container views; do not use `sed -i` or `mv`:
+
+```bash
+cp /opt/monitoring/prometheus.yml.phase6-precutover /opt/monitoring/prometheus.yml
+docker exec -i butterfly_prometheus sh -c \
+  'cat > /etc/prometheus/prometheus.yml' \
+  < /opt/monitoring/prometheus.yml.phase6-precutover
+docker exec butterfly_prometheus promtool check config /etc/prometheus/prometheus.yml
+curl --fail --request POST http://127.0.0.1:9090/-/reload
+```
+
+Require the targets API to report `butterfly_schwab_gateway_live:8011` as `up` before
+declaring rollback complete.
