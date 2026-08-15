@@ -51,6 +51,8 @@ def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:
 
     assert "sed -i" in helios
     assert "Never update" in helios
+    assert "docker exec --user 1001:1001 -i" in helios
+    assert "docker exec --user 1001:1001 -i" in rollback
     assert "cat > /etc/prometheus/prometheus.yml" in helios
     assert "cat > /etc/prometheus/prometheus.yml" in rollback
     assert "butterfly_schwab_gateway_live:8011" in rollback

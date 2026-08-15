@@ -10,11 +10,12 @@ legacy image during rollback and do not remove either container or image without
 approval.
 
 The Prometheus configuration is a single-file bind mount. Restore it in place in both the
-host and running-container views; do not use `sed -i` or `mv`:
+host and running-container views; do not use `sed -i` or `mv`. The one-shot container write
+runs as the config file owner `1001:1001`; Prometheus itself remains `65534:65534`:
 
 ```bash
 cp /opt/monitoring/prometheus.yml.phase6-precutover /opt/monitoring/prometheus.yml
-docker exec -i butterfly_prometheus sh -c \
+docker exec --user 1001:1001 -i butterfly_prometheus sh -c \
   'cat > /etc/prometheus/prometheus.yml' \
   < /opt/monitoring/prometheus.yml.phase6-precutover
 docker exec butterfly_prometheus promtool check config /etc/prometheus/prometheus.yml

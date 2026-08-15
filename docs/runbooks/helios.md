@@ -29,14 +29,16 @@ sed 's/butterfly_schwab_gateway_live:8011/schwab-gateway:8011/' \
 test "$(rg -c 'schwab-gateway:8011' "$phase6_prometheus_next")" -eq 1
 if rg -q 'butterfly_schwab_gateway_live:8011' "$phase6_prometheus_next"; then exit 1; fi
 cp "$phase6_prometheus_next" /opt/monitoring/prometheus.yml
-docker exec -i butterfly_prometheus sh -c \
+docker exec --user 1001:1001 -i butterfly_prometheus sh -c \
   'cat > /etc/prometheus/prometheus.yml' < "$phase6_prometheus_next"
 docker exec butterfly_prometheus promtool check config /etc/prometheus/prometheus.yml
 curl --fail --request POST http://127.0.0.1:9090/-/reload
 ```
 
-Arm the documented automatic rollback before copying either file. Before reloading, confirm
-the host and container views both name the intended target. After reloading, require the
-Prometheus targets API to report that exact target as `up`. The configuration contains no
-gateway keys or Schwab credentials, but it still must not be printed as resolved Compose
-output.
+Prometheus runs as `65534:65534`, while the host config is owned by `1001:1001`; the
+one-shot writer therefore uses the file owner's identity without changing the running
+service user or file permissions. Arm the documented automatic rollback before copying
+either file. Before reloading, confirm the host and container views both name the intended
+target. After reloading, require the Prometheus targets API to report that exact target as
+`up`. The configuration contains no gateway keys or Schwab credentials, but it still must
+not be printed as resolved Compose output.
