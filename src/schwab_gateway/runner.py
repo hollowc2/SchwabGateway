@@ -33,6 +33,7 @@ from schwab_gateway.upstream import (
     DirectSchwabHistoryUpstream,
     DirectSchwabMoversUpstream,
     DirectSchwabQuoteUpstream,
+    DirectSchwabSessionHistoryUpstream,
     DirectSchwabSpotUpstream,
 )
 
@@ -129,6 +130,7 @@ def build_live_app(
         chain_upstream=DirectSchwabChainMetadataUpstream(provider),
         history_upstream=DirectSchwabHistoryUpstream(provider),
         movers_upstream=DirectSchwabMoversUpstream(provider),
+        session_history_upstream=DirectSchwabSessionHistoryUpstream(provider),
     )
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
     return app

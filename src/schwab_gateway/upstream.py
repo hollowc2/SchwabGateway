@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from schwab_gateway_sdk.chain_metadata import extract_chain_metadata
 from schwab_gateway_sdk.models import (
@@ -14,10 +15,17 @@ from schwab_gateway_sdk.models import (
     MoverV1,
     PriceBarV1,
     QuoteV1,
+    SessionHistoryV1,
     SpotV1,
 )
 
 UTC = dt.timezone.utc
+EASTERN = ZoneInfo("America/New_York")
+# Regular session is 09:30-16:00 America/New_York; a candle stamped exactly 16:00:00 is
+# the first extended (post-market) bar, not the last regular one, so the upper bound is
+# exclusive. v1 does not special-case early-close calendar days.
+REGULAR_SESSION_START = dt.time(9, 30)
+REGULAR_SESSION_END = dt.time(16, 0)
 
 
 class EquityQuoteProvider(Protocol):
@@ -52,6 +60,12 @@ class MarketMoversProvider(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class SessionHistoryProvider(Protocol):
+    async def get_session_bars(
+        self, symbol: str, date: dt.date
+    ) -> list[dict[str, Any]]: ...
+
+
 class QuoteUpstream(Protocol):
     async def get_quotes(self, symbols: tuple[str, ...]) -> tuple[QuoteV1, ...]: ...
 
@@ -76,6 +90,12 @@ class MoversUpstream(Protocol):
     async def get_movers(
         self, index: MoverIndex, direction: Literal["up", "down"]
     ) -> MoversV1: ...
+
+
+class SessionHistoryUpstream(Protocol):
+    async def get_session_history(
+        self, symbol: str, date: dt.date, session: Literal["regular", "extended"]
+    ) -> SessionHistoryV1: ...
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -452,6 +472,103 @@ class DirectSchwabMoversUpstream:
             )
         except ValueError as exc:
             raise UpstreamMalformedError("Schwab movers response was invalid") from exc
+
+
+def _is_regular_session(timestamp: dt.datetime) -> bool:
+    local_time = timestamp.astimezone(EASTERN).time()
+    return REGULAR_SESSION_START <= local_time < REGULAR_SESSION_END
+
+
+def normalize_schwab_session_history(
+    symbol: str,
+    date: dt.date,
+    session: Literal["regular", "extended"],
+    candles: Any,
+    *,
+    received_at: dt.datetime,
+    stale_after_seconds: float,
+) -> SessionHistoryV1:
+    """Split one calendar day's candles into its regular or extended segment.
+
+    ``candles`` is expected to span the full day (pre-market through after-hours); the
+    split itself -- not Schwab -- decides which bars belong to which session, since
+    Schwab's price-history payload carries no per-candle session marker the way its quote
+    payload does.
+    """
+    if not isinstance(candles, list):
+        raise ValueError("session history response was not a list of candles")
+
+    flags: list[str] = []
+    bars: list[PriceBarV1] = []
+    dropped = 0
+    for candle in candles:
+        bar = _bar_from_candle(candle)
+        if bar is None:
+            dropped += 1
+            continue
+        is_regular = _is_regular_session(bar.timestamp)
+        if is_regular is (session == "regular"):
+            bars.append(bar)
+    if dropped:
+        flags.append("malformed_bars_dropped")
+    if not bars:
+        flags.append("no_bars_returned")
+
+    event_timestamp = bars[-1].timestamp if bars else None
+    age_seconds = (
+        max(0.0, (received_at - event_timestamp).total_seconds())
+        if event_timestamp is not None
+        else None
+    )
+    stale = age_seconds is None or age_seconds > stale_after_seconds
+    if stale:
+        flags.append("stale")
+    return SessionHistoryV1(
+        symbol=symbol,
+        date=date,
+        session=session,
+        candles=tuple(bars),
+        event_timestamp=event_timestamp,
+        gateway_received_at=received_at,
+        source="schwab_rest_session_history",
+        stale=stale,
+        age_seconds=age_seconds,
+        data_quality_flags=tuple(flags),
+    )
+
+
+class DirectSchwabSessionHistoryUpstream:
+    """Normalize a point-in-time session read from the direct adapter.
+
+    Distinct from ``DirectSchwabHistoryUpstream``: this fetches one calendar day and
+    splits it into the regular or extended segment, rather than a trailing window ending
+    now. Both share ``_bar_from_candle``, so a malformed candle is dropped identically.
+    """
+
+    def __init__(
+        self, provider: SessionHistoryProvider, *, stale_after_seconds: float = 86400.0
+    ) -> None:
+        self._provider = provider
+        self._stale_after_seconds = stale_after_seconds
+
+    async def get_session_history(
+        self, symbol: str, date: dt.date, session: Literal["regular", "extended"]
+    ) -> SessionHistoryV1:
+        try:
+            candles = await self._provider.get_session_bars(symbol, date)
+        except Exception as exc:
+            raise UpstreamUnavailableError("Schwab session history request failed") from exc
+        try:
+            return normalize_schwab_session_history(
+                symbol,
+                date,
+                session,
+                candles,
+                received_at=dt.datetime.now(UTC),
+                stale_after_seconds=self._stale_after_seconds,
+            )
+        except ValueError as exc:
+            raise UpstreamMalformedError("Schwab session history response was invalid") from exc
 
 
 class DirectSchwabSpotUpstream:

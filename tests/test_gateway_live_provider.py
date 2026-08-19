@@ -29,6 +29,7 @@ from schwab_gateway.upstream import (
     MarketMoversProvider,
     OptionChainProvider,
     PriceHistoryProvider,
+    SessionHistoryProvider,
     SpotPriceProvider,
 )
 
@@ -180,13 +181,15 @@ def _provider(client: _FakeClient) -> tuple[LockedSchwabMarketDataProvider, _Rec
 # --- Surface boundary ----------------------------------------------------------------
 
 
-def test_provider_exposes_only_the_five_read_surfaces() -> None:
+def test_provider_exposes_only_the_six_read_surfaces() -> None:
     """No account, order, transaction, or streaming method exists to call.
 
-    Deliberately widened from three surfaces to five: ``get_daily_bars``,
-    ``get_intraday_bars``, and ``get_market_movers`` were added alongside the original
-    spot/chain/quote trio to back the new ``/v1/history`` and ``/v1/movers`` routes. Every
-    added surface is still a bounded, read-only Schwab market-data call.
+    Deliberately widened from five surfaces to six: ``get_session_bars`` was added
+    alongside the trailing-window ``get_daily_bars``/``get_intraday_bars`` to back the
+    new ``/v1/session-history`` route (a point-in-time regular/extended session lookup
+    for AfterHoursLab's earnings-candle archival, distinct from the trailing window the
+    other two serve). Every added surface is still a bounded, read-only Schwab
+    market-data call.
     """
     public = {
         name
@@ -200,6 +203,7 @@ def test_provider_exposes_only_the_five_read_surfaces() -> None:
         "get_daily_bars",
         "get_intraday_bars",
         "get_market_movers",
+        "get_session_bars",
     }
 
 
@@ -212,6 +216,7 @@ def test_provider_exposes_only_the_five_read_surfaces() -> None:
         (PriceHistoryProvider, "get_daily_bars"),
         (PriceHistoryProvider, "get_intraday_bars"),
         (MarketMoversProvider, "get_market_movers"),
+        (SessionHistoryProvider, "get_session_bars"),
     ],
 )
 def test_provider_signatures_match_the_declared_read_protocols(
@@ -412,6 +417,56 @@ async def test_market_movers_rejects_a_non_list_non_object_payload() -> None:
 
     with pytest.raises(SchwabClientOperationError):
         await provider.get_market_movers("$SPX")
+
+
+# --- Session history -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_bars_request_shape_spans_the_full_extended_day() -> None:
+    from zoneinfo import ZoneInfo
+
+    eastern = ZoneInfo("America/New_York")
+    client = _FakeClient()
+    client.price_history_response = _Response({"candles": [{"close": 3.0}]})
+    provider, manager = _provider(client)
+
+    date = dt.date(2026, 8, 12)
+    result = await provider.get_session_bars("AAPL", date)
+
+    assert result == [{"close": 3.0}]
+    assert len(client.price_history_calls) == 1
+    call = client.price_history_calls[0]
+    assert call["symbol"] == "AAPL"
+    assert call["period_type"] is _FakePeriodType.DAY
+    assert call["frequency_type"] is _FakeFrequencyType.MINUTE
+    assert call["frequency"] is _FakeFrequency.EVERY_MINUTE
+    assert "period" not in call
+    assert call["need_extended_hours_data"] is True
+    assert call["start_datetime"] == dt.datetime(2026, 8, 12, 4, 0, tzinfo=eastern)
+    assert call["end_datetime"] == dt.datetime(2026, 8, 12, 20, 0, tzinfo=eastern)
+    assert manager.transactions == 1
+    assert client.session.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_session_bars_rejects_a_non_object_payload() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response(["not", "an", "object"])
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_session_bars("AAPL", dt.date(2026, 8, 12))
+
+
+@pytest.mark.asyncio
+async def test_session_bars_rejects_a_payload_with_no_candle_list() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response({"status": "FAILED"})
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_session_bars("AAPL", dt.date(2026, 8, 12))
 
 
 # --- Quotes --------------------------------------------------------------------------

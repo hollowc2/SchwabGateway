@@ -185,6 +185,48 @@ class HistoryResponseV1(GatewayModel):
     history: HistoryV1
 
 
+class SessionHistoryV1(GatewayModel):
+    """One trading session's (regular or extended) 1-minute candles for one date.
+
+    Distinct from ``HistoryV1``: that model is a trailing window ending "now" (for the
+    equity scanner's rolling-average reads); this one is a point-in-time lookup for an
+    arbitrary past date, split into exactly the regular or extended segment of that
+    date, for after-hours-earnings candle archival.
+    """
+
+    symbol: str
+    date: dt.date
+    session: Literal["regular", "extended"]
+    candles: tuple[PriceBarV1, ...]
+    event_timestamp: dt.datetime | None = None
+    gateway_received_at: dt.datetime
+    source: str
+    stale: bool
+    age_seconds: float | None = None
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("event_timestamp", "gateway_received_at")
+    @classmethod
+    def timestamps_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("age_seconds must be nonnegative")
+        return value
+
+
+class SessionHistoryResponseV1(GatewayModel):
+    schema_version: Literal["1.0"] = "1.0"
+    session_history: SessionHistoryV1
+
+
 MoverIndex = Literal[
     "$DJI",
     "$COMPX",

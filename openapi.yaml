@@ -144,6 +144,32 @@ paths:
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
         "504": {$ref: "#/components/responses/Error"}
+  /v1/session-history:
+    get:
+      operationId: sessionHistoryV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: {$ref: "#/components/schemas/Symbol"}
+        - in: query
+          name: date
+          required: true
+          schema: {type: string, format: date}
+        - in: query
+          name: session
+          required: true
+          schema: {type: string, enum: [regular, extended]}
+      responses:
+        "200": {$ref: "#/components/responses/SessionHistoryResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     internalApiKey:
@@ -176,6 +202,11 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/MoversResponseV1"}
+    SessionHistoryResponse:
+      description: One trading session's 1-minute candles for one date.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/SessionHistoryResponseV1"}
     Error:
       description: Bounded error.
       content:
@@ -353,6 +384,28 @@ components:
       properties:
         schema_version: {$ref: "#/components/schemas/SchemaVersion"}
         movers: {$ref: "#/components/schemas/MoversV1"}
+    SessionHistoryV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, date, session, candles, event_timestamp, gateway_received_at, source, stale, age_seconds, data_quality_flags]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        date: {type: string, format: date}
+        session: {type: string, enum: [regular, extended]}
+        candles: {type: array, items: {$ref: "#/components/schemas/PriceBarV1"}}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    SessionHistoryResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, session_history]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        session_history: {$ref: "#/components/schemas/SessionHistoryV1"}
     GatewayErrorV1:
       type: object
       additionalProperties: false

@@ -17,6 +17,7 @@ from schwab_gateway_sdk.models import (
     HistoryResponseV1,
     MoversResponseV1,
     QuoteResponseV1,
+    SessionHistoryResponseV1,
     SpotResponseV1,
 )
 from schwab_token_store import (
@@ -42,6 +43,7 @@ from schwab_gateway.upstream import (
     HistoryUpstream,
     MoversUpstream,
     QuoteUpstream,
+    SessionHistoryUpstream,
     SpotUpstream,
     UpstreamMalformedError,
     UpstreamUnavailableError,
@@ -77,6 +79,7 @@ MOVER_INDEXES = frozenset(
     }
 )
 MOVER_DIRECTIONS = ("up", "down")
+SESSION_TYPES = ("regular", "extended")
 
 gateway_requests = Counter(
     "gateway_client_requests_total",
@@ -99,6 +102,9 @@ SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
 CHAIN_UPSTREAM_KEY = web.AppKey("gateway_chain_upstream", ChainMetadataUpstream)
 HISTORY_UPSTREAM_KEY = web.AppKey("gateway_history_upstream", HistoryUpstream)
 MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
+SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
+    "gateway_session_history_upstream", SessionHistoryUpstream
+)
 UPSTREAM_TIMEOUT_KEY = web.AppKey("gateway_upstream_timeout", float)
 TOKEN_READINESS_PROVIDER_KEY = web.AppKey(
     "gateway_token_readiness_provider", "TokenReadinessProvider"
@@ -154,6 +160,13 @@ class _UnavailableMoversUpstream:
 
     async def get_movers(self, _index: str, _direction: str):
         raise UpstreamUnavailableError("movers upstream is not configured")
+
+
+class _UnavailableSessionHistoryUpstream:
+    """Fail closed when an app declares no session-history surface."""
+
+    async def get_session_history(self, _symbol: str, _date: dt.date, _session: str):
+        raise UpstreamUnavailableError("session history upstream is not configured")
 
 
 class _UnavailableTokenReadinessProvider:
@@ -220,16 +233,43 @@ def _parse_symbol(request: web.Request) -> str:
     return symbol
 
 
-def _parse_expiration(request: web.Request) -> dt.date:
-    value = request.query.get("expiration", "").strip()
+def _parse_iso_date(
+    request: web.Request, name: str, *, required_message: str, format_message: str
+) -> dt.date:
+    value = request.query.get(name, "").strip()
     if not value:
-        raise ValueError("an expiration is required")
+        raise ValueError(required_message)
     if len(value) != 10:
-        raise ValueError("the expiration must be an ISO-8601 date")
+        raise ValueError(format_message)
     try:
         return dt.date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError("the expiration must be an ISO-8601 date") from exc
+        raise ValueError(format_message) from exc
+
+
+def _parse_expiration(request: web.Request) -> dt.date:
+    return _parse_iso_date(
+        request,
+        "expiration",
+        required_message="an expiration is required",
+        format_message="the expiration must be an ISO-8601 date",
+    )
+
+
+def _parse_session_date(request: web.Request) -> dt.date:
+    return _parse_iso_date(
+        request,
+        "date",
+        required_message="a date is required",
+        format_message="the date must be an ISO-8601 date",
+    )
+
+
+def _parse_session(request: web.Request) -> Literal["regular", "extended"]:
+    value = request.query.get("session", "").strip().lower()
+    if value not in SESSION_TYPES:
+        raise ValueError("session must be 'regular' or 'extended'")
+    return value  # type: ignore[return-value]
 
 
 def _parse_frequency(request: web.Request) -> Literal["daily", "minute"]:
@@ -507,6 +547,28 @@ async def movers(request: web.Request) -> web.Response:
     return await _serve_upstream(request, build_response)
 
 
+async def session_history(request: web.Request) -> web.Response:
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        symbol = _parse_symbol(request)
+        date = _parse_session_date(request)
+        session = _parse_session(request)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+
+    async def build_response() -> web.Response:
+        result = await request.app[SESSION_HISTORY_UPSTREAM_KEY].get_session_history(
+            symbol, date, session
+        )
+        if result.symbol != symbol or result.date != date or result.session != session:
+            raise UpstreamMalformedError("upstream returned a different session history")
+        return _json(SessionHistoryResponseV1(session_history=result))
+
+    return await _serve_upstream(request, build_response)
+
+
 def create_app(
     upstream: QuoteUpstream,
     authenticator: InternalKeyAuthenticator,
@@ -518,6 +580,7 @@ def create_app(
     chain_upstream: ChainMetadataUpstream | None = None,
     history_upstream: HistoryUpstream | None = None,
     movers_upstream: MoversUpstream | None = None,
+    session_history_upstream: SessionHistoryUpstream | None = None,
 ) -> web.Application:
     if upstream_timeout_seconds <= 0:
         raise ValueError("upstream timeout must be positive")
@@ -527,6 +590,9 @@ def create_app(
     app[CHAIN_UPSTREAM_KEY] = chain_upstream or _UnavailableChainMetadataUpstream()
     app[HISTORY_UPSTREAM_KEY] = history_upstream or _UnavailableHistoryUpstream()
     app[MOVERS_UPSTREAM_KEY] = movers_upstream or _UnavailableMoversUpstream()
+    app[SESSION_HISTORY_UPSTREAM_KEY] = (
+        session_history_upstream or _UnavailableSessionHistoryUpstream()
+    )
     app[AUTHENTICATOR_KEY] = authenticator
     app[UPSTREAM_TIMEOUT_KEY] = upstream_timeout_seconds
     app[TOKEN_READINESS_PROVIDER_KEY] = (
@@ -543,4 +609,5 @@ def create_app(
     app.router.add_get("/v1/chain", chain_metadata, name="chain_v1")
     app.router.add_get("/v1/history", history, name="history_v1")
     app.router.add_get("/v1/movers", movers, name="movers_v1")
+    app.router.add_get("/v1/session-history", session_history, name="session_history_v1")
     return app

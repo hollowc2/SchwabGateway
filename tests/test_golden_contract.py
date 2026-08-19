@@ -12,6 +12,7 @@ from schwab_gateway_sdk.models import (
     HistoryResponseV1,
     MoversResponseV1,
     QuoteResponseV1,
+    SessionHistoryResponseV1,
     SpotResponseV1,
 )
 
@@ -32,6 +33,7 @@ def test_success_fixtures_are_exactly_accepted_by_v1_models(golden: dict) -> Non
         "chain": ChainMetadataResponseV1,
         "history": HistoryResponseV1,
         "movers": MoversResponseV1,
+        "session_history": SessionHistoryResponseV1,
     }
     for name, model in models.items():
         body = golden["success"][name]["body"]
@@ -46,6 +48,7 @@ def test_success_fixtures_are_exactly_accepted_by_v1_models(golden: dict) -> Non
         "invalid_chain_expiration",
         "invalid_history_missing",
         "invalid_movers_missing",
+        "invalid_session_history_date_missing",
         "gateway_not_ready",
         "gateway_capacity_exceeded",
         "quote_upstream_timeout",

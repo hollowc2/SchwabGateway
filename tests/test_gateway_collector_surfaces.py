@@ -17,7 +17,13 @@ from schwab_gateway_sdk.client import (
     GatewayTimeoutError,
     GatewayUnavailableError,
 )
-from schwab_gateway_sdk.models import ChainMetadataV1, HistoryV1, MoversV1, SpotV1
+from schwab_gateway_sdk.models import (
+    ChainMetadataV1,
+    HistoryV1,
+    MoversV1,
+    SessionHistoryV1,
+    SpotV1,
+)
 from schwab_token_store import (
     TokenManagerHealth,
     TokenManagerState,
@@ -35,6 +41,7 @@ from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
     DirectSchwabHistoryUpstream,
     DirectSchwabMoversUpstream,
+    DirectSchwabSessionHistoryUpstream,
     DirectSchwabSpotUpstream,
     UpstreamMalformedError,
     UpstreamUnavailableError,
@@ -156,12 +163,36 @@ class FakeMoversUpstream:
         )
 
 
+class FakeSessionHistoryUpstream:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, dt.date, str]] = []
+
+    async def get_session_history(
+        self, symbol: str, date: dt.date, session: str
+    ) -> SessionHistoryV1:
+        self.calls.append((symbol, date, session))
+        if self.error is not None:
+            raise self.error
+        return SessionHistoryV1(
+            symbol=symbol,
+            date=date,
+            session=session,
+            candles=(),
+            gateway_received_at=dt.datetime.now(dt.timezone.utc),
+            source="fake_session_history",
+            stale=True,
+            age_seconds=None,
+        )
+
+
 def app(
     *,
     spot_upstream=None,
     chain_upstream=None,
     history_upstream=None,
     movers_upstream=None,
+    session_history_upstream=None,
     capability: str | None = "market_data:read",
     ready: bool = True,
     upstream_timeout_seconds: float = 3.0,
@@ -179,6 +210,7 @@ def app(
         chain_upstream=chain_upstream,
         history_upstream=history_upstream,
         movers_upstream=movers_upstream,
+        session_history_upstream=session_history_upstream,
     )
 
 
@@ -294,6 +326,30 @@ async def test_client_to_http_gateway_to_fake_movers_upstream_returns_typed_cont
     assert upstream.calls == [("$SPX", "down")]
 
 
+@pytest.mark.asyncio
+async def test_client_to_http_gateway_to_fake_session_history_upstream_returns_typed_contract() -> (
+    None
+):
+    upstream = FakeSessionHistoryUpstream()
+    server = TestServer(app(session_history_upstream=upstream))
+    await server.start_server()
+    try:
+        client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
+        response = await client.get_session_history(
+            "AAPL", dt.date(2026, 8, 12), session="extended"
+        )
+        await client.close()
+    finally:
+        await server.close()
+
+    assert response.schema_version == "1.0"
+    assert response.session_history.symbol == "AAPL"
+    assert response.session_history.date == dt.date(2026, 8, 12)
+    assert response.session_history.session == "extended"
+    assert response.session_history.candles == ()
+    assert upstream.calls == [("AAPL", dt.date(2026, 8, 12), "extended")]
+
+
 # --- authentication, capability, and validation ----------------------------------------
 
 
@@ -305,6 +361,7 @@ async def test_client_to_http_gateway_to_fake_movers_upstream_returns_typed_cont
         ("/v1/chain", {"symbol": "SPX", "expiration": "2026-08-06"}),
         ("/v1/history", {"symbol": "AAPL"}),
         ("/v1/movers", {"index": "$SPX"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "2026-08-12", "session": "regular"}),
     ],
 )
 async def test_missing_key_is_401_and_wrong_capability_is_403(
@@ -316,6 +373,7 @@ async def test_missing_key_is_401_and_wrong_capability_is_403(
             chain_upstream=FakeChainUpstream(),
             history_upstream=FakeHistoryUpstream(),
             movers_upstream=FakeMoversUpstream(),
+            session_history_upstream=FakeSessionHistoryUpstream(),
             capability=None,
         )
     )
@@ -363,6 +421,16 @@ async def test_missing_key_is_401_and_wrong_capability_is_403(
         ("/v1/movers", {}),
         ("/v1/movers", {"index": "BOGUS"}),
         ("/v1/movers", {"index": "$SPX", "direction": "sideways"}),
+        ("/v1/session-history", {}),
+        ("/v1/session-history", {"symbol": "AAPL"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "2026-08-12"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "not-a-date", "session": "regular"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "20260812", "session": "regular"}),
+        (
+            "/v1/session-history",
+            {"symbol": "bad symbol", "date": "2026-08-12", "session": "regular"},
+        ),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "2026-08-12", "session": "afterhours"}),
     ],
 )
 async def test_malformed_parameters_are_400_before_any_upstream_call(
@@ -372,12 +440,14 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
     chain_upstream = FakeChainUpstream()
     history_upstream = FakeHistoryUpstream()
     movers_upstream = FakeMoversUpstream()
+    session_history_upstream = FakeSessionHistoryUpstream()
     server = TestServer(
         app(
             spot_upstream=spot_upstream,
             chain_upstream=chain_upstream,
             history_upstream=history_upstream,
             movers_upstream=movers_upstream,
+            session_history_upstream=session_history_upstream,
         )
     )
     await server.start_server()
@@ -395,6 +465,7 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
     assert chain_upstream.calls == []
     assert history_upstream.calls == []
     assert movers_upstream.calls == []
+    assert session_history_upstream.calls == []
 
 
 # --- readiness, capacity, and upstream failures ----------------------------------------
@@ -408,6 +479,7 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
         ("/v1/chain", {"symbol": "SPX", "expiration": "2026-08-06"}),
         ("/v1/history", {"symbol": "AAPL"}),
         ("/v1/movers", {"index": "$SPX"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "2026-08-12", "session": "regular"}),
     ],
 )
 async def test_not_ready_is_503_and_never_reaches_the_upstream(
@@ -417,12 +489,14 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
     chain_upstream = FakeChainUpstream()
     history_upstream = FakeHistoryUpstream()
     movers_upstream = FakeMoversUpstream()
+    session_history_upstream = FakeSessionHistoryUpstream()
     server = TestServer(
         app(
             spot_upstream=spot_upstream,
             chain_upstream=chain_upstream,
             history_upstream=history_upstream,
             movers_upstream=movers_upstream,
+            session_history_upstream=session_history_upstream,
             ready=False,
         )
     )
@@ -441,6 +515,7 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
     assert chain_upstream.calls == []
     assert history_upstream.calls == []
     assert movers_upstream.calls == []
+    assert session_history_upstream.calls == []
 
 
 @pytest.mark.asyncio
@@ -451,6 +526,7 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
         ("/v1/chain", {"symbol": "SPX", "expiration": "2026-08-06"}),
         ("/v1/history", {"symbol": "AAPL"}),
         ("/v1/movers", {"index": "$SPX"}),
+        ("/v1/session-history", {"symbol": "AAPL", "date": "2026-08-12", "session": "regular"}),
     ],
 )
 async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> None:
@@ -473,6 +549,10 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
             await release.wait()
             raise UpstreamUnavailableError("never returns a value in this test")
 
+        async def get_session_history(self, symbol: str, date: dt.date, session: str):
+            await release.wait()
+            raise UpstreamUnavailableError("never returns a value in this test")
+
     blocking = BlockingUpstream()
     server = TestServer(
         app(
@@ -480,6 +560,7 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
             chain_upstream=blocking,
             history_upstream=blocking,
             movers_upstream=blocking,
+            session_history_upstream=blocking,
             admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
         )
     )
@@ -511,7 +592,7 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
         (ValueError("garbage"), 502, "upstream_malformed"),
     ],
 )
-@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers"])
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_upstream_failures_map_to_bounded_status_codes(
     surface: str, error: Exception, status: int, code: str
 ) -> None:
@@ -524,9 +605,16 @@ async def test_upstream_failures_map_to_bounded_status_codes(
     elif surface == "history":
         kwargs = {"history_upstream": FakeHistoryUpstream(error=error)}
         path, params = "/v1/history", {"symbol": "AAPL"}
-    else:
+    elif surface == "movers":
         kwargs = {"movers_upstream": FakeMoversUpstream(error=error)}
         path, params = "/v1/movers", {"index": "$SPX"}
+    else:
+        kwargs = {"session_history_upstream": FakeSessionHistoryUpstream(error=error)}
+        path, params = "/v1/session-history", {
+            "symbol": "AAPL",
+            "date": "2026-08-12",
+            "session": "regular",
+        }
 
     server = TestServer(app(**kwargs))
     await server.start_server()
@@ -545,7 +633,7 @@ async def test_upstream_failures_map_to_bounded_status_codes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers"])
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
     class SlowUpstream:
         async def get_spot(self, symbol: str):
@@ -560,6 +648,9 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
         async def get_movers(self, index: str, direction: str):
             await asyncio.sleep(0.05)
 
+        async def get_session_history(self, symbol: str, date: dt.date, session: str):
+            await asyncio.sleep(0.05)
+
     slow = SlowUpstream()
     server = TestServer(
         app(
@@ -567,6 +658,7 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
             chain_upstream=slow,
             history_upstream=slow,
             movers_upstream=slow,
+            session_history_upstream=slow,
             upstream_timeout_seconds=0.001,
         )
     )
@@ -580,15 +672,17 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
                 await client.get_chain_metadata("SPX", EXPIRATION)
             elif surface == "history":
                 await client.get_history("AAPL")
-            else:
+            elif surface == "movers":
                 await client.get_movers("$SPX")
+            else:
+                await client.get_session_history("AAPL", dt.date(2026, 8, 12))
         await client.close()
     finally:
         await server.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers"])
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> None:
     server = TestServer(app())
     await server.start_server()
@@ -601,8 +695,10 @@ async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> N
                 await client.get_chain_metadata("SPX", EXPIRATION)
             elif surface == "history":
                 await client.get_history("AAPL")
-            else:
+            elif surface == "movers":
                 await client.get_movers("$SPX")
+            else:
+                await client.get_session_history("AAPL", dt.date(2026, 8, 12))
         await client.close()
     finally:
         await server.close()
@@ -652,6 +748,19 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
                 stale=True,
             )
 
+        async def get_session_history(
+            self, symbol: str, date: dt.date, session: str
+        ) -> SessionHistoryV1:
+            return SessionHistoryV1(
+                symbol="OTHER",
+                date=date,
+                session=session,
+                candles=(),
+                gateway_received_at=dt.datetime.now(dt.timezone.utc),
+                source="fake_session_history",
+                stale=True,
+            )
+
     wrong = WrongSymbolUpstream()
     server = TestServer(
         app(
@@ -659,6 +768,7 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
             chain_upstream=wrong,
             history_upstream=wrong,
             movers_upstream=wrong,
+            session_history_upstream=wrong,
         )
     )
     await server.start_server()
@@ -684,10 +794,21 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
                 params={"index": "$SPX"},
                 headers={"X-Internal-API-Key": "valid-key"},
             )
+            session_history_response = await http.get(
+                "/v1/session-history",
+                params={"symbol": "AAPL", "date": "2026-08-12", "session": "regular"},
+                headers={"X-Internal-API-Key": "valid-key"},
+            )
     finally:
         await server.close()
 
-    for response in (spot_response, chain_response, history_response, movers_response):
+    for response in (
+        spot_response,
+        chain_response,
+        history_response,
+        movers_response,
+        session_history_response,
+    ):
         assert response.status_code == 502
         assert response.json()["error"]["code"] == "upstream_malformed"
 
@@ -701,6 +822,7 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
         chain_upstream=FakeChainUpstream(),
         history_upstream=FakeHistoryUpstream(),
         movers_upstream=FakeMoversUpstream(),
+        session_history_upstream=FakeSessionHistoryUpstream(),
     )
     shapes = {(route.method, route.resource.canonical) for route in application.router.routes()}
 
@@ -713,6 +835,7 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
         "/v1/chain",
         "/v1/history",
         "/v1/movers",
+        "/v1/session-history",
     }
     assert {method for method, _path in shapes} == {"GET", "HEAD"}
     assert not any(
@@ -738,7 +861,7 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
         (418, GatewayResponseError),
     ],
 )
-@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers"])
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_client_maps_every_status_to_a_bounded_error(
     surface: str, status: int, expected: type[Exception]
 ) -> None:
@@ -757,12 +880,14 @@ async def test_client_maps_every_status_to_a_bounded_error(
                 await client.get_chain_metadata("SPX", EXPIRATION)
             elif surface == "history":
                 await client.get_history("AAPL")
-            else:
+            elif surface == "movers":
                 await client.get_movers("$SPX")
+            else:
+                await client.get_session_history("AAPL", dt.date(2026, 8, 12))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers"])
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_client_rejects_an_invalid_contract_and_never_retries(surface: str) -> None:
     calls: list[httpx.Request] = []
 
@@ -782,8 +907,10 @@ async def test_client_rejects_an_invalid_contract_and_never_retries(surface: str
                 await client.get_chain_metadata("SPX", EXPIRATION)
             elif surface == "history":
                 await client.get_history("AAPL")
-            else:
+            elif surface == "movers":
                 await client.get_movers("$SPX")
+            else:
+                await client.get_session_history("AAPL", dt.date(2026, 8, 12))
 
     assert len(calls) == 1
     assert calls[0].headers["X-Internal-API-Key"] == "key"
@@ -850,6 +977,10 @@ async def test_client_rejects_empty_symbol_and_empty_index_before_any_request() 
             await client.get_movers("   ")
         with pytest.raises(ValueError):
             await client.get_movers("$SPX", direction="sideways")
+        with pytest.raises(ValueError):
+            await client.get_session_history("   ", dt.date(2026, 8, 12))
+        with pytest.raises(ValueError):
+            await client.get_session_history("AAPL", dt.date(2026, 8, 12), session="afterhours")
 
     assert calls == []
 
@@ -1110,3 +1241,81 @@ async def test_direct_movers_upstream_classifies_non_list_payload_as_malformed()
 
     with pytest.raises(UpstreamMalformedError):
         await DirectSchwabMoversUpstream(MalformedPayload()).get_movers("$SPX", "up")
+
+
+# --- direct session-history upstream normalization ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_direct_session_history_upstream_splits_by_session() -> None:
+    utc = dt.timezone.utc
+
+    class Provider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dt.date]] = []
+
+        async def get_session_bars(self, symbol: str, date: dt.date):
+            self.calls.append((symbol, date))
+            return [
+                {  # 10:00 ET regular
+                    "datetime": int(dt.datetime(2026, 8, 12, 14, 0, tzinfo=utc).timestamp() * 1000),
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": 10,
+                },
+                {  # 17:00 ET after-hours
+                    "datetime": int(dt.datetime(2026, 8, 12, 21, 0, tzinfo=utc).timestamp() * 1000),
+                    "open": 2.0,
+                    "high": 2.0,
+                    "low": 2.0,
+                    "close": 2.0,
+                    "volume": 20,
+                },
+            ]
+
+    provider = Provider()
+    date = dt.date(2026, 8, 12)
+    regular = await DirectSchwabSessionHistoryUpstream(provider).get_session_history(
+        "AAPL", date, "regular"
+    )
+    extended = await DirectSchwabSessionHistoryUpstream(provider).get_session_history(
+        "AAPL", date, "extended"
+    )
+
+    assert provider.calls == [("AAPL", date), ("AAPL", date)]
+    assert [c.close for c in regular.candles] == [1.0]
+    assert [c.close for c in extended.candles] == [2.0]
+    assert regular.symbol == "AAPL"
+    assert regular.date == date
+    assert regular.session == "regular"
+
+
+@pytest.mark.asyncio
+async def test_direct_session_history_upstream_classifies_provider_failure_as_unavailable() -> (
+    None
+):
+    class Failing:
+        async def get_session_bars(self, symbol: str, date: dt.date):
+            raise RuntimeError("/private/token/path leaked")
+
+    with pytest.raises(UpstreamUnavailableError) as excinfo:
+        await DirectSchwabSessionHistoryUpstream(Failing()).get_session_history(
+            "AAPL", dt.date(2026, 8, 12), "regular"
+        )
+    assert "/private" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_direct_session_history_upstream_classifies_non_list_payload_as_malformed() -> (
+    None
+):
+    class MalformedPayload:
+        async def get_session_bars(self, symbol: str, date: dt.date):
+            return {"candles": []}
+
+    with pytest.raises(UpstreamMalformedError):
+        await DirectSchwabSessionHistoryUpstream(MalformedPayload()).get_session_history(
+            "AAPL", dt.date(2026, 8, 12), "regular"
+        )

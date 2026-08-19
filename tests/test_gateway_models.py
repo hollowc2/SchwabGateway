@@ -11,6 +11,7 @@ from schwab_gateway.upstream import (
     normalize_schwab_history,
     normalize_schwab_movers,
     normalize_schwab_quote,
+    normalize_schwab_session_history,
     normalize_schwab_spot,
 )
 
@@ -185,6 +186,104 @@ def test_history_contract_rejects_naive_timestamps() -> None:
             "daily",
             [],
             received_at=dt.datetime(2026, 8, 10, 21, 0),
+            stale_after_seconds=86400,
+        )
+
+
+def _candle(timestamp: dt.datetime, close: float) -> dict:
+    return {
+        "datetime": int(timestamp.timestamp() * 1000),
+        "open": close,
+        "high": close,
+        "low": close,
+        "close": close,
+        "volume": 100,
+    }
+
+
+def test_session_history_splits_regular_and_extended_candles() -> None:
+    """2026-08-12 is EDT (UTC-4): 08:00/16:00/17:00 ET are pre-/post-market, 09:30/10:00
+    ET are regular -- the 16:00:00 boundary belongs to extended, not regular."""
+    received_at = dt.datetime(2026, 8, 13, 12, 0, tzinfo=dt.timezone.utc)
+    date = dt.date(2026, 8, 12)
+    utc = dt.timezone.utc
+    candles = [
+        _candle(dt.datetime(2026, 8, 12, 12, 0, tzinfo=utc), 1.0),  # 08:00 ET premarket
+        _candle(dt.datetime(2026, 8, 12, 13, 30, tzinfo=utc), 2.0),  # 09:30 ET regular open
+        _candle(dt.datetime(2026, 8, 12, 14, 0, tzinfo=utc), 3.0),  # 10:00 ET regular
+        _candle(dt.datetime(2026, 8, 12, 20, 0, tzinfo=utc), 4.0),  # 16:00 ET first after-hours
+        _candle(dt.datetime(2026, 8, 12, 21, 0, tzinfo=utc), 5.0),  # 17:00 ET after-hours
+    ]
+
+    regular = normalize_schwab_session_history(
+        "AAPL", date, "regular", candles, received_at=received_at, stale_after_seconds=86400
+    )
+    extended = normalize_schwab_session_history(
+        "AAPL", date, "extended", candles, received_at=received_at, stale_after_seconds=86400
+    )
+
+    assert [c.close for c in regular.candles] == [2.0, 3.0]
+    assert [c.close for c in extended.candles] == [1.0, 4.0, 5.0]
+    assert regular.symbol == "AAPL"
+    assert regular.date == date
+    assert regular.session == "regular"
+    assert extended.session == "extended"
+
+
+def test_session_history_drops_malformed_candles_and_flags_them() -> None:
+    received_at = dt.datetime(2026, 8, 13, 12, 0, tzinfo=dt.timezone.utc)
+    good = _candle(dt.datetime(2026, 8, 12, 14, 0, tzinfo=dt.timezone.utc), 1.0)  # 10:00 ET
+    result = normalize_schwab_session_history(
+        "AAPL",
+        dt.date(2026, 8, 12),
+        "regular",
+        [good, {"datetime": good["datetime"], "open": 1}, "not-a-candle"],
+        received_at=received_at,
+        stale_after_seconds=86400,
+    )
+
+    assert len(result.candles) == 1
+    assert "malformed_bars_dropped" in result.data_quality_flags
+
+
+def test_session_history_marks_no_bars_when_the_session_is_empty() -> None:
+    received_at = dt.datetime(2026, 8, 13, 12, 0, tzinfo=dt.timezone.utc)
+    regular_only = [_candle(dt.datetime(2026, 8, 12, 14, 0, tzinfo=dt.timezone.utc), 1.0)]
+
+    extended = normalize_schwab_session_history(
+        "AAPL",
+        dt.date(2026, 8, 12),
+        "extended",
+        regular_only,
+        received_at=received_at,
+        stale_after_seconds=86400,
+    )
+
+    assert extended.candles == ()
+    assert "no_bars_returned" in extended.data_quality_flags
+    assert extended.stale is True
+
+
+def test_session_history_rejects_a_non_list_payload() -> None:
+    with pytest.raises(ValueError):
+        normalize_schwab_session_history(
+            "AAPL",
+            dt.date(2026, 8, 12),
+            "regular",
+            {"candles": []},
+            received_at=dt.datetime(2026, 8, 13, 12, 0, tzinfo=dt.timezone.utc),
+            stale_after_seconds=86400,
+        )
+
+
+def test_session_history_contract_rejects_naive_timestamps() -> None:
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        normalize_schwab_session_history(
+            "AAPL",
+            dt.date(2026, 8, 12),
+            "regular",
+            [],
+            received_at=dt.datetime(2026, 8, 13, 12, 0),
             stale_after_seconds=86400,
         )
 

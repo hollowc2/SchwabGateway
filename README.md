@@ -5,9 +5,9 @@ market-data reads. The repository also builds `schwab_gateway_sdk` and
 `schwab_token_store` as independent Python packages.
 
 The v1 contract exposes only `GET /health`, `/ready`, `/metrics`, `/v1/quotes`,
-`/v1/spot`, `/v1/chain`, `/v1/history`, and `/v1/movers`. There are no account, position,
-transaction, streaming, or order routes, and `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must
-remain false.
+`/v1/spot`, `/v1/chain`, `/v1/history`, `/v1/movers`, and `/v1/session-history`. There are
+no account, position, transaction, streaming, or order routes, and
+`SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must remain false.
 
 ## Development
 

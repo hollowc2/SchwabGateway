@@ -136,6 +136,33 @@
         }
       }
     },
+    "session_history": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "session_history": {
+          "symbol": "AAPL",
+          "date": "2026-08-12",
+          "session": "extended",
+          "candles": [
+            {
+              "timestamp": "2026-08-12T21:00:00Z",
+              "open": 200.0,
+              "high": 201.0,
+              "low": 199.5,
+              "close": 200.75,
+              "volume": 120000
+            }
+          ],
+          "event_timestamp": "2026-08-12T21:00:00Z",
+          "gateway_received_at": "2026-08-13T12:00:00Z",
+          "source": "synthetic_schwab",
+          "stale": true,
+          "age_seconds": 54000.0,
+          "data_quality_flags": ["stale"]
+        }
+      }
+    },
     "metrics": {
       "status": 200,
       "content_type_prefix": "text/plain; version=0.0.4"
@@ -182,6 +209,10 @@
     "invalid_movers_missing": {
       "status": 400,
       "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "index must be one of the supported Schwab mover indexes"}}
+    },
+    "invalid_session_history_date_missing": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "a date is required"}}
     },
     "gateway_not_ready": {
       "status": 503,

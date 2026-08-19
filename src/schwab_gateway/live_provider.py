@@ -2,9 +2,9 @@
 
 This is the bridge between the proven token machinery and the gateway's read surfaces. It
 exposes only ``SpotPriceProvider``, ``OptionChainProvider``, ``EquityQuoteProvider``,
-``PriceHistoryProvider``, and ``MarketMoversProvider``; there is no account, order,
-transaction, or streaming method to call, so no such request can be issued through this
-object.
+``PriceHistoryProvider``, ``MarketMoversProvider``, and ``SessionHistoryProvider``; there
+is no account, order, transaction, or streaming method to call, so no such request can be
+issued through this object.
 
 Three properties are deliberate and load-bearing:
 
@@ -31,6 +31,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,6 +48,12 @@ log = get_logger(__name__)
 
 DEFAULT_QUOTE_BATCH_SIZE = 150
 DEFAULT_READINESS_RECOVERY_SECONDS = 30.0
+EASTERN = ZoneInfo("America/New_York")
+# Schwab's standard full extended-hours window: pre-market open through after-hours
+# close. Wide enough to capture both the regular and extended segments of one calendar
+# date in a single fetch; the upstream normalizer does the actual session split.
+EXTENDED_SESSION_WINDOW_START = dt.time(4, 0)
+EXTENDED_SESSION_WINDOW_END = dt.time(20, 0)
 
 
 class GatewayUpstreamSettings(BaseSettings):
@@ -281,6 +288,42 @@ class LockedSchwabMarketDataProvider:
                 if isinstance(payload, dict):
                     return payload.get("screeners", payload.get("movers", []))
                 raise ValueError("movers response was neither a list nor an object")
+
+        return await self._execute(operation)
+
+    async def get_session_bars(self, symbol: str, date: dt.date) -> list[dict[str, Any]]:
+        """Fetch one calendar day's minute bars, spanning pre-market through after-hours.
+
+        ``/v1/session-history`` needs both the regular and extended segments of a single
+        date in one fetch so the normalizer can split them. Unlike ``get_intraday_bars``,
+        the request window is timezone-aware (``America/New_York``) rather than naive,
+        because getting the calendar-date boundary right is the entire point here.
+        ``period`` is omitted, same as ``get_intraday_bars``: it is unnecessary once
+        ``start_datetime``/``end_datetime`` are given, and schwab-py's ``Period`` enum
+        only covers a handful of fixed day counts anyway.
+        """
+
+        def operation(client: Any) -> list[dict[str, Any]]:
+            with _closing_session(client):
+                start = dt.datetime.combine(date, EXTENDED_SESSION_WINDOW_START, tzinfo=EASTERN)
+                end = dt.datetime.combine(date, EXTENDED_SESSION_WINDOW_END, tzinfo=EASTERN)
+                response = client.get_price_history(
+                    symbol,
+                    period_type=client.PriceHistory.PeriodType.DAY,
+                    frequency_type=client.PriceHistory.FrequencyType.MINUTE,
+                    frequency=client.PriceHistory.Frequency.EVERY_MINUTE,
+                    start_datetime=start,
+                    end_datetime=end,
+                    need_extended_hours_data=True,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("price history response was not an object")
+                candles = payload.get("candles")
+                if not isinstance(candles, list):
+                    raise ValueError("price history response carried no candle list")
+                return candles
 
         return await self._execute(operation)
 

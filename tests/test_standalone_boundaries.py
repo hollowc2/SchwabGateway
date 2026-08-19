@@ -34,9 +34,17 @@ def test_contract_contains_only_parity_routes() -> None:
     ButterflyGuy-parity extraction (see ``MIGRATION_PROVENANCE.md``) to expose the two
     additional read-only Schwab surfaces (``get_daily_bars``/``get_intraday_bars`` and
     ``get_market_movers``) the equity scanner needs before it can be extracted onto the
-    gateway SDK. They remain strictly read-only market data: no account, order, position,
-    or transaction route was added, and ``SCHWAB_GATEWAY_ORDER_WRITES_ENABLED`` is
-    untouched.
+    gateway SDK.
+
+    ``/v1/session-history`` was added separately, for a different consumer
+    (AfterHoursLab) and a different shape of request: a point-in-time regular-or-extended
+    session lookup for one past date, as opposed to ``/v1/history``'s trailing window
+    ending "now". The two were deliberately kept as separate routes rather than merged,
+    after a cross-session design conflict surfaced that exact question -- see the git
+    history around this test for that discussion.
+
+    All three remain strictly read-only market data: no account, order, position, or
+    transaction route was added, and ``SCHWAB_GATEWAY_ORDER_WRITES_ENABLED`` is untouched.
     """
     contract = yaml.safe_load(Path("openapi.yaml").read_text())
     assert contract["openapi"] == "3.1.0"
@@ -49,6 +57,7 @@ def test_contract_contains_only_parity_routes() -> None:
         "/v1/chain",
         "/v1/history",
         "/v1/movers",
+        "/v1/session-history",
     }
     serialized = json.dumps(contract).lower()
     for forbidden in ("/account", "/order", "/position", "/transaction", "/stream"):

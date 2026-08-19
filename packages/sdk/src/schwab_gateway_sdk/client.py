@@ -13,6 +13,7 @@ from schwab_gateway_sdk.models import (
     HistoryResponseV1,
     MoversResponseV1,
     QuoteResponseV1,
+    SessionHistoryResponseV1,
     SpotResponseV1,
 )
 
@@ -172,6 +173,22 @@ class GatewayMarketDataClient:
             raise ValueError("direction must be 'up' or 'down'")
         return await self._get_typed(
             "/v1/movers", {"index": requested, "direction": direction}, MoversResponseV1
+        )
+
+    async def get_session_history(
+        self, symbol: str, date: dt.date, *, session: str = "regular"
+    ) -> SessionHistoryResponseV1:
+        requested = symbol.strip()
+        if not requested:
+            raise ValueError("a symbol is required")
+        if not isinstance(date, dt.date) or isinstance(date, dt.datetime):
+            raise ValueError("a date is required")
+        if session not in {"regular", "extended"}:
+            raise ValueError("session must be 'regular' or 'extended'")
+        return await self._get_typed(
+            "/v1/session-history",
+            {"symbol": requested, "date": date.isoformat(), "session": session},
+            SessionHistoryResponseV1,
         )
 
     async def close(self) -> None:
