@@ -96,6 +96,54 @@ paths:
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
         "504": {$ref: "#/components/responses/Error"}
+  /v1/history:
+    get:
+      operationId: historyV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: {$ref: "#/components/schemas/Symbol"}
+        - in: query
+          name: frequency
+          required: false
+          schema: {type: string, enum: [daily, minute], default: daily}
+        - in: query
+          name: days_back
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 20}
+      responses:
+        "200": {$ref: "#/components/responses/HistoryResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
+  /v1/movers:
+    get:
+      operationId: moversV1
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: index
+          required: true
+          schema: {$ref: "#/components/schemas/MoverIndex"}
+        - in: query
+          name: direction
+          required: false
+          schema: {type: string, enum: [up, down], default: up}
+      responses:
+        "200": {$ref: "#/components/responses/MoversResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+        "504": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     internalApiKey:
@@ -118,6 +166,16 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/ChainMetadataResponseV1"}
+    HistoryResponse:
+      description: Normalized daily or intraday price bars.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/HistoryResponseV1"}
+    MoversResponse:
+      description: Normalized index movers for one direction.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/MoversResponseV1"}
     Error:
       description: Bounded error.
       content:
@@ -229,6 +287,72 @@ components:
       properties:
         schema_version: {$ref: "#/components/schemas/SchemaVersion"}
         chain: {$ref: "#/components/schemas/ChainMetadataV1"}
+    PriceBarV1:
+      type: object
+      additionalProperties: false
+      required: [timestamp, open, high, low, close, volume]
+      properties:
+        timestamp: {$ref: "#/components/schemas/AwareTimestamp"}
+        open: {type: number}
+        high: {type: number}
+        low: {type: number}
+        close: {type: number}
+        volume: {type: integer, minimum: 0}
+    HistoryV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, frequency, bars, event_timestamp, gateway_received_at, source, stale, age_seconds, data_quality_flags]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        frequency: {type: string, enum: [daily, minute]}
+        bars: {type: array, items: {$ref: "#/components/schemas/PriceBarV1"}}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    HistoryResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, history]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        history: {$ref: "#/components/schemas/HistoryV1"}
+    MoverIndex:
+      type: string
+      enum: ["$DJI", "$COMPX", "$SPX", NYSE, NASDAQ, OTCBB, INDEX_ALL, EQUITY_ALL, OPTION_ALL, OPTION_PUT, OPTION_CALL]
+    MoverV1:
+      type: object
+      additionalProperties: false
+      required: [symbol, last_price, change, change_percent, volume]
+      properties:
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        last_price: {type: [number, "null"]}
+        change: {type: [number, "null"]}
+        change_percent: {type: [number, "null"]}
+        volume: {type: [integer, "null"], minimum: 0}
+    MoversV1:
+      type: object
+      additionalProperties: false
+      required: [index, direction, movers, event_timestamp, gateway_received_at, source, stale, age_seconds, data_quality_flags]
+      properties:
+        index: {$ref: "#/components/schemas/MoverIndex"}
+        direction: {type: string, enum: [up, down]}
+        movers: {type: array, items: {$ref: "#/components/schemas/MoverV1"}}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string}
+        stale: {type: boolean}
+        age_seconds: {type: [number, "null"], minimum: 0}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    MoversResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, movers]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        movers: {$ref: "#/components/schemas/MoversV1"}
     GatewayErrorV1:
       type: object
       additionalProperties: false

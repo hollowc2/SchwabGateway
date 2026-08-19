@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import re
 import time
-from typing import Protocol
+from typing import Literal, Protocol
 
 from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -14,6 +14,8 @@ from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
     GatewayHealthV1,
     GatewayReadinessV1,
+    HistoryResponseV1,
+    MoversResponseV1,
     QuoteResponseV1,
     SpotResponseV1,
 )
@@ -37,6 +39,8 @@ from schwab_gateway.auth import (
 from schwab_gateway.logging import get_logger
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
+    HistoryUpstream,
+    MoversUpstream,
     QuoteUpstream,
     SpotUpstream,
     UpstreamMalformedError,
@@ -47,6 +51,28 @@ log = get_logger(__name__)
 UTC = dt.timezone.utc
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 MAX_SYMBOLS = 100
+HISTORY_FREQUENCIES = ("daily", "minute")
+# (minimum, maximum, default) bars-back bounds per history frequency.
+HISTORY_DAYS_BACK_BOUNDS: dict[str, tuple[int, int, int]] = {
+    "daily": (1, 20, 10),
+    "minute": (1, 5, 1),
+}
+MOVER_INDEXES = frozenset(
+    {
+        "$DJI",
+        "$COMPX",
+        "$SPX",
+        "NYSE",
+        "NASDAQ",
+        "OTCBB",
+        "INDEX_ALL",
+        "EQUITY_ALL",
+        "OPTION_ALL",
+        "OPTION_PUT",
+        "OPTION_CALL",
+    }
+)
+MOVER_DIRECTIONS = ("up", "down")
 
 gateway_requests = Counter(
     "gateway_client_requests_total",
@@ -67,6 +93,8 @@ gateway_admission = Counter(
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
 CHAIN_UPSTREAM_KEY = web.AppKey("gateway_chain_upstream", ChainMetadataUpstream)
+HISTORY_UPSTREAM_KEY = web.AppKey("gateway_history_upstream", HistoryUpstream)
+MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
 UPSTREAM_TIMEOUT_KEY = web.AppKey("gateway_upstream_timeout", float)
 TOKEN_READINESS_PROVIDER_KEY = web.AppKey(
     "gateway_token_readiness_provider", "TokenReadinessProvider"
@@ -108,6 +136,20 @@ class _UnavailableChainMetadataUpstream:
 
     async def get_chain_metadata(self, _symbol: str, _expiration: dt.date):
         raise UpstreamUnavailableError("chain upstream is not configured")
+
+
+class _UnavailableHistoryUpstream:
+    """Fail closed when an app declares no history surface."""
+
+    async def get_history(self, _symbol: str, _frequency: str, _days_back: int):
+        raise UpstreamUnavailableError("history upstream is not configured")
+
+
+class _UnavailableMoversUpstream:
+    """Fail closed when an app declares no movers surface."""
+
+    async def get_movers(self, _index: str, _direction: str):
+        raise UpstreamUnavailableError("movers upstream is not configured")
 
 
 class _UnavailableTokenReadinessProvider:
@@ -184,6 +226,41 @@ def _parse_expiration(request: web.Request) -> dt.date:
         return dt.date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("the expiration must be an ISO-8601 date") from exc
+
+
+def _parse_frequency(request: web.Request) -> Literal["daily", "minute"]:
+    value = request.query.get("frequency", "daily").strip().lower()
+    if value not in HISTORY_FREQUENCIES:
+        raise ValueError("frequency must be 'daily' or 'minute'")
+    return value  # type: ignore[return-value]
+
+
+def _parse_days_back(request: web.Request, frequency: Literal["daily", "minute"]) -> int:
+    minimum, maximum, default = HISTORY_DAYS_BACK_BOUNDS[frequency]
+    value = request.query.get("days_back", "").strip()
+    if not value:
+        return default
+    try:
+        days_back = int(value)
+    except ValueError as exc:
+        raise ValueError("days_back must be an integer") from exc
+    if not minimum <= days_back <= maximum:
+        raise ValueError(f"days_back must be between {minimum} and {maximum}")
+    return days_back
+
+
+def _parse_index(request: web.Request):
+    value = request.query.get("index", "").strip().upper()
+    if value not in MOVER_INDEXES:
+        raise ValueError("index must be one of the supported Schwab mover indexes")
+    return value
+
+
+def _parse_direction(request: web.Request) -> Literal["up", "down"]:
+    value = request.query.get("direction", "up").strip().lower()
+    if value not in MOVER_DIRECTIONS:
+        raise ValueError("direction must be 'up' or 'down'")
+    return value  # type: ignore[return-value]
 
 
 @web.middleware
@@ -385,6 +462,47 @@ async def chain_metadata(request: web.Request) -> web.Response:
     return await _serve_upstream(request, build_response)
 
 
+async def history(request: web.Request) -> web.Response:
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        symbol = _parse_symbol(request)
+        frequency = _parse_frequency(request)
+        days_back = _parse_days_back(request, frequency)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+
+    async def build_response() -> web.Response:
+        result = await request.app[HISTORY_UPSTREAM_KEY].get_history(
+            symbol, frequency, days_back
+        )
+        if result.symbol != symbol or result.frequency != frequency:
+            raise UpstreamMalformedError("upstream returned a different history series")
+        return _json(HistoryResponseV1(history=result))
+
+    return await _serve_upstream(request, build_response)
+
+
+async def movers(request: web.Request) -> web.Response:
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        index = _parse_index(request)
+        direction = _parse_direction(request)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+
+    async def build_response() -> web.Response:
+        result = await request.app[MOVERS_UPSTREAM_KEY].get_movers(index, direction)
+        if result.index != index or result.direction != direction:
+            raise UpstreamMalformedError("upstream returned different movers")
+        return _json(MoversResponseV1(movers=result))
+
+    return await _serve_upstream(request, build_response)
+
+
 def create_app(
     upstream: QuoteUpstream,
     authenticator: InternalKeyAuthenticator,
@@ -394,6 +512,8 @@ def create_app(
     admission_policy: AdmissionPolicy | None = None,
     spot_upstream: SpotUpstream | None = None,
     chain_upstream: ChainMetadataUpstream | None = None,
+    history_upstream: HistoryUpstream | None = None,
+    movers_upstream: MoversUpstream | None = None,
 ) -> web.Application:
     if upstream_timeout_seconds <= 0:
         raise ValueError("upstream timeout must be positive")
@@ -401,6 +521,8 @@ def create_app(
     app[UPSTREAM_KEY] = upstream
     app[SPOT_UPSTREAM_KEY] = spot_upstream or _UnavailableSpotUpstream()
     app[CHAIN_UPSTREAM_KEY] = chain_upstream or _UnavailableChainMetadataUpstream()
+    app[HISTORY_UPSTREAM_KEY] = history_upstream or _UnavailableHistoryUpstream()
+    app[MOVERS_UPSTREAM_KEY] = movers_upstream or _UnavailableMoversUpstream()
     app[AUTHENTICATOR_KEY] = authenticator
     app[UPSTREAM_TIMEOUT_KEY] = upstream_timeout_seconds
     app[TOKEN_READINESS_PROVIDER_KEY] = (
@@ -415,4 +537,6 @@ def create_app(
     app.router.add_get("/v1/quotes", quotes, name="quotes_v1")
     app.router.add_get("/v1/spot", spot, name="spot_v1")
     app.router.add_get("/v1/chain", chain_metadata, name="chain_v1")
+    app.router.add_get("/v1/history", history, name="history_v1")
+    app.router.add_get("/v1/movers", movers, name="movers_v1")
     return app

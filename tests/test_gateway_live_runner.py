@@ -23,6 +23,8 @@ from schwab_token_store import (
 from schwab_gateway import runner
 from schwab_gateway.api import (
     CHAIN_UPSTREAM_KEY,
+    HISTORY_UPSTREAM_KEY,
+    MOVERS_UPSTREAM_KEY,
     SPOT_UPSTREAM_KEY,
     TOKEN_READINESS_PROVIDER_KEY,
     UPSTREAM_KEY,
@@ -31,6 +33,8 @@ from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import TokenReadinessRecovery
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
+    DirectSchwabHistoryUpstream,
+    DirectSchwabMoversUpstream,
     DirectSchwabQuoteUpstream,
     DirectSchwabSpotUpstream,
 )
@@ -143,6 +147,8 @@ def test_demo_app_declares_no_spot_or_chain_upstream(tmp_path: Path) -> None:
     # The fail-closed stubs, not real upstreams.
     assert not isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
     assert not isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+    assert not isinstance(app[HISTORY_UPSTREAM_KEY], DirectSchwabHistoryUpstream)
+    assert not isinstance(app[MOVERS_UPSTREAM_KEY], DirectSchwabMoversUpstream)
 
 
 def test_demo_app_uses_the_static_readiness_provider(tmp_path: Path) -> None:
@@ -153,7 +159,7 @@ def test_demo_app_uses_the_static_readiness_provider(tmp_path: Path) -> None:
 # --- Live mode -----------------------------------------------------------------------
 
 
-def test_live_app_declares_all_three_real_upstreams(tmp_path: Path) -> None:
+def test_live_app_declares_all_five_real_upstreams(tmp_path: Path) -> None:
     app = runner.build_live_app(
         _settings(tmp_path),
         _upstream_settings(_token_file(tmp_path)),
@@ -163,6 +169,8 @@ def test_live_app_declares_all_three_real_upstreams(tmp_path: Path) -> None:
     assert isinstance(app[UPSTREAM_KEY], DirectSchwabQuoteUpstream)
     assert isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
     assert isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+    assert isinstance(app[HISTORY_UPSTREAM_KEY], DirectSchwabHistoryUpstream)
+    assert isinstance(app[MOVERS_UPSTREAM_KEY], DirectSchwabMoversUpstream)
 
 
 def test_live_app_reports_real_manager_readiness(tmp_path: Path) -> None:
@@ -314,4 +322,13 @@ def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:
     )
 
     paths = {resource.canonical for resource in app.router.resources()}
-    assert paths == {"/health", "/ready", "/metrics", "/v1/quotes", "/v1/spot", "/v1/chain"}
+    assert paths == {
+        "/health",
+        "/ready",
+        "/metrics",
+        "/v1/quotes",
+        "/v1/spot",
+        "/v1/chain",
+        "/v1/history",
+        "/v1/movers",
+    }

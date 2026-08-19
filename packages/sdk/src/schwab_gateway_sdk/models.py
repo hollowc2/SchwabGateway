@@ -129,6 +129,125 @@ class ChainMetadataResponseV1(GatewayModel):
     chain: ChainMetadataV1
 
 
+class PriceBarV1(GatewayModel):
+    timestamp: dt.datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+    @field_validator("timestamp")
+    @classmethod
+    def timestamp_must_be_timezone_aware(cls, value: dt.datetime) -> dt.datetime:
+        if value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("volume")
+    @classmethod
+    def volume_must_be_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("bar volume must be nonnegative")
+        return value
+
+
+class HistoryV1(GatewayModel):
+    symbol: str
+    frequency: Literal["daily", "minute"]
+    bars: tuple[PriceBarV1, ...]
+    event_timestamp: dt.datetime | None = None
+    gateway_received_at: dt.datetime
+    source: str
+    stale: bool
+    age_seconds: float | None = None
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("event_timestamp", "gateway_received_at")
+    @classmethod
+    def timestamps_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("age_seconds must be nonnegative")
+        return value
+
+
+class HistoryResponseV1(GatewayModel):
+    schema_version: Literal["1.0"] = "1.0"
+    history: HistoryV1
+
+
+MoverIndex = Literal[
+    "$DJI",
+    "$COMPX",
+    "$SPX",
+    "NYSE",
+    "NASDAQ",
+    "OTCBB",
+    "INDEX_ALL",
+    "EQUITY_ALL",
+    "OPTION_ALL",
+    "OPTION_PUT",
+    "OPTION_CALL",
+]
+
+
+class MoverV1(GatewayModel):
+    symbol: str
+    last_price: float | None = None
+    change: float | None = None
+    change_percent: float | None = None
+    volume: int | None = None
+
+    @field_validator("volume")
+    @classmethod
+    def volume_must_be_nonnegative(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("mover volume must be nonnegative")
+        return value
+
+
+class MoversV1(GatewayModel):
+    index: MoverIndex
+    direction: Literal["up", "down"]
+    movers: tuple[MoverV1, ...]
+    event_timestamp: dt.datetime | None = None
+    gateway_received_at: dt.datetime
+    source: str
+    stale: bool
+    age_seconds: float | None = None
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("event_timestamp", "gateway_received_at")
+    @classmethod
+    def timestamps_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("age_seconds must be nonnegative")
+        return value
+
+
+class MoversResponseV1(GatewayModel):
+    schema_version: Literal["1.0"] = "1.0"
+    movers: MoversV1
+
+
 class GatewayHealthV1(GatewayModel):
     schema_version: Literal["1.0"] = "1.0"
     status: Literal["ok", "ready", "not_ready"]

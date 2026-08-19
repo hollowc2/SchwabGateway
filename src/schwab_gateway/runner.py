@@ -30,6 +30,8 @@ from schwab_gateway.logging import get_logger, setup_logging
 from schwab_gateway.token_adapter import LockedSchwabClientAdapter
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
+    DirectSchwabHistoryUpstream,
+    DirectSchwabMoversUpstream,
     DirectSchwabQuoteUpstream,
     DirectSchwabSpotUpstream,
 )
@@ -125,6 +127,8 @@ def build_live_app(
         ),
         spot_upstream=DirectSchwabSpotUpstream(provider),
         chain_upstream=DirectSchwabChainMetadataUpstream(provider),
+        history_upstream=DirectSchwabHistoryUpstream(provider),
+        movers_upstream=DirectSchwabMoversUpstream(provider),
     )
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
     return app

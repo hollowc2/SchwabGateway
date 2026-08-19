@@ -28,6 +28,16 @@ def test_standalone_has_zero_butterfly_imports() -> None:
 
 
 def test_contract_contains_only_parity_routes() -> None:
+    """This lock is deliberately widened, not incidentally edited.
+
+    ``/v1/history`` and ``/v1/movers`` were added on top of the original
+    ButterflyGuy-parity extraction (see ``MIGRATION_PROVENANCE.md``) to expose the two
+    additional read-only Schwab surfaces (``get_daily_bars``/``get_intraday_bars`` and
+    ``get_market_movers``) the equity scanner needs before it can be extracted onto the
+    gateway SDK. They remain strictly read-only market data: no account, order, position,
+    or transaction route was added, and ``SCHWAB_GATEWAY_ORDER_WRITES_ENABLED`` is
+    untouched.
+    """
     contract = yaml.safe_load(Path("openapi.yaml").read_text())
     assert contract["openapi"] == "3.1.0"
     assert set(contract["paths"]) == {
@@ -37,6 +47,8 @@ def test_contract_contains_only_parity_routes() -> None:
         "/v1/quotes",
         "/v1/spot",
         "/v1/chain",
+        "/v1/history",
+        "/v1/movers",
     }
     serialized = json.dumps(contract).lower()
     for forbidden in ("/account", "/order", "/position", "/transaction", "/stream"):

@@ -1,9 +1,10 @@
 """Real Schwab market-data reads bound to the single locked token manager.
 
-This is the bridge between the proven token machinery and the gateway's three read
-surfaces. It exposes only ``SpotPriceProvider``, ``OptionChainProvider``, and
-``EquityQuoteProvider``; there is no account, order, transaction, or streaming method to
-call, so no such request can be issued through this object.
+This is the bridge between the proven token machinery and the gateway's read surfaces. It
+exposes only ``SpotPriceProvider``, ``OptionChainProvider``, ``EquityQuoteProvider``,
+``PriceHistoryProvider``, and ``MarketMoversProvider``; there is no account, order,
+transaction, or streaming method to call, so no such request can be issued through this
+object.
 
 Three properties are deliberate and load-bearing:
 
@@ -191,6 +192,96 @@ class LockedSchwabMarketDataProvider:
 
         # Every batch shares one transaction, so a multi-batch scanner request takes the
         # token lock once rather than once per batch.
+        return await self._execute(operation)
+
+    async def get_daily_bars(self, symbol: str, days_back: int = 10) -> list[dict[str, Any]]:
+        """Fetch daily OHLCV bars.
+
+        Mirrors ``SchwabClientWrapper.get_daily_bars``: a fixed ``period_type=MONTH,
+        period=1`` request, the same shape Schwab has always been asked for here. This
+        adapter's client is constructed with ``enforce_enums=True`` (unlike the direct
+        wrapper's ``enforce_enums=False``), so a real ``Period`` enum member is passed
+        rather than a raw int. ``days_back`` does not change the Schwab request -- it
+        bounds the response after normalization, the same way it does not change the
+        direct wrapper's request either.
+        """
+
+        def operation(client: Any) -> list[dict[str, Any]]:
+            with _closing_session(client):
+                response = client.get_price_history(
+                    symbol,
+                    period_type=client.PriceHistory.PeriodType.MONTH,
+                    period=client.PriceHistory.Period.ONE_MONTH,
+                    frequency_type=client.PriceHistory.FrequencyType.DAILY,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("price history response was not an object")
+                candles = payload.get("candles")
+                if not isinstance(candles, list):
+                    raise ValueError("price history response carried no candle list")
+                return candles
+
+        return await self._execute(operation)
+
+    async def get_intraday_bars(self, symbol: str, days_back: int = 1) -> list[dict[str, Any]]:
+        """Fetch per-minute OHLCV bars for the trailing ``days_back`` days.
+
+        Unlike ``get_daily_bars``, ``period`` is not passed at all: schwab-py's
+        ``Period`` enum only defines a handful of fixed day counts (1, 2, 3, 4, 5, 10),
+        and ``period`` is documented as unnecessary when ``start_datetime``/
+        ``end_datetime`` are supplied, so an explicit date window is used instead. That
+        keeps an arbitrary, gateway-bounded ``days_back`` compatible with this adapter's
+        ``enforce_enums=True`` client without guessing at enum coverage.
+        """
+
+        def operation(client: Any) -> list[dict[str, Any]]:
+            with _closing_session(client):
+                today = dt.date.today()
+                start = today - dt.timedelta(days=days_back)
+                response = client.get_price_history(
+                    symbol,
+                    period_type=client.PriceHistory.PeriodType.DAY,
+                    frequency_type=client.PriceHistory.FrequencyType.MINUTE,
+                    frequency=client.PriceHistory.Frequency.EVERY_MINUTE,
+                    start_datetime=dt.datetime.combine(start, dt.time.min),
+                    end_datetime=dt.datetime.combine(today, dt.time.max),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("price history response was not an object")
+                candles = payload.get("candles")
+                if not isinstance(candles, list):
+                    raise ValueError("price history response carried no candle list")
+                return candles
+
+        return await self._execute(operation)
+
+    async def get_market_movers(
+        self, index: str, *, sort_order: str = "PERCENT_CHANGE_UP"
+    ) -> list[dict[str, Any]]:
+        """Return Schwab's top-movers list for one index/exchange bucket.
+
+        Mirrors ``SchwabClientWrapper.get_market_movers``, with one adjustment for this
+        adapter's ``enforce_enums=True`` client: ``index`` is converted to the real
+        ``Movers.Index`` enum member by value rather than passed as a raw string.
+        """
+
+        def operation(client: Any) -> list[dict[str, Any]]:
+            with _closing_session(client):
+                movers_index = client.Movers.Index(index)
+                sort = getattr(client.Movers.SortOrder, sort_order, sort_order)
+                response = client.get_movers(movers_index, sort_order=sort)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, list):
+                    return payload
+                if isinstance(payload, dict):
+                    return payload.get("screeners", payload.get("movers", []))
+                raise ValueError("movers response was neither a list nor an object")
+
         return await self._execute(operation)
 
 

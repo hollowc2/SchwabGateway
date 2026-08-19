@@ -85,6 +85,57 @@
         }
       }
     },
+    "history": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "history": {
+          "symbol": "AAPL",
+          "frequency": "daily",
+          "bars": [
+            {
+              "timestamp": "2026-08-10T04:00:00Z",
+              "open": 199.5,
+              "high": 202.0,
+              "low": 198.75,
+              "close": 201.25,
+              "volume": 45000000
+            }
+          ],
+          "event_timestamp": "2026-08-10T04:00:00Z",
+          "gateway_received_at": "2026-08-10T12:00:00Z",
+          "source": "synthetic_schwab",
+          "stale": false,
+          "age_seconds": 1.0,
+          "data_quality_flags": []
+        }
+      }
+    },
+    "movers": {
+      "status": 200,
+      "body": {
+        "schema_version": "1.0",
+        "movers": {
+          "index": "$SPX",
+          "direction": "up",
+          "movers": [
+            {
+              "symbol": "AAPL",
+              "last_price": 201.25,
+              "change": 5.0,
+              "change_percent": 2.55,
+              "volume": 45000000
+            }
+          ],
+          "event_timestamp": null,
+          "gateway_received_at": "2026-08-10T12:00:00Z",
+          "source": "synthetic_schwab",
+          "stale": true,
+          "age_seconds": null,
+          "data_quality_flags": ["missing_event_timestamp", "stale"]
+        }
+      }
+    },
     "metrics": {
       "status": 200,
       "content_type_prefix": "text/plain; version=0.0.4"
@@ -123,6 +174,14 @@
     "invalid_chain_expiration": {
       "status": 400,
       "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "an expiration is required"}}
+    },
+    "invalid_history_missing": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "a symbol is required"}}
+    },
+    "invalid_movers_missing": {
+      "status": 400,
+      "body": {"schema_version": "1.0", "error": {"code": "invalid_request", "message": "index must be one of the supported Schwab mover indexes"}}
     },
     "gateway_not_ready": {
       "status": 503,

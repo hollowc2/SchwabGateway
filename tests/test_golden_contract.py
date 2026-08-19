@@ -9,6 +9,8 @@ from schwab_gateway_sdk.models import (
     GatewayErrorV1,
     GatewayHealthV1,
     GatewayReadinessV1,
+    HistoryResponseV1,
+    MoversResponseV1,
     QuoteResponseV1,
     SpotResponseV1,
 )
@@ -28,6 +30,8 @@ def test_success_fixtures_are_exactly_accepted_by_v1_models(golden: dict) -> Non
         "quotes": QuoteResponseV1,
         "spot": SpotResponseV1,
         "chain": ChainMetadataResponseV1,
+        "history": HistoryResponseV1,
+        "movers": MoversResponseV1,
     }
     for name, model in models.items():
         body = golden["success"][name]["body"]
@@ -40,6 +44,8 @@ def test_success_fixtures_are_exactly_accepted_by_v1_models(golden: dict) -> Non
         "invalid_quotes_missing",
         "invalid_spot_missing",
         "invalid_chain_expiration",
+        "invalid_history_missing",
+        "invalid_movers_missing",
         "gateway_not_ready",
         "gateway_capacity_exceeded",
         "quote_upstream_timeout",

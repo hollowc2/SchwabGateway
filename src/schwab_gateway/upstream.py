@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from schwab_gateway_sdk.chain_metadata import extract_chain_metadata
-from schwab_gateway_sdk.models import ChainMetadataV1, QuoteV1, SpotV1
+from schwab_gateway_sdk.models import (
+    ChainMetadataV1,
+    HistoryV1,
+    MoverIndex,
+    MoversV1,
+    MoverV1,
+    PriceBarV1,
+    QuoteV1,
+    SpotV1,
+)
 
 UTC = dt.timezone.utc
 
@@ -27,6 +36,22 @@ class SpotPriceProvider(Protocol):
     async def get_spot_price(self, symbol: str = "$SPX") -> float: ...
 
 
+class PriceHistoryProvider(Protocol):
+    async def get_daily_bars(
+        self, symbol: str, days_back: int = 10
+    ) -> list[dict[str, Any]]: ...
+
+    async def get_intraday_bars(
+        self, symbol: str, days_back: int = 1
+    ) -> list[dict[str, Any]]: ...
+
+
+class MarketMoversProvider(Protocol):
+    async def get_market_movers(
+        self, index: str, *, sort_order: str = "PERCENT_CHANGE_UP"
+    ) -> list[dict[str, Any]]: ...
+
+
 class QuoteUpstream(Protocol):
     async def get_quotes(self, symbols: tuple[str, ...]) -> tuple[QuoteV1, ...]: ...
 
@@ -39,6 +64,18 @@ class ChainMetadataUpstream(Protocol):
     async def get_chain_metadata(
         self, symbol: str, expiration: dt.date
     ) -> ChainMetadataV1: ...
+
+
+class HistoryUpstream(Protocol):
+    async def get_history(
+        self, symbol: str, frequency: Literal["daily", "minute"], days_back: int
+    ) -> HistoryV1: ...
+
+
+class MoversUpstream(Protocol):
+    async def get_movers(
+        self, index: MoverIndex, direction: Literal["up", "down"]
+    ) -> MoversV1: ...
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -199,6 +236,222 @@ def normalize_schwab_chain_metadata(
         age_seconds=age_seconds,
         data_quality_flags=flags,
     )
+
+
+SORT_ORDER_BY_DIRECTION: dict[Literal["up", "down"], str] = {
+    "up": "PERCENT_CHANGE_UP",
+    "down": "PERCENT_CHANGE_DOWN",
+}
+
+
+def _bar_from_candle(candle: Any) -> PriceBarV1 | None:
+    if not isinstance(candle, dict):
+        return None
+    timestamp_ms = _integer(candle, "datetime")
+    open_ = _number(candle, "open")
+    high = _number(candle, "high")
+    low = _number(candle, "low")
+    close = _number(candle, "close")
+    volume = _integer(candle, "volume")
+    if timestamp_ms is None or timestamp_ms <= 0:
+        return None
+    if None in (open_, high, low, close, volume):
+        return None
+    try:
+        return PriceBarV1(
+            timestamp=dt.datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC),
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+        )
+    except ValueError:
+        # A field validator rejected this one candle (e.g. negative volume); drop it
+        # rather than fail the whole series.
+        return None
+
+
+def normalize_schwab_history(
+    symbol: str,
+    frequency: Literal["daily", "minute"],
+    candles: Any,
+    *,
+    received_at: dt.datetime,
+    stale_after_seconds: float,
+    days_back: int | None = None,
+) -> HistoryV1:
+    if not isinstance(candles, list):
+        raise ValueError("price history response was not a list of candles")
+
+    flags: list[str] = []
+    bars: list[PriceBarV1] = []
+    dropped = 0
+    for candle in candles:
+        bar = _bar_from_candle(candle)
+        if bar is None:
+            dropped += 1
+            continue
+        bars.append(bar)
+    if dropped:
+        flags.append("malformed_bars_dropped")
+    if not bars:
+        flags.append("no_bars_returned")
+    elif days_back is not None and days_back > 0:
+        bars = bars[-days_back:]
+
+    event_timestamp = bars[-1].timestamp if bars else None
+    age_seconds = (
+        max(0.0, (received_at - event_timestamp).total_seconds())
+        if event_timestamp is not None
+        else None
+    )
+    stale = age_seconds is None or age_seconds > stale_after_seconds
+    if stale:
+        flags.append("stale")
+    return HistoryV1(
+        symbol=symbol,
+        frequency=frequency,
+        bars=tuple(bars),
+        event_timestamp=event_timestamp,
+        gateway_received_at=received_at,
+        source="schwab_rest_price_history",
+        stale=stale,
+        age_seconds=age_seconds,
+        data_quality_flags=tuple(flags),
+    )
+
+
+def _mover_from_item(item: Any) -> MoverV1 | None:
+    if not isinstance(item, dict):
+        return None
+    symbol = item.get("symbol") or item.get("ticker")
+    if not isinstance(symbol, str) or not symbol:
+        return None
+    change_percent = _number(item, "changePercent")
+    if change_percent is None:
+        change_percent = _number(item, "netPercentChange")
+    change = _number(item, "change")
+    if change is None:
+        change = _number(item, "netChange")
+    last_price = _number(item, "lastPrice")
+    if last_price is None:
+        last_price = _number(item, "last")
+    volume = _integer(item, "totalVolume")
+    if volume is None:
+        volume = _integer(item, "volume")
+    try:
+        return MoverV1(
+            symbol=symbol,
+            last_price=last_price,
+            change=change,
+            change_percent=change_percent,
+            volume=volume,
+        )
+    except ValueError:
+        return None
+
+
+def normalize_schwab_movers(
+    index: MoverIndex,
+    direction: Literal["up", "down"],
+    items: Any,
+    *,
+    received_at: dt.datetime,
+) -> MoversV1:
+    if not isinstance(items, list):
+        raise ValueError("movers response was not a list of movers")
+
+    flags: list[str] = []
+    movers: list[MoverV1] = []
+    dropped = 0
+    for item in items:
+        mover = _mover_from_item(item)
+        if mover is None:
+            dropped += 1
+            continue
+        movers.append(mover)
+    if dropped:
+        flags.append("malformed_movers_dropped")
+    # The movers endpoint carries no per-item or response event time, so age is always
+    # unknown here -- the same honest staleness contract ``normalize_schwab_spot`` uses.
+    flags.append("missing_event_timestamp")
+    flags.append("stale")
+    return MoversV1(
+        index=index,
+        direction=direction,
+        movers=tuple(movers),
+        event_timestamp=None,
+        gateway_received_at=received_at,
+        source="schwab_rest_movers",
+        stale=True,
+        age_seconds=None,
+        data_quality_flags=tuple(flags),
+    )
+
+
+class DirectSchwabHistoryUpstream:
+    """Normalize a price-history read from the direct adapter inside the gateway boundary."""
+
+    def __init__(
+        self,
+        provider: PriceHistoryProvider,
+        *,
+        daily_stale_after_seconds: float = 86400.0,
+        minute_stale_after_seconds: float = 900.0,
+    ) -> None:
+        self._provider = provider
+        self._daily_stale_after_seconds = daily_stale_after_seconds
+        self._minute_stale_after_seconds = minute_stale_after_seconds
+
+    async def get_history(
+        self, symbol: str, frequency: Literal["daily", "minute"], days_back: int
+    ) -> HistoryV1:
+        try:
+            if frequency == "daily":
+                candles = await self._provider.get_daily_bars(symbol, days_back)
+            else:
+                candles = await self._provider.get_intraday_bars(symbol, days_back)
+        except Exception as exc:
+            raise UpstreamUnavailableError("Schwab price history request failed") from exc
+        try:
+            return normalize_schwab_history(
+                symbol,
+                frequency,
+                candles,
+                received_at=dt.datetime.now(UTC),
+                stale_after_seconds=(
+                    self._daily_stale_after_seconds
+                    if frequency == "daily"
+                    else self._minute_stale_after_seconds
+                ),
+                days_back=days_back,
+            )
+        except ValueError as exc:
+            raise UpstreamMalformedError("Schwab price history response was invalid") from exc
+
+
+class DirectSchwabMoversUpstream:
+    """Normalize a movers read from the direct adapter inside the gateway boundary."""
+
+    def __init__(self, provider: MarketMoversProvider) -> None:
+        self._provider = provider
+
+    async def get_movers(
+        self, index: MoverIndex, direction: Literal["up", "down"]
+    ) -> MoversV1:
+        try:
+            items = await self._provider.get_market_movers(
+                index, sort_order=SORT_ORDER_BY_DIRECTION[direction]
+            )
+        except Exception as exc:
+            raise UpstreamUnavailableError("Schwab movers request failed") from exc
+        try:
+            return normalize_schwab_movers(
+                index, direction, items, received_at=dt.datetime.now(UTC)
+            )
+        except ValueError as exc:
+            raise UpstreamMalformedError("Schwab movers response was invalid") from exc
 
 
 class DirectSchwabSpotUpstream:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import inspect
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -25,7 +26,9 @@ from schwab_gateway.token_adapter import (
 )
 from schwab_gateway.upstream import (
     EquityQuoteProvider,
+    MarketMoversProvider,
     OptionChainProvider,
+    PriceHistoryProvider,
     SpotPriceProvider,
 )
 
@@ -62,19 +65,66 @@ class _FakeQuote:
     Fields = _FakeQuoteFields
 
 
+class _FakePeriodType(Enum):
+    DAY = "day"
+    MONTH = "month"
+
+
+class _FakePeriod(Enum):
+    ONE_MONTH = 1
+
+
+class _FakeFrequencyType(Enum):
+    DAILY = "daily"
+    MINUTE = "minute"
+
+
+class _FakeFrequency(Enum):
+    EVERY_MINUTE = 1
+
+
+class _FakePriceHistory:
+    PeriodType = _FakePeriodType
+    Period = _FakePeriod
+    FrequencyType = _FakeFrequencyType
+    Frequency = _FakeFrequency
+
+
+class _FakeMoversIndex(Enum):
+    DJI = "$DJI"
+    SPX = "$SPX"
+    NASDAQ = "NASDAQ"
+
+
+class _FakeMoversSortOrder(Enum):
+    PERCENT_CHANGE_UP = "PERCENT_CHANGE_UP"
+    PERCENT_CHANGE_DOWN = "PERCENT_CHANGE_DOWN"
+
+
+class _FakeMovers:
+    Index = _FakeMoversIndex
+    SortOrder = _FakeMoversSortOrder
+
+
 class _FakeClient:
     """Minimal stand-in for a schwab-py client. Exposes only read methods."""
 
     Quote = _FakeQuote
+    PriceHistory = _FakePriceHistory
+    Movers = _FakeMovers
 
     def __init__(self) -> None:
         self.session = _Session()
         self.quote_calls: list[str] = []
         self.chain_calls: list[tuple[str, dt.date, dt.date]] = []
         self.quotes_calls: list[list[str]] = []
+        self.price_history_calls: list[dict[str, Any]] = []
+        self.movers_calls: list[tuple[Any, Any]] = []
         self.quote_response: Any = _Response({"$SPX": {"quote": {"lastPrice": 5500.0}}})
         self.chain_response: Any = _Response({"callExpDateMap": {}, "putExpDateMap": {}})
         self.quotes_responses: list[Any] = []
+        self.price_history_response: Any = _Response({"candles": []})
+        self.movers_response: Any = _Response([])
 
     def get_quote(self, symbol: str) -> Any:
         self.quote_calls.append(symbol)
@@ -88,6 +138,14 @@ class _FakeClient:
         self.quotes_calls.append(list(symbols))
         assert fields == [_FakeQuoteFields.QUOTE, _FakeQuoteFields.EXTENDED]
         return self.quotes_responses.pop(0)
+
+    def get_price_history(self, symbol: str, **kwargs: Any) -> Any:
+        self.price_history_calls.append({"symbol": symbol, **kwargs})
+        return self.price_history_response
+
+    def get_movers(self, index: Any, *, sort_order: Any = None) -> Any:
+        self.movers_calls.append((index, sort_order))
+        return self.movers_response
 
 
 class _RecordingManager:
@@ -122,14 +180,27 @@ def _provider(client: _FakeClient) -> tuple[LockedSchwabMarketDataProvider, _Rec
 # --- Surface boundary ----------------------------------------------------------------
 
 
-def test_provider_exposes_only_the_three_read_surfaces() -> None:
-    """No account, order, transaction, movers, or streaming method exists to call."""
+def test_provider_exposes_only_the_five_read_surfaces() -> None:
+    """No account, order, transaction, or streaming method exists to call.
+
+    Deliberately widened from three surfaces to five: ``get_daily_bars``,
+    ``get_intraday_bars``, and ``get_market_movers`` were added alongside the original
+    spot/chain/quote trio to back the new ``/v1/history`` and ``/v1/movers`` routes. Every
+    added surface is still a bounded, read-only Schwab market-data call.
+    """
     public = {
         name
         for name, _ in inspect.getmembers(LockedSchwabMarketDataProvider, inspect.isfunction)
         if not name.startswith("_")
     }
-    assert public == {"get_spot_price", "get_option_chain", "get_equity_quotes"}
+    assert public == {
+        "get_spot_price",
+        "get_option_chain",
+        "get_equity_quotes",
+        "get_daily_bars",
+        "get_intraday_bars",
+        "get_market_movers",
+    }
 
 
 @pytest.mark.parametrize(
@@ -138,6 +209,9 @@ def test_provider_exposes_only_the_three_read_surfaces() -> None:
         (SpotPriceProvider, "get_spot_price"),
         (OptionChainProvider, "get_option_chain"),
         (EquityQuoteProvider, "get_equity_quotes"),
+        (PriceHistoryProvider, "get_daily_bars"),
+        (PriceHistoryProvider, "get_intraday_bars"),
+        (MarketMoversProvider, "get_market_movers"),
     ],
 )
 def test_provider_signatures_match_the_declared_read_protocols(
@@ -221,6 +295,123 @@ async def test_chain_read_rejects_a_non_object_payload() -> None:
 
     with pytest.raises(SchwabClientOperationError):
         await provider.get_option_chain("$SPX", EXPIRATION)
+
+
+# --- Daily bars ------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_daily_bars_request_shape_and_transaction_bounds() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response({"candles": [{"close": 1.0}]})
+    provider, manager = _provider(client)
+
+    result = await provider.get_daily_bars("AAPL", days_back=10)
+
+    assert result == [{"close": 1.0}]
+    assert client.price_history_calls == [
+        {
+            "symbol": "AAPL",
+            "period_type": _FakePeriodType.MONTH,
+            "period": _FakePeriod.ONE_MONTH,
+            "frequency_type": _FakeFrequencyType.DAILY,
+        }
+    ]
+    assert manager.transactions == 1
+    assert client.session.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_bars_rejects_a_non_object_payload() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response(["not", "an", "object"])
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_daily_bars("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_daily_bars_rejects_a_payload_with_no_candle_list() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response({"status": "FAILED"})
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_daily_bars("AAPL")
+
+
+# --- Intraday bars ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_intraday_bars_request_shape_bounds_the_date_window() -> None:
+    client = _FakeClient()
+    client.price_history_response = _Response({"candles": [{"close": 2.0}]})
+    provider, manager = _provider(client)
+
+    result = await provider.get_intraday_bars("AAPL", days_back=2)
+
+    assert result == [{"close": 2.0}]
+    assert len(client.price_history_calls) == 1
+    call = client.price_history_calls[0]
+    assert call["symbol"] == "AAPL"
+    assert call["period_type"] is _FakePeriodType.DAY
+    assert call["frequency_type"] is _FakeFrequencyType.MINUTE
+    assert call["frequency"] is _FakeFrequency.EVERY_MINUTE
+    assert "period" not in call
+    today = dt.date.today()
+    assert call["start_datetime"] == dt.datetime.combine(today - dt.timedelta(days=2), dt.time.min)
+    assert call["end_datetime"] == dt.datetime.combine(today, dt.time.max)
+    assert manager.transactions == 1
+    assert client.session.closed == 1
+
+
+# --- Market movers ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_market_movers_converts_index_and_sort_order_to_real_enums() -> None:
+    client = _FakeClient()
+    client.movers_response = _Response([{"symbol": "AAPL"}])
+    provider, manager = _provider(client)
+
+    result = await provider.get_market_movers("$SPX", sort_order="PERCENT_CHANGE_DOWN")
+
+    assert result == [{"symbol": "AAPL"}]
+    assert client.movers_calls == [
+        (_FakeMoversIndex.SPX, _FakeMoversSortOrder.PERCENT_CHANGE_DOWN)
+    ]
+    assert manager.transactions == 1
+    assert client.session.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_market_movers_unwraps_a_screeners_object_payload() -> None:
+    client = _FakeClient()
+    client.movers_response = _Response({"screeners": [{"symbol": "MSFT"}]})
+    provider, _ = _provider(client)
+
+    assert await provider.get_market_movers("$SPX") == [{"symbol": "MSFT"}]
+
+
+@pytest.mark.asyncio
+async def test_market_movers_rejects_an_unknown_index() -> None:
+    client = _FakeClient()
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_market_movers("NOT_AN_INDEX")
+
+
+@pytest.mark.asyncio
+async def test_market_movers_rejects_a_non_list_non_object_payload() -> None:
+    client = _FakeClient()
+    client.movers_response = _Response("not-a-list-or-object")
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_market_movers("$SPX")
 
 
 # --- Quotes --------------------------------------------------------------------------

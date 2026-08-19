@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
+    HistoryResponseV1,
+    MoversResponseV1,
     QuoteResponseV1,
     SpotResponseV1,
 )
@@ -147,6 +149,29 @@ class GatewayMarketDataClient:
             "/v1/chain",
             {"symbol": requested, "expiration": expiration.isoformat()},
             ChainMetadataResponseV1,
+        )
+
+    async def get_history(
+        self, symbol: str, *, frequency: str = "daily", days_back: int | None = None
+    ) -> HistoryResponseV1:
+        requested = symbol.strip()
+        if not requested:
+            raise ValueError("a symbol is required")
+        if frequency not in {"daily", "minute"}:
+            raise ValueError("frequency must be 'daily' or 'minute'")
+        params = {"symbol": requested, "frequency": frequency}
+        if days_back is not None:
+            params["days_back"] = str(days_back)
+        return await self._get_typed("/v1/history", params, HistoryResponseV1)
+
+    async def get_movers(self, index: str, *, direction: str = "up") -> MoversResponseV1:
+        requested = index.strip()
+        if not requested:
+            raise ValueError("an index is required")
+        if direction not in {"up", "down"}:
+            raise ValueError("direction must be 'up' or 'down'")
+        return await self._get_typed(
+            "/v1/movers", {"index": requested, "direction": direction}, MoversResponseV1
         )
 
     async def close(self) -> None:
