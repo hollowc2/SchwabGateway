@@ -52,9 +52,13 @@ UTC = dt.timezone.utc
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 MAX_SYMBOLS = 100
 HISTORY_FREQUENCIES = ("daily", "minute")
-# (minimum, maximum, default) bars-back bounds per history frequency.
+# (minimum, maximum, default) bars-back bounds per history frequency. The daily default
+# is 20, not the direct wrapper's 10, because it matches the equity scanner's actual
+# consumer: ButterflyGuy's fetch_avg_volumes/prior_session_pct_change compute a 20-day
+# rolling average, so a caller that omits days_back gets a window that already satisfies
+# that lookback instead of needing to know to override it.
 HISTORY_DAYS_BACK_BOUNDS: dict[str, tuple[int, int, int]] = {
-    "daily": (1, 20, 10),
+    "daily": (1, 20, 20),
     "minute": (1, 5, 1),
 }
 MOVER_INDEXES = frozenset(

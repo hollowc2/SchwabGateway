@@ -256,6 +256,8 @@ async def test_client_to_http_gateway_to_fake_history_upstream_returns_typed_con
 
 @pytest.mark.asyncio
 async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> None:
+    """The default is 20, not the direct wrapper's 10: it must already satisfy
+    ButterflyGuy's 20-day rolling-average lookback without the caller overriding it."""
     upstream = FakeHistoryUpstream()
     server = TestServer(app(history_upstream=upstream))
     await server.start_server()
@@ -270,7 +272,7 @@ async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> Non
         await server.close()
 
     assert response.status_code == 200
-    assert upstream.calls == [("AAPL", "daily", 10)]
+    assert upstream.calls == [("AAPL", "daily", 20)]
 
 
 @pytest.mark.asyncio
