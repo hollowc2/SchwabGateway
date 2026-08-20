@@ -191,6 +191,8 @@ def normalize_schwab_quote(
         last_size=_integer(current, "lastSize"),
         mark=_number(current, "mark"),
         volume=_integer(current, "totalVolume"),
+        close=_number(regular, "closePrice"),
+        net_percent_change=_number(regular, "netPercentChange"),
         stale=stale,
         age_seconds=age_seconds,
         data_quality_flags=tuple(flags),

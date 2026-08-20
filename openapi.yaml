@@ -249,7 +249,7 @@ components:
     QuoteV1:
       type: object
       additionalProperties: false
-      required: [symbol, event_timestamp, gateway_received_at, source, session, bid, ask, bid_size, ask_size, last, last_size, mark, volume, stale, age_seconds, data_quality_flags]
+      required: [symbol, event_timestamp, gateway_received_at, source, session, bid, ask, bid_size, ask_size, last, last_size, mark, volume, close, net_percent_change, stale, age_seconds, data_quality_flags]
       properties:
         symbol: {$ref: "#/components/schemas/Symbol"}
         event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
@@ -264,6 +264,8 @@ components:
         last_size: {type: [integer, "null"]}
         mark: {type: [number, "null"]}
         volume: {type: [integer, "null"]}
+        close: {type: [number, "null"]}
+        net_percent_change: {type: [number, "null"]}
         stale: {type: boolean}
         age_seconds: {type: [number, "null"], minimum: 0}
         data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}

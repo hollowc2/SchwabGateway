@@ -26,6 +26,8 @@ class QuoteV1(GatewayModel):
     last_size: int | None = None
     mark: float | None = None
     volume: int | None = None
+    close: float | None = None
+    net_percent_change: float | None = None
     stale: bool
     age_seconds: float | None = None
     data_quality_flags: tuple[str, ...] = ()

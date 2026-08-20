@@ -65,6 +65,46 @@ def test_quote_normalization_uses_fresher_extended_session() -> None:
     assert quote.data_quality_flags == ()
 
 
+def test_quote_normalization_sources_close_and_net_percent_change_from_regular_session() -> None:
+    received_at = dt.datetime(2026, 8, 3, 21, 0, tzinfo=dt.timezone.utc)
+    quote = normalize_schwab_quote(
+        "AAPL",
+        {
+            "quote": {
+                "lastPrice": 200,
+                "closePrice": 198.5,
+                "netPercentChange": 0.76,
+                "tradeTime": int((received_at - dt.timedelta(minutes=5)).timestamp() * 1000),
+            },
+            "extended": {
+                "lastPrice": 201.1,
+                "closePrice": 999,
+                "netPercentChange": 999,
+                "tradeTime": int((received_at - dt.timedelta(seconds=2)).timestamp() * 1000),
+            },
+        },
+        received_at=received_at,
+        stale_after_seconds=15,
+    )
+
+    assert quote.session == "extended"
+    assert quote.close == 198.5
+    assert quote.net_percent_change == 0.76
+
+
+def test_quote_normalization_leaves_close_and_net_percent_change_none_when_absent() -> None:
+    received_at = dt.datetime(2026, 8, 3, 21, 0, tzinfo=dt.timezone.utc)
+    quote = normalize_schwab_quote(
+        "AAPL",
+        {"quote": {"lastPrice": 201.5}},
+        received_at=received_at,
+        stale_after_seconds=15,
+    )
+
+    assert quote.close is None
+    assert quote.net_percent_change is None
+
+
 def test_quote_contract_rejects_naive_timestamps() -> None:
     with pytest.raises(ValidationError, match="timezone-aware"):
         normalize_schwab_quote(
