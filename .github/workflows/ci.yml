@@ -33,6 +33,23 @@ jobs:
           SCHWAB_GATEWAY_TOKEN_DIR: /tmp/synthetic-token-dir
           SCHWAB_GATEWAY_KEYS_PATH: /tmp/synthetic-keys.json
         run: docker compose --profile demo config --quiet
+      - name: Render Helios Compose overlays
+        env:
+          SCHWAB_API_KEY: synthetic
+          SCHWAB_SECRET_KEY: synthetic
+          SCHWAB_GATEWAY_TOKEN_DIR: /tmp/synthetic-token-dir
+          SCHWAB_GATEWAY_KEYS_PATH: /tmp/synthetic-keys.json
+          SCHWAB_GATEWAY_PRODUCTION_IMAGE: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          docker compose \
+            -f compose.yml \
+            -f compose.production.yml \
+            --profile live config --quiet
+          docker compose \
+            -p schwab_gateway_candidate \
+            -f compose.yml \
+            -f compose.candidate.yml \
+            --profile live config --quiet
       - run: docker build --tag schwab-gateway:ci .
       - name: Reject ButterflyGuy coupling and secret paths
         run: |

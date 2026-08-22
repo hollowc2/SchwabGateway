@@ -1,0 +1,8 @@
+# Supply an immutable local image ID (sha256:<64-hex>) or repository digest.
+# Before activation, preflight must prove this exact reference resolves locally to
+# the recorded release image. pull_policy prevents an implicit registry fallback.
+services:
+  live:
+    build: !reset null
+    image: "${SCHWAB_GATEWAY_PRODUCTION_IMAGE:?set immutable image ID or repository digest}"
+    pull_policy: never
