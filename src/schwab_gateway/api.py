@@ -636,7 +636,7 @@ def create_app(
         token_readiness_provider or _UnavailableTokenReadinessProvider()
     )
     app[ADMISSION_CONTROLLER_KEY] = AdmissionController(
-        admission_policy or AdmissionPolicy(protected_capacity=4, background_capacity=8)
+        admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
     app.router.add_get("/health", health, name="health")
     app.router.add_get("/ready", ready, name="ready")

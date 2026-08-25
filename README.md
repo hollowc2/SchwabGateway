@@ -35,7 +35,8 @@ bounded to four in-flight keys by default (maximum 16) with
 behind the single credential worker.
 
 The gateway serializes Schwab reads under the single token lock. Admission still bounds
-the protected/background in-flight pools and full-chain requests return the standard
+the protected/background in-flight pools at eight requests per class by default, while
+the distinct option-chain upstream bound remains four. Full-chain requests return the standard
 `429` (capacity) or `504` (upstream timeout) errors. Before promoting multiple paper
 strategies, stage one consumer at a time and prove a full session under the intended
 collector/position-monitor polling load; do not infer multi-consumer capacity from the

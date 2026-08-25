@@ -86,6 +86,38 @@ class BlockingUpstream:
 
 
 @pytest.mark.asyncio
+async def test_default_policy_admits_three_chains_plus_two_auxiliary_reads() -> None:
+    upstream = BlockingUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+    )
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            requests = [
+                asyncio.create_task(
+                    client.get(
+                        "/v1/quotes",
+                        params={"symbols": f"PROTECTED{index}"},
+                        headers=headers("butterfly-guy"),
+                    )
+                )
+                for index in range(5)
+            ]
+            await asyncio.wait_for(upstream.wait_for_calls(5), timeout=1)
+            upstream.release.set()
+            responses = await asyncio.gather(*requests)
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert [response.status_code for response in responses] == [200] * 5
+
+
+@pytest.mark.asyncio
 async def test_protected_request_is_admitted_while_shared_background_pool_is_saturated() -> None:
     upstream = BlockingUpstream()
     app = create_app(

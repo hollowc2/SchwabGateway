@@ -22,7 +22,7 @@ class GatewaySettings(BaseSettings):
     log_level: str = "INFO"
     order_writes_enabled: bool = False
     upstream_timeout_seconds: float = 3.0
-    protected_capacity: int = 4
+    protected_capacity: int = 8
     background_capacity: int = 8
     option_chain_cache_ttl_seconds: float = 3.0
     option_chain_cache_max_entries: int = 16
