@@ -30,6 +30,7 @@ from schwab_gateway.upstream import (
     UpstreamMalformedError,
     UpstreamUnavailableError,
     normalize_schwab_option_chain,
+    option_chain_negative_time_value_normalizations,
 )
 
 UTC = dt.timezone.utc
@@ -194,6 +195,74 @@ def test_normalizer_maps_schwab_optional_analytics_sentinels_to_null() -> None:
     } == {None}
 
 
+@pytest.mark.parametrize("negative_time_value", [-265.57, -833.552, -14.6])
+def test_normalizer_maps_negative_schwab_time_value_to_null_with_observability(
+    negative_time_value: float,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "timeValue"
+    ] = negative_time_value
+    before = option_chain_negative_time_value_normalizations._value.get()
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].time_value is None
+    assert chain.contracts[0].bid == 1.1
+    assert chain.contracts[0].ask == 1.3
+    assert chain.contracts[0].mark == 1.2
+    assert (
+        chain.call_contract_count,
+        chain.put_contract_count,
+        chain.strike_count,
+        len(chain.contracts),
+    ) == (3, 1, 2, 4)
+    assert option_chain_negative_time_value_normalizations._value.get() == before + 1
+
+
+@pytest.mark.parametrize(
+    ("time_value", "expected"),
+    [(1.2, 1.2), (0.0, 0.0), (None, None)],
+)
+def test_normalizer_preserves_nonnegative_or_null_time_value(
+    time_value: float | None,
+    expected: float | None,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = time_value
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].time_value == expected
+
+
+def test_normalizer_maps_missing_time_value_to_null() -> None:
+    payload = _payload()
+    del payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"]
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].time_value is None
+
+
 def test_mixed_age_chain_keeps_rows_and_counts_without_aggregate_stale() -> None:
     payload = _payload()
     stale_millis = int((RECEIVED_AT - dt.timedelta(minutes=2)).timestamp() * 1000)
@@ -319,6 +388,9 @@ def test_model_accepts_the_5000_contract_boundary_and_rejects_one_more() -> None
         ("ask", -0.01, "prices"),
         ("mark", float("nan"), "prices"),
         ("delta", float("inf"), "numeric fields"),
+        ("time_value", float("nan"), "time value"),
+        ("time_value", float("inf"), "time value"),
+        ("time_value", -0.01, "time value"),
     ],
 )
 def test_contract_model_rejects_nonfinite_or_unsafe_numbers(
@@ -427,6 +499,36 @@ def test_normalizer_preserves_internal_spaces_in_contract_symbols_exactly() -> N
 
 
 @pytest.mark.parametrize(
+    ("underlying", "contract_root"),
+    [("SPX", "SPXW"), ("NDX", "NDX"), ("XSP", "XSP")],
+)
+def test_normalizer_preserves_index_and_contract_symbol_families(
+    underlying: str,
+    contract_root: str,
+) -> None:
+    payload = _payload()
+    contract_number = 0
+    for map_key in ("callExpDateMap", "putExpDateMap"):
+        strike_map = payload[map_key]["2026-08-24:0"]
+        for contracts in strike_map.values():
+            for contract in contracts:
+                contract_number += 1
+                contract["symbol"] = f"{contract_root} CONTRACT {contract_number}"
+
+    chain = normalize_schwab_option_chain(
+        underlying,
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.symbol == underlying
+    assert all(contract.symbol.startswith(contract_root) for contract in chain.contracts)
+    assert (chain.call_contract_count, chain.put_contract_count) == (3, 1)
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"callExpDateMap": []},
@@ -509,6 +611,30 @@ async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age()
     ]
     assert cached.age_seconds == 4.5
     assert cached.contracts[0].age_seconds == 4.5
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_negative_time_value_cache_miss_and_hit_are_identical() -> None:
+    clock = _Clock()
+    payload = _payload()
+    payload["putExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = -14.6
+    provider = _Provider(payload)
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    first = await upstream.get_option_chain("XSP", EXPIRATION)
+    clock.advance(3.5)
+    cached = await upstream.get_option_chain("XSP", EXPIRATION)
+
+    assert provider.calls == [("XSP", EXPIRATION)]
+    assert first.contracts[-1].time_value is None
+    assert cached.contracts[-1].time_value is None
+    assert cached.contracts[-1].model_dump(exclude={"age_seconds"}) == (
+        first.contracts[-1].model_dump(exclude={"age_seconds"})
+    )
 
 
 @pytest.mark.asyncio
@@ -704,14 +830,15 @@ class _Quotes:
 
 
 class _OptionChainUpstream:
-    def __init__(self) -> None:
+    def __init__(self, payload: dict[str, object] | None = None) -> None:
         self.calls: list[tuple[str, dt.date]] = []
+        self.payload = payload or _payload()
 
     async def get_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainV1:
         self.calls.append((symbol, expiration))
         return normalize_schwab_option_chain(
             symbol,
-            _payload(),
+            self.payload,
             expiration,
             received_at=RECEIVED_AT,
             stale_after_seconds=90,
@@ -752,6 +879,31 @@ async def test_sdk_calls_distinct_full_chain_route_and_returns_typed_contract() 
     assert response.schema_version == "1.0"
     assert response.option_chain.symbol == "SPX"
     assert len(response.option_chain.contracts) == 4
+    assert upstream.calls == [("SPX", EXPIRATION)]
+
+
+@pytest.mark.asyncio
+async def test_negative_time_value_is_null_through_http_and_sdk_contract() -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = -265.57
+    upstream = _OptionChainUpstream(payload)
+    app = create_app(
+        _Quotes(),
+        _authenticator(),
+        token_readiness_provider=_Readiness(),
+        option_chain_upstream=upstream,
+    )
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
+        response = await client.get_option_chain("SPX", EXPIRATION)
+        await client.close()
+    finally:
+        await server.close()
+
+    assert response.option_chain.contracts[0].time_value is None
+    assert response.option_chain.contracts[0].mark == 1.2
     assert upstream.calls == [("SPX", EXPIRATION)]
 
 

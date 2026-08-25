@@ -22,6 +22,11 @@ means Eastern calendar days; exact historical regular/extended sessions use
 The full-chain contract also refuses empty or one-sided chains, non-finite numbers,
 nonpositive strikes, negative prices, and crossed bid/ask markets. The metadata-only
 route continues to report degenerate chain summaries for compatibility and diagnostics.
+Schwab can return negative `timeValue` analytics on otherwise valid contracts. Because
+time value is an optional derived field rather than an executable price, the gateway
+normalizes those values to `null` and counts the affected contracts in
+`gateway_option_chain_negative_time_value_normalizations_total`; bid, ask, mark, and
+every chain-integrity validation remain unchanged.
 
 Successful normalized full chains are cached for a fixed, non-sliding four seconds per
 exact `(symbol, expiration)` key, with same-key in-flight reads coalesced. Cached models

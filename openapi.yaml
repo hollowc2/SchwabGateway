@@ -374,7 +374,7 @@ components:
         ask_size: {type: [integer, "null"], minimum: 0}
         rho: {type: [number, "null"]}
         intrinsic_value: {type: [number, "null"]}
-        time_value: {type: [number, "null"]}
+        time_value: {type: [number, "null"], minimum: 0}
         in_the_money: {type: [boolean, "null"]}
         days_to_expiration: {type: [integer, "null"], minimum: 0}
         multiplier: {type: [number, "null"]}

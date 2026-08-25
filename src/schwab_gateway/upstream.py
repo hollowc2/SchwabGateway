@@ -66,6 +66,10 @@ option_chain_inflight = Gauge(
     "gateway_option_chain_inflight",
     "Number of distinct option-chain upstream fetches currently in flight",
 )
+option_chain_negative_time_value_normalizations = Counter(
+    "gateway_option_chain_negative_time_value_normalizations_total",
+    "Schwab option contracts whose negative timeValue was normalized to null",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +253,21 @@ def _optional_analytic_number(payload: dict[str, Any], name: str) -> float | Non
     """Normalize Schwab's -999 missing-value sentinel for optional analytics."""
     value = _number(payload, name)
     return None if value == -999.0 else value
+
+
+def _optional_time_value(payload: dict[str, Any]) -> float | None:
+    """Normalize Schwab's nonphysical negative optional time-value analytic.
+
+    Schwab can emit negative ``timeValue`` values on otherwise valid contracts. The
+    executable market fields remain bid/ask/mark; this derived analytic is nullable in
+    the v1 contract, so an invalid negative value is represented as unavailable rather
+    than changing any price or rejecting the complete chain.
+    """
+    value = _optional_analytic_number(payload, "timeValue")
+    if value is not None and value < 0:
+        option_chain_negative_time_value_normalizations.inc()
+        return None
+    return value
 
 
 def _integer(payload: dict[str, Any], name: str) -> int | None:
@@ -486,7 +505,7 @@ def normalize_schwab_option_chain(
                             intrinsic_value=_optional_analytic_number(
                                 option, "intrinsicValue"
                             ),
-                            time_value=_optional_analytic_number(option, "timeValue"),
+                            time_value=_optional_time_value(option),
                             in_the_money=option.get("inTheMoney"),
                             days_to_expiration=_integer(option, "daysToExpiration"),
                             multiplier=_number(option, "multiplier"),
