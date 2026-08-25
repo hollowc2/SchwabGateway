@@ -498,7 +498,7 @@ async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age()
     )
 
     first = await upstream.get_option_chain("$SPX", EXPIRATION)
-    clock.advance(1.5)
+    clock.advance(3.5)
     cached = await upstream.get_option_chain("$SPX", EXPIRATION)
 
     assert provider.calls == [("$SPX", EXPIRATION)]
@@ -507,8 +507,8 @@ async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age()
     assert [item.event_timestamp for item in cached.contracts] == [
         item.event_timestamp for item in first.contracts
     ]
-    assert cached.age_seconds == 2.5
-    assert cached.contracts[0].age_seconds == 2.5
+    assert cached.age_seconds == 4.5
+    assert cached.contracts[0].age_seconds == 4.5
 
 
 @pytest.mark.asyncio
@@ -551,7 +551,7 @@ async def test_direct_upstream_expiry_fails_closed_without_stale_fallback() -> N
     )
 
     await upstream.get_option_chain("SPX", EXPIRATION)
-    clock.advance(3)
+    clock.advance(4)
     with pytest.raises(UpstreamUnavailableError, match="option chain request failed"):
         await upstream.get_option_chain("SPX", EXPIRATION)
     await asyncio.sleep(0)
@@ -677,7 +677,7 @@ async def test_direct_upstream_prunes_globally_and_enforces_storage_bounds() -> 
     assert list(upstream._cache) == [("NDX", EXPIRATION), ("XSP", EXPIRATION)]
     assert upstream._cache_bytes <= upstream._cache_max_bytes
 
-    clock.advance(3)
+    clock.advance(4)
     await upstream.get_option_chain("RUT", EXPIRATION)
     assert list(upstream._cache) == [("RUT", EXPIRATION)]
 

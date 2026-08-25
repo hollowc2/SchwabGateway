@@ -24,7 +24,7 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.order_writes_enabled is False
     assert value.protected_capacity == 8
     assert value.background_capacity == 8
-    assert value.option_chain_cache_ttl_seconds == 3.0
+    assert value.option_chain_cache_ttl_seconds == 4.0
     assert value.option_chain_cache_max_entries == 16
     assert value.option_chain_max_inflight == 4
 
@@ -54,7 +54,7 @@ def test_gateway_rejects_nonpositive_or_unbounded_capacity(field: str, value: in
     ("field", "value", "message"),
     [
         ("option_chain_cache_ttl_seconds", 0, "TTL"),
-        ("option_chain_cache_ttl_seconds", 3.1, "TTL"),
+        ("option_chain_cache_ttl_seconds", 4.1, "TTL"),
         ("option_chain_cache_ttl_seconds", float("nan"), "TTL"),
         ("option_chain_cache_max_entries", 0, "capacity"),
         ("option_chain_cache_max_entries", 17, "capacity"),

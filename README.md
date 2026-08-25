@@ -23,7 +23,7 @@ The full-chain contract also refuses empty or one-sided chains, non-finite numbe
 nonpositive strikes, negative prices, and crossed bid/ask markets. The metadata-only
 route continues to report degenerate chain summaries for compatibility and diagnostics.
 
-Successful normalized full chains are cached for a fixed, non-sliding three seconds per
+Successful normalized full chains are cached for a fixed, non-sliding four seconds per
 exact `(symbol, expiration)` key, with same-key in-flight reads coalesced. Cached models
 retain their original `gateway_received_at` and event timestamps; only age/stale fields
 are reevaluated when served. Failures are never cached. Retention is bounded to 16 keys
@@ -33,6 +33,10 @@ and 64 MiB of serialized validated models, and can only be reduced with
 bounded to four in-flight keys by default (maximum 16) with
 `SCHWAB_GATEWAY_OPTION_CHAIN_MAX_INFLIGHT`; excess misses fail closed instead of queuing
 behind the single credential worker.
+
+The four-second default is intended only for paper-trading consumers. Any real-money
+order workflow must use an explicitly reviewed force-fresh chain policy instead of
+relying on this cache.
 
 The gateway serializes Schwab reads under the single token lock. Admission still bounds
 the protected/background in-flight pools at eight requests per class by default, while

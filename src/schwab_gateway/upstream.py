@@ -36,8 +36,8 @@ EASTERN = ZoneInfo("America/New_York")
 # exclusive. v1 does not special-case early-close calendar days.
 REGULAR_SESSION_START = dt.time(9, 30)
 REGULAR_SESSION_END = dt.time(16, 0)
-DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 3.0
-MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 3.0
+DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
+MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_BYTES = 64 * 1024 * 1024
@@ -52,7 +52,7 @@ option_chain_cache_events = Counter(
 option_chain_cache_age_seconds = Histogram(
     "gateway_option_chain_cache_age_seconds",
     "Age of a normalized option chain when served from the bounded cache",
-    buckets=(0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3, 4),
 )
 option_chain_cache_entries = Gauge(
     "gateway_option_chain_cache_entries",
@@ -1027,7 +1027,7 @@ class DirectSchwabOptionChainUpstream:
             not math.isfinite(cache_ttl_seconds)
             or not 0 < cache_ttl_seconds <= MAX_OPTION_CHAIN_CACHE_TTL_SECONDS
         ):
-            raise ValueError("option-chain cache TTL must be greater than 0 and at most 3s")
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 4s")
         if not 1 <= cache_max_entries <= MAX_OPTION_CHAIN_CACHE_ENTRIES:
             raise ValueError("option-chain cache capacity must be between 1 and 16")
         if not 1 <= cache_max_bytes <= MAX_OPTION_CHAIN_CACHE_BYTES:

@@ -24,7 +24,7 @@ class GatewaySettings(BaseSettings):
     upstream_timeout_seconds: float = 3.0
     protected_capacity: int = 8
     background_capacity: int = 8
-    option_chain_cache_ttl_seconds: float = 3.0
+    option_chain_cache_ttl_seconds: float = 4.0
     option_chain_cache_max_entries: int = 16
     option_chain_max_inflight: int = 4
 
@@ -65,8 +65,8 @@ class GatewaySettings(BaseSettings):
     @field_validator("option_chain_cache_ttl_seconds")
     @classmethod
     def option_chain_cache_ttl_must_be_bounded(cls, value: float) -> float:
-        if not math.isfinite(value) or not 0 < value <= 3:
-            raise ValueError("option-chain cache TTL must be greater than 0 and at most 3s")
+        if not math.isfinite(value) or not 0 < value <= 4:
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 4s")
         return value
 
     @field_validator("option_chain_cache_max_entries", "option_chain_max_inflight")
