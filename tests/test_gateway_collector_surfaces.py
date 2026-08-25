@@ -833,6 +833,7 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
         "/v1/quotes",
         "/v1/spot",
         "/v1/chain",
+        "/v1/option-chain",
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",
@@ -1001,6 +1002,23 @@ async def test_direct_spot_upstream_reports_unknown_freshness_honestly() -> None
     assert result.age_seconds is None
     assert result.stale is True
     assert "missing_event_timestamp" in result.data_quality_flags
+
+
+@pytest.mark.asyncio
+async def test_direct_spot_upstream_preserves_timestamped_provider_freshness() -> None:
+    event_timestamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+
+    class Provider:
+        async def get_spot_snapshot(self, symbol: str = "$SPX"):
+            return 5000.5, event_timestamp
+
+    result = await DirectSchwabSpotUpstream(Provider()).get_spot("$SPX")
+
+    assert result.price == 5000.5
+    assert result.event_timestamp == event_timestamp
+    assert result.age_seconds is not None and result.age_seconds < 5
+    assert result.stale is False
+    assert "missing_event_timestamp" not in result.data_quality_flags
 
 
 @pytest.mark.asyncio

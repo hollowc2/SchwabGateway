@@ -152,26 +152,28 @@ def test_chain_metadata_contract_rejects_negative_counts_and_ages() -> None:
         ChainMetadataV1(**{**base, "unexpected_field": 1})
 
 
-def test_history_normalization_drops_malformed_candles_and_flags_them() -> None:
+def test_history_normalization_fails_closed_on_any_malformed_candle() -> None:
     received_at = dt.datetime(2026, 8, 10, 21, 0, tzinfo=dt.timezone.utc)
     good_ms = int((received_at - dt.timedelta(hours=1)).timestamp() * 1000)
-    history = normalize_schwab_history(
-        "AAPL",
-        "daily",
-        [
-            {"datetime": good_ms, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100},
-            {"datetime": good_ms, "open": 1, "high": 2, "low": 0.5, "close": 1.5},  # no volume
-            "not-a-candle",
-        ],
-        received_at=received_at,
-        stale_after_seconds=86400,
-    )
-
-    assert len(history.bars) == 1
-    assert history.bars[0].close == 1.5
-    assert history.event_timestamp == history.bars[0].timestamp
-    assert "malformed_bars_dropped" in history.data_quality_flags
-    assert history.stale is False
+    with pytest.raises(ValueError, match="malformed candles"):
+        normalize_schwab_history(
+            "AAPL",
+            "daily",
+            [
+                {
+                    "datetime": good_ms,
+                    "open": 1,
+                    "high": 2,
+                    "low": 0.5,
+                    "close": 1.5,
+                    "volume": 100,
+                },
+                {"datetime": good_ms, "open": 1, "high": 2, "low": 0.5, "close": 1.5},
+                "not-a-candle",
+            ],
+            received_at=received_at,
+            stale_after_seconds=86400,
+        )
 
 
 def test_history_normalization_applies_days_back_after_dropping_bad_candles() -> None:
@@ -198,6 +200,75 @@ def test_history_normalization_applies_days_back_after_dropping_bad_candles() ->
 
     assert len(history.bars) == 2
     assert [bar.close for bar in history.bars] == [2.0, 1.0]
+
+
+def test_minute_history_days_back_means_calendar_days_not_candle_count() -> None:
+    received_at = dt.datetime(2026, 8, 10, 21, 0, tzinfo=dt.timezone.utc)
+    candles = []
+    for days_ago in (2, 1, 0):
+        for hour in (14, 15, 16):
+            timestamp = received_at - dt.timedelta(days=days_ago, hours=21 - hour)
+            candles.append(
+                {
+                    "datetime": int(timestamp.timestamp() * 1000),
+                    "open": 1,
+                    "high": 2,
+                    "low": 0.5,
+                    "close": float(days_ago * 10 + hour),
+                    "volume": 100,
+                }
+            )
+
+    history = normalize_schwab_history(
+        "AAPL",
+        "minute",
+        candles,
+        received_at=received_at,
+        stale_after_seconds=86400,
+        days_back=2,
+    )
+
+    assert len(history.bars) == 6
+    assert {bar.timestamp.date() for bar in history.bars} == {
+        dt.date(2026, 8, 9),
+        dt.date(2026, 8, 10),
+    }
+
+
+@pytest.mark.parametrize(
+    "received_at",
+    [
+        dt.datetime(2026, 8, 24, 14, 0, tzinfo=dt.timezone.utc),  # Monday before close
+        dt.datetime(2026, 9, 8, 13, 0, tzinfo=dt.timezone.utc),  # Tuesday after Labor Day
+    ],
+)
+def test_daily_history_treats_friday_as_fresh_across_weekend_or_holiday(
+    received_at: dt.datetime,
+) -> None:
+    friday = (
+        dt.datetime(2026, 8, 21, 20, 0, tzinfo=dt.timezone.utc)
+        if received_at.month == 8
+        else dt.datetime(2026, 9, 4, 20, 0, tzinfo=dt.timezone.utc)
+    )
+    history = normalize_schwab_history(
+        "AAPL",
+        "daily",
+        [
+            {
+                "datetime": int(friday.timestamp() * 1000),
+                "open": 1,
+                "high": 2,
+                "low": 0.5,
+                "close": 1.5,
+                "volume": 100,
+            }
+        ],
+        received_at=received_at,
+        stale_after_seconds=86400,
+    )
+
+    assert history.age_seconds is not None and history.age_seconds > 86400
+    assert history.stale is False
 
 
 def test_history_normalization_marks_no_bars_and_rejects_a_non_list_payload() -> None:

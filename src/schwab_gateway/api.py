@@ -16,6 +16,7 @@ from schwab_gateway_sdk.models import (
     GatewayReadinessV1,
     HistoryResponseV1,
     MoversResponseV1,
+    OptionChainResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -42,6 +43,7 @@ from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
     MoversUpstream,
+    OptionChainUpstream,
     QuoteUpstream,
     SessionHistoryUpstream,
     SpotUpstream,
@@ -100,6 +102,9 @@ gateway_admission = Counter(
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
 CHAIN_UPSTREAM_KEY = web.AppKey("gateway_chain_upstream", ChainMetadataUpstream)
+OPTION_CHAIN_UPSTREAM_KEY = web.AppKey(
+    "gateway_option_chain_upstream", OptionChainUpstream
+)
 HISTORY_UPSTREAM_KEY = web.AppKey("gateway_history_upstream", HistoryUpstream)
 MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
 SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
@@ -146,6 +151,13 @@ class _UnavailableChainMetadataUpstream:
 
     async def get_chain_metadata(self, _symbol: str, _expiration: dt.date):
         raise UpstreamUnavailableError("chain upstream is not configured")
+
+
+class _UnavailableOptionChainUpstream:
+    """Fail closed when an app declares no full option-chain surface."""
+
+    async def get_option_chain(self, _symbol: str, _expiration: dt.date):
+        raise UpstreamUnavailableError("option-chain upstream is not configured")
 
 
 class _UnavailableHistoryUpstream:
@@ -506,6 +518,27 @@ async def chain_metadata(request: web.Request) -> web.Response:
     return await _serve_upstream(request, build_response)
 
 
+async def option_chain(request: web.Request) -> web.Response:
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        symbol = _parse_symbol(request)
+        expiration = _parse_expiration(request)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+
+    async def build_response() -> web.Response:
+        result = await request.app[OPTION_CHAIN_UPSTREAM_KEY].get_option_chain(
+            symbol, expiration
+        )
+        if result.symbol != symbol or result.expiration != expiration:
+            raise UpstreamMalformedError("upstream returned a different option chain")
+        return _json(OptionChainResponseV1(option_chain=result))
+
+    return await _serve_upstream(request, build_response)
+
+
 async def history(request: web.Request) -> web.Response:
     denied = require_capability(request, "market_data:read")
     if denied is not None:
@@ -578,6 +611,7 @@ def create_app(
     admission_policy: AdmissionPolicy | None = None,
     spot_upstream: SpotUpstream | None = None,
     chain_upstream: ChainMetadataUpstream | None = None,
+    option_chain_upstream: OptionChainUpstream | None = None,
     history_upstream: HistoryUpstream | None = None,
     movers_upstream: MoversUpstream | None = None,
     session_history_upstream: SessionHistoryUpstream | None = None,
@@ -588,6 +622,9 @@ def create_app(
     app[UPSTREAM_KEY] = upstream
     app[SPOT_UPSTREAM_KEY] = spot_upstream or _UnavailableSpotUpstream()
     app[CHAIN_UPSTREAM_KEY] = chain_upstream or _UnavailableChainMetadataUpstream()
+    app[OPTION_CHAIN_UPSTREAM_KEY] = (
+        option_chain_upstream or _UnavailableOptionChainUpstream()
+    )
     app[HISTORY_UPSTREAM_KEY] = history_upstream or _UnavailableHistoryUpstream()
     app[MOVERS_UPSTREAM_KEY] = movers_upstream or _UnavailableMoversUpstream()
     app[SESSION_HISTORY_UPSTREAM_KEY] = (
@@ -607,6 +644,7 @@ def create_app(
     app.router.add_get("/v1/quotes", quotes, name="quotes_v1")
     app.router.add_get("/v1/spot", spot, name="spot_v1")
     app.router.add_get("/v1/chain", chain_metadata, name="chain_v1")
+    app.router.add_get("/v1/option-chain", option_chain, name="option_chain_v1")
     app.router.add_get("/v1/history", history, name="history_v1")
     app.router.add_get("/v1/movers", movers, name="movers_v1")
     app.router.add_get("/v1/session-history", session_history, name="session_history_v1")

@@ -43,7 +43,11 @@ def test_contract_contains_only_parity_routes() -> None:
     after a cross-session design conflict surfaced that exact question -- see the git
     history around this test for that discussion.
 
-    All three remain strictly read-only market data: no account, order, position, or
+    ``/v1/option-chain`` is the normalized, full-contract companion to the existing
+    metadata-only ``/v1/chain``. It is bounded to one symbol, one expiration, and 5000
+    contracts, and refuses oversized payloads rather than truncating a strategy input.
+
+    All four remain strictly read-only market data: no account, order, position, or
     transaction route was added, and ``SCHWAB_GATEWAY_ORDER_WRITES_ENABLED`` is untouched.
     """
     contract = yaml.safe_load(Path("openapi.yaml").read_text())
@@ -55,6 +59,7 @@ def test_contract_contains_only_parity_routes() -> None:
         "/v1/quotes",
         "/v1/spot",
         "/v1/chain",
+        "/v1/option-chain",
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",

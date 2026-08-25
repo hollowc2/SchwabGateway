@@ -12,6 +12,7 @@ from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
     HistoryResponseV1,
     MoversResponseV1,
+    OptionChainResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -150,6 +151,21 @@ class GatewayMarketDataClient:
             "/v1/chain",
             {"symbol": requested, "expiration": expiration.isoformat()},
             ChainMetadataResponseV1,
+        )
+
+    async def get_option_chain(
+        self, symbol: str, expiration: dt.date
+    ) -> OptionChainResponseV1:
+        """Fetch a complete normalized chain for one expiration. No retries."""
+        requested = symbol.strip()
+        if not requested:
+            raise ValueError("a symbol is required")
+        if not isinstance(expiration, dt.date) or isinstance(expiration, dt.datetime):
+            raise ValueError("an expiration date is required")
+        return await self._get_typed(
+            "/v1/option-chain",
+            {"symbol": requested, "expiration": expiration.isoformat()},
+            OptionChainResponseV1,
         )
 
     async def get_history(

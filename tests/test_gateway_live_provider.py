@@ -7,8 +7,10 @@ synthetic stub.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import inspect
+import threading
 from enum import Enum
 from typing import Any
 
@@ -19,6 +21,7 @@ from schwab_gateway.live_provider import (
     GatewayUpstreamSettings,
     LockedSchwabMarketDataProvider,
     extract_spot_price,
+    extract_spot_price_and_timestamp,
 )
 from schwab_gateway.token_adapter import (
     LockedSchwabClientAdapter,
@@ -181,10 +184,11 @@ def _provider(client: _FakeClient) -> tuple[LockedSchwabMarketDataProvider, _Rec
 # --- Surface boundary ----------------------------------------------------------------
 
 
-def test_provider_exposes_only_the_six_read_surfaces() -> None:
+def test_provider_exposes_only_read_only_market_data_methods() -> None:
     """No account, order, transaction, or streaming method exists to call.
 
-    Deliberately widened from five surfaces to six: ``get_session_bars`` was added
+    ``get_spot_snapshot`` is the timestamp-preserving form of the same Schwab quote read
+    as ``get_spot_price``; it does not widen the upstream API. ``get_session_bars`` was added
     alongside the trailing-window ``get_daily_bars``/``get_intraday_bars`` to back the
     new ``/v1/session-history`` route (a point-in-time regular/extended session lookup
     for AfterHoursLab's earnings-candle archival, distinct from the trailing window the
@@ -198,6 +202,7 @@ def test_provider_exposes_only_the_six_read_surfaces() -> None:
     }
     assert public == {
         "get_spot_price",
+        "get_spot_snapshot",
         "get_option_chain",
         "get_equity_quotes",
         "get_daily_bars",
@@ -278,6 +283,49 @@ async def test_spot_read_does_not_retry() -> None:
         await provider.get_spot_price("$SPX")
     assert client.quote_calls == ["$SPX"]
     assert manager.transactions == 1
+
+
+@pytest.mark.asyncio
+async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_thread() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    class BlockingAdapter:
+        def execute(self, operation):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            return operation(None)
+
+    def blocking_operation(_client):
+        entered.set()
+        release.wait(timeout=5)
+        return "complete"
+
+    provider = LockedSchwabMarketDataProvider(BlockingAdapter())
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.02)
+        assert loop.time() - started < 0.2
+        assert entered.is_set()
+        assert calls == 1
+
+        # This request times out waiting for the provider lease. It must not create a
+        # second daemon thread while the first synchronous transaction is still blocked.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.02)
+        assert calls == 1
+    finally:
+        release.set()
+
+    assert await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.5) == (
+        "complete"
+    )
+    assert calls == 2
 
 
 # --- Chain ---------------------------------------------------------------------------
@@ -532,6 +580,23 @@ def test_extract_spot_price_matches_the_expected_preference_order(
     payload: dict[str, Any], expected: float
 ) -> None:
     assert extract_spot_price(payload, "$SPX") == expected
+
+
+def test_extract_spot_price_preserves_freshest_quote_or_trade_timestamp() -> None:
+    payload = {
+        "$SPX": {
+            "quote": {
+                "lastPrice": 5500.0,
+                "quoteTime": 1_700_000_000_000,
+                "tradeTime": 1_700_000_001_000,
+            }
+        }
+    }
+
+    price, timestamp = extract_spot_price_and_timestamp(payload, "$SPX")
+
+    assert price == 5500.0
+    assert timestamp == dt.datetime.fromtimestamp(1_700_000_001, tz=dt.timezone.utc)
 
 
 REJECTED_SPOT_PAYLOADS = [

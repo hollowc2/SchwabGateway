@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+MAX_OPTION_CHAIN_CONTRACTS_V1 = 5000
 
 
 class GatewayModel(BaseModel):
@@ -129,6 +132,209 @@ class ChainMetadataV1(GatewayModel):
 class ChainMetadataResponseV1(GatewayModel):
     schema_version: Literal["1.0"] = "1.0"
     chain: ChainMetadataV1
+
+
+class OptionContractV1(GatewayModel):
+    """One normalized Schwab option contract for strategy and valuation consumers."""
+
+    symbol: str
+    option_type: Literal["CALL", "PUT"]
+    expiration: dt.date
+    strike: float
+    bid: float
+    ask: float
+    mark: float
+    last: float | None = None
+    total_volume: int | None = None
+    open_interest: int | None = None
+    volatility: float | None = None
+    delta: float | None = None
+    gamma: float | None = None
+    theta: float | None = None
+    vega: float | None = None
+    bid_size: int | None = None
+    ask_size: int | None = None
+    rho: float | None = None
+    intrinsic_value: float | None = None
+    time_value: float | None = None
+    in_the_money: bool | None = None
+    days_to_expiration: int | None = None
+    multiplier: float | None = None
+    theoretical_option_value: float | None = None
+    event_timestamp: dt.datetime | None = None
+    stale: bool
+    age_seconds: float | None = None
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("symbol")
+    @classmethod
+    def symbol_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("option contract symbol must not be empty")
+        return value
+
+    @field_validator(
+        "total_volume",
+        "open_interest",
+        "bid_size",
+        "ask_size",
+        "days_to_expiration",
+    )
+    @classmethod
+    def counts_must_be_nonnegative(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("option contract counts must be nonnegative")
+        return value
+
+    @field_validator("strike")
+    @classmethod
+    def strike_must_be_finite_and_positive(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("option contract strike must be finite and positive")
+        return value
+
+    @field_validator("bid", "ask", "mark", "last")
+    @classmethod
+    def prices_must_be_finite_and_nonnegative(
+        cls, value: float | None
+    ) -> float | None:
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError("option contract prices must be finite and nonnegative")
+        return value
+
+    @field_validator(
+        "volatility",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
+        "rho",
+        "intrinsic_value",
+        "time_value",
+        "multiplier",
+        "theoretical_option_value",
+    )
+    @classmethod
+    def numeric_fields_must_be_finite(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("option contract numeric fields must be finite")
+        return value
+
+    @field_validator("event_timestamp")
+    @classmethod
+    def timestamp_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_must_be_finite_and_nonnegative(
+        cls, value: float | None
+    ) -> float | None:
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError("age_seconds must be finite and nonnegative")
+        return value
+
+    @model_validator(mode="after")
+    def bid_must_not_exceed_ask(self) -> OptionContractV1:
+        if self.bid is not None and self.ask is not None and self.bid > self.ask:
+            raise ValueError("option contract bid must not exceed ask")
+        return self
+
+
+class OptionChainV1(GatewayModel):
+    """A complete normalized chain for one symbol and one expiration.
+
+    The response is hard-bounded at ``MAX_OPTION_CHAIN_CONTRACTS_V1``. The gateway
+    refuses an oversized upstream payload instead of silently truncating contracts,
+    because a partial strike set is unsafe for strategy selection and position marks.
+    """
+
+    symbol: str
+    expiration: dt.date
+    underlying_price: float | None = None
+    call_contract_count: int
+    put_contract_count: int
+    strike_count: int
+    contracts: tuple[OptionContractV1, ...]
+    event_timestamp: dt.datetime | None = None
+    gateway_received_at: dt.datetime
+    source: str
+    stale: bool
+    age_seconds: float | None = None
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("contracts")
+    @classmethod
+    def contracts_must_be_bounded(
+        cls, value: tuple[OptionContractV1, ...]
+    ) -> tuple[OptionContractV1, ...]:
+        if not value:
+            raise ValueError("option chain must contain contracts")
+        if len(value) > MAX_OPTION_CHAIN_CONTRACTS_V1:
+            raise ValueError(
+                f"option chain must contain at most {MAX_OPTION_CHAIN_CONTRACTS_V1} contracts"
+            )
+        sides = {contract.option_type for contract in value}
+        if sides != {"CALL", "PUT"}:
+            raise ValueError("option chain must contain both call and put contracts")
+        return value
+
+    @field_validator("call_contract_count", "put_contract_count", "strike_count")
+    @classmethod
+    def counts_must_be_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("option chain counts must be nonnegative")
+        return value
+
+    @field_validator("underlying_price")
+    @classmethod
+    def underlying_price_must_be_finite_and_positive(
+        cls, value: float | None
+    ) -> float | None:
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError("underlying price must be finite and positive")
+        return value
+
+    @field_validator("event_timestamp", "gateway_received_at")
+    @classmethod
+    def timestamps_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("gateway timestamps must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError("age_seconds must be finite and nonnegative")
+        return value
+
+    @model_validator(mode="after")
+    def counts_must_match_delivered_contracts(self) -> OptionChainV1:
+        calls = sum(contract.option_type == "CALL" for contract in self.contracts)
+        puts = sum(contract.option_type == "PUT" for contract in self.contracts)
+        strikes = len({contract.strike for contract in self.contracts})
+        if (
+            self.call_contract_count != calls
+            or self.put_contract_count != puts
+            or self.strike_count != strikes
+        ):
+            raise ValueError("option chain counts must match delivered contracts")
+        symbols = [contract.symbol for contract in self.contracts]
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("option chain contract symbols must be unique")
+        return self
+
+
+class OptionChainResponseV1(GatewayModel):
+    schema_version: Literal["1.0"] = "1.0"
+    option_chain: OptionChainV1
 
 
 class PriceBarV1(GatewayModel):

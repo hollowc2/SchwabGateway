@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -79,8 +80,10 @@ class GatewayUpstreamSettings(BaseSettings):
         return value
 
 
-def extract_spot_price(payload: Any, symbol: str) -> float:
-    """Pull a spot price out of a Schwab quote response.
+def extract_spot_price_and_timestamp(
+    payload: Any, symbol: str
+) -> tuple[float, dt.datetime | None]:
+    """Pull a spot price and freshest quote/trade timestamp from a Schwab response.
 
     This mirrors ``SchwabClientWrapper.get_spot_price`` (``data/schwab_client.py:122-130``)
     exactly, including the ``lastPrice`` -> ``mark`` -> ``closePrice`` preference and the
@@ -109,7 +112,25 @@ def extract_spot_price(payload: Any, symbol: str) -> float:
     price = quote.get("lastPrice") or quote.get("mark") or quote.get("closePrice")
     if not price:
         raise ValueError("spot response carried no usable price")
-    return float(price)
+    timestamps: list[dt.datetime] = []
+    for name in ("quoteTime", "tradeTime", "quoteTimeInLong", "tradeTimeInLong"):
+        try:
+            millis = int(quote.get(name))
+        except (TypeError, ValueError):
+            continue
+        if millis > 0:
+            timestamps.append(dt.datetime.fromtimestamp(millis / 1000, tz=dt.timezone.utc))
+    return float(price), max(timestamps) if timestamps else None
+
+
+def extract_spot_price(payload: Any, symbol: str) -> float:
+    """Pull a spot price out of a Schwab quote response.
+
+    Kept as the direct-wrapper parity helper; the gateway's timestamped spot path calls
+    ``extract_spot_price_and_timestamp`` so freshness is not discarded.
+    """
+    price, _timestamp = extract_spot_price_and_timestamp(payload, symbol)
+    return price
 
 
 @contextmanager
@@ -132,12 +153,79 @@ class LockedSchwabMarketDataProvider:
 
     def __init__(self, adapter: LockedSchwabClientAdapter) -> None:
         self._adapter = adapter
+        self._worker_active = False
+        self._worker_lease_guard = threading.Lock()
+
+    async def _acquire_worker_lease(self) -> None:
+        while True:
+            with self._worker_lease_guard:
+                if not self._worker_active:
+                    self._worker_active = True
+                    return
+            await asyncio.sleep(0.001)
+
+    def _release_worker_lease(self) -> None:
+        with self._worker_lease_guard:
+            self._worker_active = False
 
     async def _execute(self, operation: Any) -> Any:
-        """Run one synchronous locked transaction without blocking the event loop."""
-        return await asyncio.to_thread(self._adapter.execute, operation)
+        """Run one synchronous locked transaction behind a one-worker lease.
+
+        Response cancellation propagates immediately so the API timeout can return 504.
+        The detached daemon worker retains the lease until its synchronous token
+        transaction finishes. Requests that arrive meanwhile wait on the lease and can
+        time out without spawning more blocked threads.
+        """
+        await self._acquire_worker_lease()
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[Any] = loop.create_future()
+
+        def deliver_result(result: Any = None, error: BaseException | None = None) -> None:
+            if not completion.done():
+                if error is None:
+                    completion.set_result(result)
+                else:
+                    completion.set_exception(error)
+
+        def consume_unobserved_result(future: asyncio.Future[Any]) -> None:
+            if future.cancelled():
+                return
+            try:
+                future.exception()
+            except Exception:
+                pass
+
+        completion.add_done_callback(consume_unobserved_result)
+
+        def execute_and_signal() -> None:
+            worker_error: BaseException | None = None
+            try:
+                result = self._adapter.execute(operation)
+            except BaseException as error:
+                result = None
+                worker_error = error
+            self._release_worker_lease()
+            loop.call_soon_threadsafe(deliver_result, result, worker_error)
+
+        worker = threading.Thread(
+            target=execute_and_signal,
+            name="schwab-gateway-read",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception:
+            self._release_worker_lease()
+            raise
+        return await asyncio.shield(completion)
 
     async def get_spot_price(self, symbol: str = "$SPX") -> float:
+        price, _timestamp = await self.get_spot_snapshot(symbol)
+        return price
+
+    async def get_spot_snapshot(
+        self, symbol: str = "$SPX"
+    ) -> tuple[float, dt.datetime | None]:
         def operation(client: Any) -> Any:
             with _closing_session(client):
                 response = client.get_quote(symbol)
@@ -151,7 +239,7 @@ class LockedSchwabMarketDataProvider:
         # boundary the same way ``get_option_chain``/``normalize_schwab_chain_metadata``
         # already are.
         payload = await self._execute(operation)
-        return extract_spot_price(payload, symbol)
+        return extract_spot_price_and_timestamp(payload, symbol)
 
     async def get_option_chain(
         self, symbol: str, expiration: dt.date

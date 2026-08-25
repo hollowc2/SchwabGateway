@@ -5,9 +5,30 @@ market-data reads. The repository also builds `schwab_gateway_sdk` and
 `schwab_token_store` as independent Python packages.
 
 The v1 contract exposes only `GET /health`, `/ready`, `/metrics`, `/v1/quotes`,
-`/v1/spot`, `/v1/chain`, `/v1/history`, `/v1/movers`, and `/v1/session-history`. There are
-no account, position, transaction, streaming, or order routes, and
+`/v1/spot`, `/v1/chain`, `/v1/option-chain`, `/v1/history`, `/v1/movers`, and
+`/v1/session-history`. There are no account, position, transaction, streaming, or order
+routes, and
 `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must remain false.
+
+`/v1/chain` remains the metadata-only compatibility surface. `/v1/option-chain` returns
+normalized contracts for exactly one symbol and expiration, with a hard limit of 5000
+contracts. The cap is above the observed 30-day maxima in ButterflyGuy snapshots (1120
+NDX, 1000 SPX, and 650 XSP) while keeping response memory bounded. Oversized or malformed
+chains fail closed; the gateway never silently truncates a strategy input. Spot responses
+preserve Schwab quote/trade timestamps for freshness checks. Minute history `days_back`
+means Eastern calendar days; exact historical regular/extended sessions use
+`/v1/session-history`.
+
+The full-chain contract also refuses empty or one-sided chains, non-finite numbers,
+nonpositive strikes, negative prices, and crossed bid/ask markets. The metadata-only
+route continues to report degenerate chain summaries for compatibility and diagnostics.
+
+The gateway serializes Schwab reads under the single token lock. Admission still bounds
+the protected/background in-flight pools and full-chain requests return the standard
+`429` (capacity) or `504` (upstream timeout) errors. Before promoting multiple paper
+strategies, stage one consumer at a time and prove a full session under the intended
+collector/position-monitor polling load; do not infer multi-consumer capacity from the
+contract tests alone.
 
 ## Development
 

@@ -25,6 +25,7 @@ from schwab_gateway.api import (
     CHAIN_UPSTREAM_KEY,
     HISTORY_UPSTREAM_KEY,
     MOVERS_UPSTREAM_KEY,
+    OPTION_CHAIN_UPSTREAM_KEY,
     SESSION_HISTORY_UPSTREAM_KEY,
     SPOT_UPSTREAM_KEY,
     TOKEN_READINESS_PROVIDER_KEY,
@@ -36,6 +37,7 @@ from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
     DirectSchwabHistoryUpstream,
     DirectSchwabMoversUpstream,
+    DirectSchwabOptionChainUpstream,
     DirectSchwabQuoteUpstream,
     DirectSchwabSessionHistoryUpstream,
     DirectSchwabSpotUpstream,
@@ -149,6 +151,7 @@ def test_demo_app_declares_no_spot_or_chain_upstream(tmp_path: Path) -> None:
     # The fail-closed stubs, not real upstreams.
     assert not isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
     assert not isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+    assert not isinstance(app[OPTION_CHAIN_UPSTREAM_KEY], DirectSchwabOptionChainUpstream)
     assert not isinstance(app[HISTORY_UPSTREAM_KEY], DirectSchwabHistoryUpstream)
     assert not isinstance(app[MOVERS_UPSTREAM_KEY], DirectSchwabMoversUpstream)
     assert not isinstance(app[SESSION_HISTORY_UPSTREAM_KEY], DirectSchwabSessionHistoryUpstream)
@@ -162,7 +165,7 @@ def test_demo_app_uses_the_static_readiness_provider(tmp_path: Path) -> None:
 # --- Live mode -----------------------------------------------------------------------
 
 
-def test_live_app_declares_all_six_real_upstreams(tmp_path: Path) -> None:
+def test_live_app_declares_all_seven_real_upstreams(tmp_path: Path) -> None:
     app = runner.build_live_app(
         _settings(tmp_path),
         _upstream_settings(_token_file(tmp_path)),
@@ -172,6 +175,7 @@ def test_live_app_declares_all_six_real_upstreams(tmp_path: Path) -> None:
     assert isinstance(app[UPSTREAM_KEY], DirectSchwabQuoteUpstream)
     assert isinstance(app[SPOT_UPSTREAM_KEY], DirectSchwabSpotUpstream)
     assert isinstance(app[CHAIN_UPSTREAM_KEY], DirectSchwabChainMetadataUpstream)
+    assert isinstance(app[OPTION_CHAIN_UPSTREAM_KEY], DirectSchwabOptionChainUpstream)
     assert isinstance(app[HISTORY_UPSTREAM_KEY], DirectSchwabHistoryUpstream)
     assert isinstance(app[MOVERS_UPSTREAM_KEY], DirectSchwabMoversUpstream)
     assert isinstance(app[SESSION_HISTORY_UPSTREAM_KEY], DirectSchwabSessionHistoryUpstream)
@@ -333,6 +337,7 @@ def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:
         "/v1/quotes",
         "/v1/spot",
         "/v1/chain",
+        "/v1/option-chain",
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",

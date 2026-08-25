@@ -8,11 +8,14 @@ from zoneinfo import ZoneInfo
 
 from schwab_gateway_sdk.chain_metadata import extract_chain_metadata
 from schwab_gateway_sdk.models import (
+    MAX_OPTION_CHAIN_CONTRACTS_V1,
     ChainMetadataV1,
     HistoryV1,
     MoverIndex,
     MoversV1,
     MoverV1,
+    OptionChainV1,
+    OptionContractV1,
     PriceBarV1,
     QuoteV1,
     SessionHistoryV1,
@@ -26,6 +29,82 @@ EASTERN = ZoneInfo("America/New_York")
 # exclusive. v1 does not special-case early-close calendar days.
 REGULAR_SESSION_START = dt.time(9, 30)
 REGULAR_SESSION_END = dt.time(16, 0)
+
+
+def _observed_holiday(date: dt.date) -> dt.date:
+    if date.weekday() == 5:
+        return date - dt.timedelta(days=1)
+    if date.weekday() == 6:
+        return date + dt.timedelta(days=1)
+    return date
+
+
+def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> dt.date:
+    first = dt.date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + dt.timedelta(days=offset + (occurrence - 1) * 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> dt.date:
+    next_month = (
+        dt.date(year + 1, 1, 1)
+        if month == 12
+        else dt.date(year, month + 1, 1)
+    )
+    last = next_month - dt.timedelta(days=1)
+    return last - dt.timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _easter_sunday(year: int) -> dt.date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    line = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * line) // 451
+    month = (h + line - 7 * m + 114) // 31
+    day = (h + line - 7 * m + 114) % 31 + 1
+    return dt.date(year, month, day)
+
+
+def _market_holidays(year: int) -> frozenset[dt.date]:
+    holidays = {
+        _observed_holiday(dt.date(year, 1, 1)),
+        _observed_holiday(dt.date(year, 7, 4)),
+        _observed_holiday(dt.date(year, 12, 25)),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _last_weekday(year, 5, 0),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _easter_sunday(year) - dt.timedelta(days=2),
+    }
+    if year >= 2022:
+        holidays.add(_observed_holiday(dt.date(year, 6, 19)))
+    observed_next_new_year = _observed_holiday(dt.date(year + 1, 1, 1))
+    if observed_next_new_year.year == year:
+        holidays.add(observed_next_new_year)
+    return frozenset(holidays)
+
+
+def _is_trading_day(date: dt.date) -> bool:
+    return date.weekday() < 5 and date not in _market_holidays(date.year)
+
+
+def _latest_completed_session(at: dt.datetime) -> dt.date:
+    eastern = at.astimezone(EASTERN)
+    candidate = eastern.date()
+    if not _is_trading_day(candidate) or eastern.time() < REGULAR_SESSION_END:
+        candidate -= dt.timedelta(days=1)
+    while not _is_trading_day(candidate):
+        candidate -= dt.timedelta(days=1)
+    return candidate
 
 
 class EquityQuoteProvider(Protocol):
@@ -80,6 +159,12 @@ class ChainMetadataUpstream(Protocol):
     ) -> ChainMetadataV1: ...
 
 
+class OptionChainUpstream(Protocol):
+    async def get_option_chain(
+        self, symbol: str, expiration: dt.date
+    ) -> OptionChainV1: ...
+
+
 class HistoryUpstream(Protocol):
     async def get_history(
         self, symbol: str, frequency: Literal["daily", "minute"], days_back: int
@@ -116,6 +201,12 @@ def _number(payload: dict[str, Any], name: str) -> float | None:
         return None
 
 
+def _optional_analytic_number(payload: dict[str, Any], name: str) -> float | None:
+    """Normalize Schwab's -999 missing-value sentinel for optional analytics."""
+    value = _number(payload, name)
+    return None if value == -999.0 else value
+
+
 def _integer(payload: dict[str, Any], name: str) -> int | None:
     value = payload.get(name)
     if value is None:
@@ -129,7 +220,7 @@ def _integer(payload: dict[str, Any], name: str) -> int | None:
 def _event_time(payload: dict[str, Any]) -> dt.datetime | None:
     candidates = [
         value
-        for name in ("quoteTime", "tradeTime")
+        for name in ("quoteTime", "tradeTime", "quoteTimeInLong", "tradeTimeInLong")
         if (value := _integer(payload, name)) is not None and value > 0
     ]
     if not candidates:
@@ -204,26 +295,31 @@ def normalize_schwab_spot(
     price: float | None,
     *,
     received_at: dt.datetime,
+    event_timestamp: dt.datetime | None = None,
+    stale_after_seconds: float = 15.0,
 ) -> SpotV1:
-    """Wrap a direct spot read.
-
-    ``SpotPriceProvider.get_spot_price`` returns a bare float, so no upstream event time
-    survives the direct adapter. Staleness is therefore reported the same way the quote
-    normalizer reports an absent event time: unknown age means stale.
-    """
+    """Wrap a spot read while preserving honest upstream freshness when available."""
     flags: list[str] = []
     if price is None:
         flags.append("missing_price")
-    flags.append("missing_event_timestamp")
-    flags.append("stale")
+    age_seconds = (
+        max(0.0, (received_at - event_timestamp).total_seconds())
+        if event_timestamp is not None
+        else None
+    )
+    if event_timestamp is None:
+        flags.append("missing_event_timestamp")
+    stale = age_seconds is None or age_seconds > stale_after_seconds
+    if stale:
+        flags.append("stale")
     return SpotV1(
         symbol=symbol,
         price=price,
-        event_timestamp=None,
+        event_timestamp=event_timestamp,
         gateway_received_at=received_at,
         source="schwab_rest_spot",
-        stale=True,
-        age_seconds=None,
+        stale=stale,
+        age_seconds=age_seconds,
         data_quality_flags=tuple(flags),
     )
 
@@ -257,6 +353,153 @@ def normalize_schwab_chain_metadata(
         stale=stale,
         age_seconds=age_seconds,
         data_quality_flags=flags,
+    )
+
+
+def normalize_schwab_option_chain(
+    symbol: str,
+    payload: dict[str, Any],
+    expiration: dt.date,
+    *,
+    received_at: dt.datetime,
+    stale_after_seconds: float,
+) -> OptionChainV1:
+    """Normalize every contract for exactly one expiration without truncation.
+
+    A one-symbol, one-expiration request bounds the Schwab read. The wire response is
+    additionally capped at ``MAX_OPTION_CHAIN_CONTRACTS_V1``; exceeding the cap raises
+    instead of returning a partial strike set, which would be unsafe for strategy
+    selection and position valuation.
+    """
+    fields = extract_chain_metadata(payload, expiration)
+    contracts: list[OptionContractV1] = []
+    expiration_text = str(expiration)
+
+    for option_type, map_key in (
+        ("CALL", "callExpDateMap"),
+        ("PUT", "putExpDateMap"),
+    ):
+        exp_map = payload.get(map_key, {})
+        if exp_map is None:
+            exp_map = {}
+        if not isinstance(exp_map, dict):
+            raise ValueError(f"{map_key} was not an object")
+        for exp_key, strike_map in exp_map.items():
+            if not isinstance(exp_key, str):
+                raise ValueError("option-chain expiration key was not a string")
+            if expiration_text not in exp_key:
+                continue
+            if not isinstance(strike_map, dict):
+                raise ValueError("option-chain strike map was not an object")
+            for strike_text, options in strike_map.items():
+                try:
+                    strike = float(strike_text)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("option-chain strike was not numeric") from exc
+                if not isinstance(options, list):
+                    raise ValueError("option-chain contracts were not a list")
+                for option in options:
+                    if not isinstance(option, dict):
+                        raise ValueError("option-chain contract was not an object")
+                    if len(contracts) >= MAX_OPTION_CHAIN_CONTRACTS_V1:
+                        raise ValueError(
+                            "option chain exceeded the maximum contract count"
+                        )
+                    event_timestamp = _event_time(option)
+                    age_seconds = (
+                        max(0.0, (received_at - event_timestamp).total_seconds())
+                        if event_timestamp is not None
+                        else None
+                    )
+                    contract_flags: list[str] = []
+                    if event_timestamp is None:
+                        contract_flags.append("missing_event_timestamp")
+                    contract_stale = (
+                        age_seconds is None or age_seconds > stale_after_seconds
+                    )
+                    if contract_stale:
+                        contract_flags.append("stale")
+                    contracts.append(
+                        OptionContractV1(
+                            symbol=option.get("symbol"),
+                            option_type=option_type,
+                            expiration=expiration,
+                            strike=strike,
+                            bid=_number(option, "bid"),
+                            ask=_number(option, "ask"),
+                            mark=_number(option, "mark"),
+                            last=_number(option, "last"),
+                            total_volume=_integer(option, "totalVolume"),
+                            open_interest=_integer(option, "openInterest"),
+                            volatility=_optional_analytic_number(option, "volatility"),
+                            delta=_optional_analytic_number(option, "delta"),
+                            gamma=_optional_analytic_number(option, "gamma"),
+                            theta=_optional_analytic_number(option, "theta"),
+                            vega=_optional_analytic_number(option, "vega"),
+                            bid_size=_integer(option, "bidSize"),
+                            ask_size=_integer(option, "askSize"),
+                            rho=_optional_analytic_number(option, "rho"),
+                            intrinsic_value=_optional_analytic_number(
+                                option, "intrinsicValue"
+                            ),
+                            time_value=_optional_analytic_number(option, "timeValue"),
+                            in_the_money=option.get("inTheMoney"),
+                            days_to_expiration=_integer(option, "daysToExpiration"),
+                            multiplier=_number(option, "multiplier"),
+                            theoretical_option_value=_optional_analytic_number(
+                                option, "theoreticalOptionValue"
+                            ),
+                            event_timestamp=event_timestamp,
+                            stale=contract_stale,
+                            age_seconds=age_seconds,
+                            data_quality_flags=tuple(contract_flags),
+                        )
+                    )
+
+    contract_timestamps = [
+        contract.event_timestamp
+        for contract in contracts
+        if contract.event_timestamp is not None
+    ]
+    all_contracts_timestamped = bool(contracts) and len(contract_timestamps) == len(contracts)
+    event_timestamp = max(contract_timestamps) if contract_timestamps else None
+    age_seconds = (
+        max(0.0, (received_at - event_timestamp).total_seconds())
+        if event_timestamp is not None
+        else None
+    )
+    stale_contract_count = sum(contract.stale for contract in contracts)
+    # The aggregate describes the freshest delivered snapshot, while each row retains
+    # its own freshness. Consumers validate counts first, then omit stale/unknown rows;
+    # one stale deep contract must not invalidate otherwise fresh strikes.
+    stale = not contracts or stale_contract_count == len(contracts)
+    flags = [
+        flag for flag in fields.data_quality_flags if flag != "missing_event_timestamp"
+    ]
+    if not all_contracts_timestamped:
+        flags.append("missing_contract_event_timestamp")
+    if stale_contract_count and not stale:
+        flags.append("stale_contracts_present")
+    if stale:
+        flags.append("stale")
+    call_contract_count = sum(
+        contract.option_type == "CALL" for contract in contracts
+    )
+    put_contract_count = sum(contract.option_type == "PUT" for contract in contracts)
+    return OptionChainV1(
+        symbol=symbol,
+        expiration=expiration,
+        underlying_price=fields.underlying_price,
+        call_contract_count=call_contract_count,
+        put_contract_count=put_contract_count,
+        strike_count=len({contract.strike for contract in contracts}),
+        contracts=tuple(contracts),
+        event_timestamp=event_timestamp,
+        gateway_received_at=received_at,
+        source="schwab_rest_option_chain",
+        stale=stale,
+        age_seconds=age_seconds,
+        data_quality_flags=tuple(flags),
     )
 
 
@@ -316,11 +559,25 @@ def normalize_schwab_history(
             continue
         bars.append(bar)
     if dropped:
-        flags.append("malformed_bars_dropped")
+        raise ValueError("price history contained malformed candles")
     if not bars:
         flags.append("no_bars_returned")
     elif days_back is not None and days_back > 0:
-        bars = bars[-days_back:]
+        if frequency == "daily":
+            bars = bars[-days_back:]
+        else:
+            # ``days_back`` means calendar days for minute history, not candles. The
+            # provider deliberately fetches a slightly wider explicit window; normalize
+            # it to today plus the preceding N-1 Eastern calendar dates here. Exact
+            # point-in-time session reads belong on ``/v1/session-history``.
+            first_date = received_at.astimezone(EASTERN).date() - dt.timedelta(
+                days=days_back - 1
+            )
+            bars = [
+                bar
+                for bar in bars
+                if bar.timestamp.astimezone(EASTERN).date() >= first_date
+            ]
 
     event_timestamp = bars[-1].timestamp if bars else None
     age_seconds = (
@@ -328,7 +585,11 @@ def normalize_schwab_history(
         if event_timestamp is not None
         else None
     )
-    stale = age_seconds is None or age_seconds > stale_after_seconds
+    if frequency == "daily" and event_timestamp is not None:
+        event_session = event_timestamp.astimezone(EASTERN).date()
+        stale = event_session < _latest_completed_session(received_at)
+    else:
+        stale = age_seconds is None or age_seconds > stale_after_seconds
     if stale:
         flags.append("stale")
     return HistoryV1(
@@ -581,7 +842,12 @@ class DirectSchwabSpotUpstream:
 
     async def get_spot(self, symbol: str) -> SpotV1:
         try:
-            price = await self._provider.get_spot_price(symbol)
+            timestamped_reader = getattr(self._provider, "get_spot_snapshot", None)
+            if callable(timestamped_reader):
+                price, event_timestamp = await timestamped_reader(symbol)
+            else:
+                price = await self._provider.get_spot_price(symbol)
+                event_timestamp = None
         except ValueError as exc:
             # Raised by spot-price extraction/parsing (e.g. ``extract_spot_price`` on a
             # malformed Schwab payload), not by the fetch itself.
@@ -592,7 +858,12 @@ class DirectSchwabSpotUpstream:
             value = float(price)
         except (TypeError, ValueError) as exc:
             raise UpstreamMalformedError("Schwab spot response was not numeric") from exc
-        return normalize_schwab_spot(symbol, value, received_at=dt.datetime.now(UTC))
+        return normalize_schwab_spot(
+            symbol,
+            value,
+            received_at=dt.datetime.now(UTC),
+            event_timestamp=event_timestamp,
+        )
 
 
 class DirectSchwabChainMetadataUpstream:
@@ -616,6 +887,37 @@ class DirectSchwabChainMetadataUpstream:
             raise UpstreamUnavailableError("Schwab option chain request failed") from exc
         try:
             return normalize_schwab_chain_metadata(
+                symbol,
+                payload,
+                expiration,
+                received_at=dt.datetime.now(UTC),
+                stale_after_seconds=self._stale_after_seconds,
+            )
+        except ValueError as exc:
+            raise UpstreamMalformedError("Schwab option chain response was invalid") from exc
+
+
+class DirectSchwabOptionChainUpstream:
+    """Return a complete normalized one-expiration chain through the locked provider."""
+
+    def __init__(
+        self,
+        provider: OptionChainProvider,
+        *,
+        stale_after_seconds: float = 90.0,
+    ) -> None:
+        self._provider = provider
+        self._stale_after_seconds = stale_after_seconds
+
+    async def get_option_chain(
+        self, symbol: str, expiration: dt.date
+    ) -> OptionChainV1:
+        try:
+            payload = await self._provider.get_option_chain(symbol, expiration)
+        except Exception as exc:
+            raise UpstreamUnavailableError("Schwab option chain request failed") from exc
+        try:
+            return normalize_schwab_option_chain(
                 symbol,
                 payload,
                 expiration,
