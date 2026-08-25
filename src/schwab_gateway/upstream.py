@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import math
+import time
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from prometheus_client import Counter, Gauge, Histogram
 from schwab_gateway_sdk.chain_metadata import extract_chain_metadata
 from schwab_gateway_sdk.models import (
     MAX_OPTION_CHAIN_CONTRACTS_V1,
@@ -29,6 +36,43 @@ EASTERN = ZoneInfo("America/New_York")
 # exclusive. v1 does not special-case early-close calendar days.
 REGULAR_SESSION_START = dt.time(9, 30)
 REGULAR_SESSION_END = dt.time(16, 0)
+DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 3.0
+MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 3.0
+DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES = 16
+MAX_OPTION_CHAIN_CACHE_ENTRIES = 16
+MAX_OPTION_CHAIN_CACHE_BYTES = 64 * 1024 * 1024
+DEFAULT_OPTION_CHAIN_MAX_INFLIGHT = 4
+MAX_OPTION_CHAIN_MAX_INFLIGHT = 16
+
+option_chain_cache_events = Counter(
+    "gateway_option_chain_cache_events_total",
+    "Bounded normalized option-chain cache decisions",
+    ["outcome"],
+)
+option_chain_cache_age_seconds = Histogram(
+    "gateway_option_chain_cache_age_seconds",
+    "Age of a normalized option chain when served from the bounded cache",
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3),
+)
+option_chain_cache_entries = Gauge(
+    "gateway_option_chain_cache_entries",
+    "Number of normalized option chains retained in the bounded cache",
+)
+option_chain_cache_bytes = Gauge(
+    "gateway_option_chain_cache_bytes",
+    "Serialized bytes retained in the bounded normalized option-chain cache",
+)
+option_chain_inflight = Gauge(
+    "gateway_option_chain_inflight",
+    "Number of distinct option-chain upstream fetches currently in flight",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedOptionChain:
+    created_at: float
+    expires_at: float
+    payload: bytes
 
 
 def _observed_holiday(date: dt.date) -> dt.date:
@@ -897,35 +941,205 @@ class DirectSchwabChainMetadataUpstream:
             raise UpstreamMalformedError("Schwab option chain response was invalid") from exc
 
 
+def _reevaluate_option_chain_freshness(
+    chain: OptionChainV1,
+    *,
+    evaluated_at: dt.datetime,
+    stale_after_seconds: float,
+) -> OptionChainV1:
+    contracts: list[OptionContractV1] = []
+    for contract in chain.contracts:
+        age_seconds = (
+            max(0.0, (evaluated_at - contract.event_timestamp).total_seconds())
+            if contract.event_timestamp is not None
+            else None
+        )
+        stale = age_seconds is None or age_seconds > stale_after_seconds
+        flags = [flag for flag in contract.data_quality_flags if flag != "stale"]
+        if stale:
+            flags.append("stale")
+        contracts.append(
+            contract.model_copy(
+                update={
+                    "age_seconds": age_seconds,
+                    "stale": stale,
+                    "data_quality_flags": tuple(flags),
+                }
+            )
+        )
+
+    event_timestamp = chain.event_timestamp
+    age_seconds = (
+        max(0.0, (evaluated_at - event_timestamp).total_seconds())
+        if event_timestamp is not None
+        else None
+    )
+    stale_count = sum(contract.stale for contract in contracts)
+    stale = not contracts or stale_count == len(contracts)
+    flags = [
+        flag
+        for flag in chain.data_quality_flags
+        if flag not in {"stale", "stale_contracts_present"}
+    ]
+    if stale_count and not stale:
+        flags.append("stale_contracts_present")
+    if stale:
+        flags.append("stale")
+    return chain.model_copy(
+        update={
+            "contracts": tuple(contracts),
+            "age_seconds": age_seconds,
+            "stale": stale,
+            "data_quality_flags": tuple(flags),
+        }
+    )
+
+
 class DirectSchwabOptionChainUpstream:
-    """Return a complete normalized one-expiration chain through the locked provider."""
+    """Normalize, coalesce, and briefly cache complete one-expiration chains."""
 
     def __init__(
         self,
         provider: OptionChainProvider,
         *,
         stale_after_seconds: float = 90.0,
+        cache_ttl_seconds: float = DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS,
+        cache_max_entries: int = DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES,
+        cache_max_bytes: int = MAX_OPTION_CHAIN_CACHE_BYTES,
+        max_inflight: int = DEFAULT_OPTION_CHAIN_MAX_INFLIGHT,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+        utcnow: Callable[[], dt.datetime] | None = None,
     ) -> None:
+        if (
+            not math.isfinite(cache_ttl_seconds)
+            or not 0 < cache_ttl_seconds <= MAX_OPTION_CHAIN_CACHE_TTL_SECONDS
+        ):
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 3s")
+        if not 1 <= cache_max_entries <= MAX_OPTION_CHAIN_CACHE_ENTRIES:
+            raise ValueError("option-chain cache capacity must be between 1 and 16")
+        if not 1 <= cache_max_bytes <= MAX_OPTION_CHAIN_CACHE_BYTES:
+            raise ValueError("option-chain cache byte capacity must be between 1 and 64 MiB")
+        if not 1 <= max_inflight <= MAX_OPTION_CHAIN_MAX_INFLIGHT:
+            raise ValueError("option-chain in-flight capacity must be between 1 and 16")
         self._provider = provider
         self._stale_after_seconds = stale_after_seconds
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._cache_max_entries = cache_max_entries
+        self._cache_max_bytes = cache_max_bytes
+        self._max_inflight = max_inflight
+        self._cache_bytes = 0
+        self._monotonic_clock = monotonic_clock
+        self._utcnow = utcnow or (lambda: dt.datetime.now(UTC))
+        self._cache: OrderedDict[tuple[str, dt.date], _CachedOptionChain] = OrderedDict()
+        self._inflight: dict[tuple[str, dt.date], asyncio.Task[OptionChainV1]] = {}
 
     async def get_option_chain(
         self, symbol: str, expiration: dt.date
+    ) -> OptionChainV1:
+        key = (symbol, expiration)
+        now = self._monotonic_clock()
+        self._prune_expired(now)
+        cached = self._cache.get(key)
+        if cached is not None:
+            option_chain_cache_events.labels(outcome="hit").inc()
+            option_chain_cache_age_seconds.observe(max(0.0, now - cached.created_at))
+            self._cache.move_to_end(key)
+            return _reevaluate_option_chain_freshness(
+                OptionChainV1.model_validate_json(cached.payload),
+                evaluated_at=self._utcnow(),
+                stale_after_seconds=self._stale_after_seconds,
+            )
+
+        fetch = self._inflight.get(key)
+        if fetch is not None:
+            option_chain_cache_events.labels(outcome="coalesced").inc()
+            return await asyncio.shield(fetch)
+
+        if len(self._inflight) >= self._max_inflight:
+            option_chain_cache_events.labels(outcome="inflight_rejected").inc()
+            raise UpstreamUnavailableError("option-chain in-flight capacity is unavailable")
+
+        option_chain_cache_events.labels(outcome="miss").inc()
+        option_chain_cache_events.labels(outcome="upstream").inc()
+        fetch = asyncio.create_task(self._fetch_option_chain(symbol, expiration, key))
+        self._inflight[key] = fetch
+        option_chain_inflight.set(len(self._inflight))
+        fetch.add_done_callback(
+            lambda completed, cache_key=key: self._finish_fetch(cache_key, completed)
+        )
+        return await asyncio.shield(fetch)
+
+    async def _fetch_option_chain(
+        self,
+        symbol: str,
+        expiration: dt.date,
+        key: tuple[str, dt.date],
     ) -> OptionChainV1:
         try:
             payload = await self._provider.get_option_chain(symbol, expiration)
         except Exception as exc:
             raise UpstreamUnavailableError("Schwab option chain request failed") from exc
         try:
-            return normalize_schwab_option_chain(
+            chain = normalize_schwab_option_chain(
                 symbol,
                 payload,
                 expiration,
-                received_at=dt.datetime.now(UTC),
+                received_at=self._utcnow(),
                 stale_after_seconds=self._stale_after_seconds,
             )
         except ValueError as exc:
             raise UpstreamMalformedError("Schwab option chain response was invalid") from exc
+        now = self._monotonic_clock()
+        payload_bytes = chain.model_dump_json().encode()
+        if len(payload_bytes) <= self._cache_max_bytes:
+            previous = self._cache.pop(key, None)
+            if previous is not None:
+                self._cache_bytes -= len(previous.payload)
+            self._cache[key] = _CachedOptionChain(
+                created_at=now,
+                expires_at=now + self._cache_ttl_seconds,
+                payload=payload_bytes,
+            )
+            self._cache_bytes += len(payload_bytes)
+            self._evict_to_bounds()
+            self._update_cache_gauges()
+        return chain
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [key for key, value in self._cache.items() if value.expires_at <= now]
+        for key in expired:
+            value = self._cache.pop(key)
+            self._cache_bytes -= len(value.payload)
+            option_chain_cache_events.labels(outcome="eviction").inc()
+        self._update_cache_gauges()
+
+    def _evict_to_bounds(self) -> None:
+        while (
+            len(self._cache) > self._cache_max_entries
+            or self._cache_bytes > self._cache_max_bytes
+        ):
+            _, value = self._cache.popitem(last=False)
+            self._cache_bytes -= len(value.payload)
+            option_chain_cache_events.labels(outcome="eviction").inc()
+
+    def _update_cache_gauges(self) -> None:
+        option_chain_cache_entries.set(len(self._cache))
+        option_chain_cache_bytes.set(self._cache_bytes)
+
+    def _finish_fetch(
+        self,
+        key: tuple[str, dt.date],
+        completed: asyncio.Task[OptionChainV1],
+    ) -> None:
+        if self._inflight.get(key) is completed:
+            del self._inflight[key]
+            option_chain_inflight.set(len(self._inflight))
+        if completed.cancelled():
+            return
+        try:
+            completed.exception()
+        except Exception:
+            pass
 
 
 class DirectSchwabQuoteUpstream:

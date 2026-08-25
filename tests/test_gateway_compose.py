@@ -159,6 +159,9 @@ def test_only_minimal_secret_inputs_are_admitted() -> None:
         "SCHWAB_GATEWAY_PORT",
         "SCHWAB_GATEWAY_INTERNAL_KEYS_PATH",
         "SCHWAB_GATEWAY_ORDER_WRITES_ENABLED",
+        "SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS",
+        "SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_MAX_ENTRIES",
+        "SCHWAB_GATEWAY_OPTION_CHAIN_MAX_INFLIGHT",
     }
     assert not any(name.startswith(("DATABASE", "SCHWAB_ACCOUNT")) for name in environment)
 

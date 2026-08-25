@@ -28,6 +28,7 @@ from schwab_gateway.auth import (
 from schwab_gateway.upstream import (
     DirectSchwabOptionChainUpstream,
     UpstreamMalformedError,
+    UpstreamUnavailableError,
     normalize_schwab_option_chain,
 )
 
@@ -457,12 +458,235 @@ class _Provider:
         return self.payload
 
 
+class _Clock:
+    def __init__(self) -> None:
+        self.monotonic_value = 100.0
+        self.utc_value = RECEIVED_AT
+
+    def monotonic(self) -> float:
+        return self.monotonic_value
+
+    def utcnow(self) -> dt.datetime:
+        return self.utc_value
+
+    def advance(self, seconds: float) -> None:
+        self.monotonic_value += seconds
+        self.utc_value += dt.timedelta(seconds=seconds)
+
+
 @pytest.mark.asyncio
 async def test_direct_upstream_maps_malformed_chain_to_bounded_failure() -> None:
-    upstream = DirectSchwabOptionChainUpstream(_Provider({"callExpDateMap": []}))
+    provider = _Provider({"callExpDateMap": []})
+    upstream = DirectSchwabOptionChainUpstream(provider)
 
     with pytest.raises(UpstreamMalformedError):
         await upstream.get_option_chain("SPX", EXPIRATION)
+    with pytest.raises(UpstreamMalformedError):
+        await upstream.get_option_chain("SPX", EXPIRATION)
+
+    assert provider.calls == [("SPX", EXPIRATION), ("SPX", EXPIRATION)]
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age() -> None:
+    clock = _Clock()
+    provider = _Provider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    first = await upstream.get_option_chain("$SPX", EXPIRATION)
+    clock.advance(1.5)
+    cached = await upstream.get_option_chain("$SPX", EXPIRATION)
+
+    assert provider.calls == [("$SPX", EXPIRATION)]
+    assert cached.gateway_received_at == first.gateway_received_at
+    assert cached.event_timestamp == first.event_timestamp
+    assert [item.event_timestamp for item in cached.contracts] == [
+        item.event_timestamp for item in first.contracts
+    ]
+    assert cached.age_seconds == 2.5
+    assert cached.contracts[0].age_seconds == 2.5
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_cached_contract_can_cross_stale_threshold() -> None:
+    clock = _Clock()
+    provider = _Provider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        stale_after_seconds=2,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    await upstream.get_option_chain("SPX", EXPIRATION)
+    clock.advance(2)
+    cached = await upstream.get_option_chain("SPX", EXPIRATION)
+
+    assert cached.stale is True
+    assert all(contract.stale for contract in cached.contracts)
+    assert "stale" in cached.data_quality_flags
+    assert all("stale" in contract.data_quality_flags for contract in cached.contracts)
+
+
+class _FailAfterFirstProvider(_Provider):
+    async def get_option_chain(self, symbol: str, expiration: dt.date):
+        self.calls.append((symbol, expiration))
+        if len(self.calls) > 1:
+            raise RuntimeError("test upstream failure")
+        return self.payload
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_expiry_fails_closed_without_stale_fallback() -> None:
+    clock = _Clock()
+    provider = _FailAfterFirstProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    await upstream.get_option_chain("SPX", EXPIRATION)
+    clock.advance(3)
+    with pytest.raises(UpstreamUnavailableError, match="option chain request failed"):
+        await upstream.get_option_chain("SPX", EXPIRATION)
+    await asyncio.sleep(0)
+    with pytest.raises(UpstreamUnavailableError, match="option chain request failed"):
+        await upstream.get_option_chain("SPX", EXPIRATION)
+
+    assert len(provider.calls) == 3
+    assert upstream._cache == {}
+
+
+class _BlockingProvider(_Provider):
+    def __init__(self, payload: dict[str, object]) -> None:
+        super().__init__(payload)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_option_chain(self, symbol: str, expiration: dt.date):
+        self.calls.append((symbol, expiration))
+        self.entered.set()
+        await self.release.wait()
+        return self.payload
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_coalesces_same_key_and_shields_cancelled_waiter() -> None:
+    provider = _BlockingProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(provider)
+    cancelled_waiter = asyncio.create_task(
+        upstream.get_option_chain("SPX", EXPIRATION)
+    )
+    await provider.entered.wait()
+    surviving_waiter = asyncio.create_task(
+        upstream.get_option_chain("SPX", EXPIRATION)
+    )
+
+    cancelled_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_waiter
+    provider.release.set()
+    result = await surviving_waiter
+    await asyncio.sleep(0)
+
+    assert result.symbol == "SPX"
+    assert provider.calls == [("SPX", EXPIRATION)]
+    assert upstream._inflight == {}
+
+
+class _DistinctKeyProvider(_Provider):
+    def __init__(self, payload: dict[str, object]) -> None:
+        super().__init__(payload)
+        self.all_entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_option_chain(self, symbol: str, expiration: dt.date):
+        self.calls.append((symbol, expiration))
+        if len(self.calls) == 2:
+            self.all_entered.set()
+        await self.release.wait()
+        return self.payload
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_never_coalesces_distinct_exact_keys() -> None:
+    provider = _DistinctKeyProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(provider)
+    spx = asyncio.create_task(upstream.get_option_chain("SPX", EXPIRATION))
+    dollar_spx = asyncio.create_task(upstream.get_option_chain("$SPX", EXPIRATION))
+
+    await asyncio.wait_for(provider.all_entered.wait(), timeout=1)
+    provider.release.set()
+    results = await asyncio.gather(spx, dollar_spx)
+
+    assert [result.symbol for result in results] == ["SPX", "$SPX"]
+    assert set(provider.calls) == {("SPX", EXPIRATION), ("$SPX", EXPIRATION)}
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_bounds_detached_timeouts_and_recovers() -> None:
+    provider = _DistinctKeyProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(provider, max_inflight=2)
+
+    async def timed_out_read(symbol: str) -> None:
+        async with asyncio.timeout(0.01):
+            await upstream.get_option_chain(symbol, EXPIRATION)
+
+    results = await asyncio.gather(
+        timed_out_read("SPX"),
+        timed_out_read("NDX"),
+        return_exceptions=True,
+    )
+    assert all(isinstance(result, TimeoutError) for result in results)
+    assert len(upstream._inflight) == 2
+
+    with pytest.raises(UpstreamUnavailableError, match="in-flight capacity"):
+        await upstream.get_option_chain("XSP", EXPIRATION)
+    assert len(upstream._inflight) == 2
+
+    provider.release.set()
+    for _ in range(10):
+        if not upstream._inflight:
+            break
+        await asyncio.sleep(0)
+    assert upstream._inflight == {}
+
+    recovered = await upstream.get_option_chain("RUT", EXPIRATION)
+    assert recovered.symbol == "RUT"
+
+
+@pytest.mark.asyncio
+async def test_direct_upstream_prunes_globally_and_enforces_storage_bounds() -> None:
+    clock = _Clock()
+    provider = _Provider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        cache_max_entries=2,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    await upstream.get_option_chain("SPX", EXPIRATION)
+    await upstream.get_option_chain("NDX", EXPIRATION)
+    await upstream.get_option_chain("XSP", EXPIRATION)
+    assert list(upstream._cache) == [("NDX", EXPIRATION), ("XSP", EXPIRATION)]
+    assert upstream._cache_bytes <= upstream._cache_max_bytes
+
+    clock.advance(3)
+    await upstream.get_option_chain("RUT", EXPIRATION)
+    assert list(upstream._cache) == [("RUT", EXPIRATION)]
+
+    uncached_provider = _Provider(_payload())
+    uncached = DirectSchwabOptionChainUpstream(uncached_provider, cache_max_bytes=1)
+    await uncached.get_option_chain("SPX", EXPIRATION)
+    await uncached.get_option_chain("SPX", EXPIRATION)
+    assert len(uncached_provider.calls) == 2
+    assert uncached._cache_bytes == 0
 
 
 class _Readiness:

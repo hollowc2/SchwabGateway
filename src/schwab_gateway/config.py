@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 from pathlib import Path
 
 from pydantic import Field, SecretStr, field_validator
@@ -23,6 +24,9 @@ class GatewaySettings(BaseSettings):
     upstream_timeout_seconds: float = 3.0
     protected_capacity: int = 4
     background_capacity: int = 8
+    option_chain_cache_ttl_seconds: float = 3.0
+    option_chain_cache_max_entries: int = 16
+    option_chain_max_inflight: int = 4
 
     @field_validator("bind_host")
     @classmethod
@@ -56,6 +60,20 @@ class GatewaySettings(BaseSettings):
     def capacity_must_be_bounded(cls, value: int) -> int:
         if not 1 <= value <= 256:
             raise ValueError("gateway capacity must be between 1 and 256")
+        return value
+
+    @field_validator("option_chain_cache_ttl_seconds")
+    @classmethod
+    def option_chain_cache_ttl_must_be_bounded(cls, value: float) -> float:
+        if not math.isfinite(value) or not 0 < value <= 3:
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 3s")
+        return value
+
+    @field_validator("option_chain_cache_max_entries", "option_chain_max_inflight")
+    @classmethod
+    def option_chain_cache_capacity_must_be_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 16:
+            raise ValueError("option-chain cache capacity must be between 1 and 16")
         return value
 
     @field_validator("order_writes_enabled")

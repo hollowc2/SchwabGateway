@@ -129,7 +129,12 @@ def build_live_app(
         ),
         spot_upstream=DirectSchwabSpotUpstream(provider),
         chain_upstream=DirectSchwabChainMetadataUpstream(provider),
-        option_chain_upstream=DirectSchwabOptionChainUpstream(provider),
+        option_chain_upstream=DirectSchwabOptionChainUpstream(
+            provider,
+            cache_ttl_seconds=settings.option_chain_cache_ttl_seconds,
+            cache_max_entries=settings.option_chain_cache_max_entries,
+            max_inflight=settings.option_chain_max_inflight,
+        ),
         history_upstream=DirectSchwabHistoryUpstream(provider),
         movers_upstream=DirectSchwabMoversUpstream(provider),
         session_history_upstream=DirectSchwabSessionHistoryUpstream(provider),

@@ -24,6 +24,9 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.order_writes_enabled is False
     assert value.protected_capacity == 4
     assert value.background_capacity == 8
+    assert value.option_chain_cache_ttl_seconds == 3.0
+    assert value.option_chain_cache_max_entries == 16
+    assert value.option_chain_max_inflight == 4
 
 
 def test_gateway_rejects_public_bind_and_order_writes() -> None:
@@ -44,6 +47,25 @@ def test_gateway_rejects_public_bind_and_order_writes() -> None:
 )
 def test_gateway_rejects_nonpositive_or_unbounded_capacity(field: str, value: int) -> None:
     with pytest.raises(ValidationError, match="capacity must be between 1 and 256"):
+        settings(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("option_chain_cache_ttl_seconds", 0, "TTL"),
+        ("option_chain_cache_ttl_seconds", 3.1, "TTL"),
+        ("option_chain_cache_ttl_seconds", float("nan"), "TTL"),
+        ("option_chain_cache_max_entries", 0, "capacity"),
+        ("option_chain_cache_max_entries", 17, "capacity"),
+        ("option_chain_max_inflight", 0, "capacity"),
+        ("option_chain_max_inflight", 17, "capacity"),
+    ],
+)
+def test_gateway_rejects_unbounded_option_chain_cache(
+    field: str, value: float, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
         settings(**{field: value})
 
 
