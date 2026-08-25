@@ -20,8 +20,14 @@ means Eastern calendar days; exact historical regular/extended sessions use
 `/v1/session-history`.
 
 The full-chain contract also refuses empty or one-sided chains, non-finite numbers,
-nonpositive strikes, negative prices, and crossed bid/ask markets. The metadata-only
-route continues to report degenerate chain summaries for compatibility and diagnostics.
+nonpositive strikes, and negative prices. Schwab can return a finite, nonnegative bid/ask
+pair in crossed order on an otherwise valid contract. The gateway conservatively keeps
+the lower endpoint as bid and the higher endpoint as ask, leaves mark unchanged, flags
+the contract and chain, and counts the repair in
+`gateway_option_chain_crossed_market_normalizations_total`. Direct construction of a
+crossed transport contract remains invalid. The metadata-only route continues to report
+degenerate chain summaries for compatibility and diagnostics.
+
 Schwab can return negative `timeValue` analytics on otherwise valid contracts. Because
 time value is an optional derived field rather than an executable price, the gateway
 normalizes those values to `null` and counts the affected contracts in

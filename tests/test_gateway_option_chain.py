@@ -30,6 +30,7 @@ from schwab_gateway.upstream import (
     UpstreamMalformedError,
     UpstreamUnavailableError,
     normalize_schwab_option_chain,
+    option_chain_crossed_market_normalizations,
     option_chain_negative_time_value_normalizations,
 )
 
@@ -261,6 +262,63 @@ def test_normalizer_maps_missing_time_value_to_null() -> None:
     )
 
     assert chain.contracts[0].time_value is None
+
+
+def test_normalizer_conservatively_orders_schwab_ndx_crossed_market() -> None:
+    payload = _payload()
+    ndx_call = payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]
+    ndx_call.update(
+        {
+            "symbol": "NDX 260824C06450000",
+            "bid": 126.2,
+            "ask": 126.0,
+            "mark": 126.1,
+        }
+    )
+    before = option_chain_crossed_market_normalizations._value.get()
+
+    chain = normalize_schwab_option_chain(
+        "NDX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    contract = chain.contracts[0]
+    assert (contract.bid, contract.ask, contract.mark) == (126.0, 126.2, 126.1)
+    assert "crossed_market_normalized" in contract.data_quality_flags
+    assert "crossed_markets_normalized" in chain.data_quality_flags
+    assert (
+        chain.call_contract_count,
+        chain.put_contract_count,
+        chain.strike_count,
+        len(chain.contracts),
+    ) == (3, 1, 2, 4)
+    assert option_chain_crossed_market_normalizations._value.get() == before + 1
+
+
+@pytest.mark.parametrize(
+    ("bid", "ask"),
+    [(1.0, -0.1), (float("inf"), 1.0)],
+)
+def test_normalizer_does_not_repair_unsafe_crossed_prices(
+    bid: float,
+    ask: float,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0].update(
+        {"bid": bid, "ask": ask}
+    )
+
+    with pytest.raises(ValidationError, match="prices"):
+        normalize_schwab_option_chain(
+            "NDX",
+            payload,
+            EXPIRATION,
+            received_at=RECEIVED_AT,
+            stale_after_seconds=90,
+        )
 
 
 def test_mixed_age_chain_keeps_rows_and_counts_without_aggregate_stale() -> None:

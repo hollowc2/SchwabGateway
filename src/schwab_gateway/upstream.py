@@ -70,6 +70,10 @@ option_chain_negative_time_value_normalizations = Counter(
     "gateway_option_chain_negative_time_value_normalizations_total",
     "Schwab option contracts whose negative timeValue was normalized to null",
 )
+option_chain_crossed_market_normalizations = Counter(
+    "gateway_option_chain_crossed_market_normalizations_total",
+    "Schwab option contracts whose finite nonnegative bid/ask pair was conservatively ordered",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +272,34 @@ def _optional_time_value(payload: dict[str, Any]) -> float | None:
         option_chain_negative_time_value_normalizations.inc()
         return None
     return value
+
+
+def _normalized_bid_ask(
+    payload: dict[str, Any],
+) -> tuple[float | None, float | None, bool]:
+    """Order a valid crossed pair as conservative executable bounds.
+
+    Schwab can return a finite, nonnegative pair in crossed order. Keeping the lower
+    observation as bid and the higher observation as ask is conservative for both sell
+    and buy valuation, preserves the observed endpoints, and keeps mark unchanged.
+    Invalid, negative, or non-finite prices are deliberately left for the transport
+    model to reject.
+    """
+    bid = _number(payload, "bid")
+    ask = _number(payload, "ask")
+    crossed = (
+        bid is not None
+        and ask is not None
+        and math.isfinite(bid)
+        and math.isfinite(ask)
+        and bid >= 0
+        and ask >= 0
+        and bid > ask
+    )
+    if crossed:
+        option_chain_crossed_market_normalizations.inc()
+        return ask, bid, True
+    return bid, ask, False
 
 
 def _integer(payload: dict[str, Any], name: str) -> int | None:
@@ -475,6 +507,9 @@ def normalize_schwab_option_chain(
                         else None
                     )
                     contract_flags: list[str] = []
+                    bid, ask, crossed_market_normalized = _normalized_bid_ask(option)
+                    if crossed_market_normalized:
+                        contract_flags.append("crossed_market_normalized")
                     if event_timestamp is None:
                         contract_flags.append("missing_event_timestamp")
                     contract_stale = (
@@ -488,8 +523,8 @@ def normalize_schwab_option_chain(
                             option_type=option_type,
                             expiration=expiration,
                             strike=strike,
-                            bid=_number(option, "bid"),
-                            ask=_number(option, "ask"),
+                            bid=bid,
+                            ask=ask,
                             mark=_number(option, "mark"),
                             last=_number(option, "last"),
                             total_volume=_integer(option, "totalVolume"),
@@ -541,6 +576,11 @@ def normalize_schwab_option_chain(
     ]
     if not all_contracts_timestamped:
         flags.append("missing_contract_event_timestamp")
+    if any(
+        "crossed_market_normalized" in contract.data_quality_flags
+        for contract in contracts
+    ):
+        flags.append("crossed_markets_normalized")
     if stale_contract_count and not stale:
         flags.append("stale_contracts_present")
     if stale:
