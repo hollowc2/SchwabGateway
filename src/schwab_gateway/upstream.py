@@ -612,15 +612,28 @@ def normalize_schwab_history(
         else:
             # ``days_back`` means calendar days for minute history, not candles. The
             # provider deliberately fetches a slightly wider explicit window; normalize
-            # it to today plus the preceding N-1 Eastern calendar dates here. Exact
-            # point-in-time session reads belong on ``/v1/session-history``.
-            first_date = received_at.astimezone(EASTERN).date() - dt.timedelta(
-                days=days_back - 1
-            )
+            # it to the newest available date plus the preceding N-1 Eastern calendar
+            # dates here. Exact point-in-time reads belong on ``/v1/session-history``.
+            current_date = received_at.astimezone(EASTERN).date()
+            available_dates = {
+                bar.timestamp.astimezone(EASTERN).date()
+                for bar in bars
+                if bar.timestamp.astimezone(EASTERN).date() <= current_date
+            }
+            # Between midnight and the first bar of a new Eastern session, Schwab's
+            # explicit trailing window legitimately ends on the prior session. Anchor
+            # the bounded response to the newest date actually returned so a calendar
+            # rollover cannot discard every valid bar. Once today's first bar exists,
+            # the anchor naturally advances to today. Freshness remains honest below:
+            # prior-session minute history is still marked stale overnight.
+            anchor_date = max(available_dates, default=current_date)
+            first_date = anchor_date - dt.timedelta(days=days_back - 1)
             bars = [
                 bar
                 for bar in bars
-                if bar.timestamp.astimezone(EASTERN).date() >= first_date
+                if first_date
+                <= bar.timestamp.astimezone(EASTERN).date()
+                <= anchor_date
             ]
 
     event_timestamp = bars[-1].timestamp if bars else None

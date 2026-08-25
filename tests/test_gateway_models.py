@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -14,6 +15,8 @@ from schwab_gateway.upstream import (
     normalize_schwab_session_history,
     normalize_schwab_spot,
 )
+
+EASTERN = ZoneInfo("America/New_York")
 
 
 def test_quote_normalization_preserves_missing_fields_and_staleness() -> None:
@@ -233,6 +236,39 @@ def test_minute_history_days_back_means_calendar_days_not_candle_count() -> None
         dt.date(2026, 8, 9),
         dt.date(2026, 8, 10),
     }
+
+
+def test_minute_history_keeps_prior_session_just_after_eastern_midnight() -> None:
+    received_at = dt.datetime(2026, 8, 25, 4, 5, tzinfo=dt.timezone.utc)
+    prior_session = dt.date(2026, 8, 24)
+    candles = [
+        _candle(
+            dt.datetime.combine(
+                prior_session,
+                dt.time(hour, minute),
+                tzinfo=EASTERN,
+            ),
+            close=float(hour),
+        )
+        for hour, minute in ((9, 30), (12, 0), (15, 59))
+    ]
+
+    history = normalize_schwab_history(
+        "$SPX",
+        "minute",
+        candles,
+        received_at=received_at,
+        stale_after_seconds=900,
+        days_back=1,
+    )
+
+    assert len(history.bars) == 3
+    assert {
+        bar.timestamp.astimezone(EASTERN).date() for bar in history.bars
+    } == {prior_session}
+    assert history.stale is True
+    assert "stale" in history.data_quality_flags
+    assert "no_bars_returned" not in history.data_quality_flags
 
 
 @pytest.mark.parametrize(
