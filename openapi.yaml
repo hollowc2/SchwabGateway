@@ -233,7 +233,9 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/MoversResponseV1"}
     SessionHistoryResponse:
-      description: One trading session's 1-minute candles for one date.
+      description: >-
+        One trading session's 1-minute candles for one date, split using recurring
+        US-equity holidays and scheduled 13:00 Eastern early closes.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/SessionHistoryResponseV1"}

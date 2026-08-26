@@ -307,6 +307,26 @@ def test_daily_history_treats_friday_as_fresh_across_weekend_or_holiday(
     assert history.stale is False
 
 
+def test_daily_history_recognizes_early_close_as_completed_session() -> None:
+    early_close = dt.date(2026, 11, 27)
+    event_timestamp = dt.datetime.combine(
+        early_close, dt.time(13), tzinfo=EASTERN
+    ).astimezone(dt.timezone.utc)
+    received_at = dt.datetime.combine(
+        early_close, dt.time(13, 30), tzinfo=EASTERN
+    ).astimezone(dt.timezone.utc)
+
+    history = normalize_schwab_history(
+        "AAPL",
+        "daily",
+        [_candle(event_timestamp, 1.0)],
+        received_at=received_at,
+        stale_after_seconds=86400,
+    )
+
+    assert history.stale is False
+
+
 def test_history_normalization_marks_no_bars_and_rejects_a_non_list_payload() -> None:
     received_at = dt.datetime(2026, 8, 10, 21, 0, tzinfo=dt.timezone.utc)
     empty = normalize_schwab_history(
@@ -375,6 +395,48 @@ def test_session_history_splits_regular_and_extended_candles() -> None:
     assert regular.date == date
     assert regular.session == "regular"
     assert extended.session == "extended"
+
+
+@pytest.mark.parametrize("date", [dt.date(2026, 11, 27), dt.date(2026, 12, 24)])
+def test_session_history_uses_early_close_boundary(date: dt.date) -> None:
+    received_at = dt.datetime.combine(
+        date + dt.timedelta(days=1), dt.time(12), tzinfo=dt.timezone.utc
+    )
+    candles = [
+        _candle(dt.datetime.combine(date, dt.time(12, 59), tzinfo=EASTERN), 1.0),
+        _candle(dt.datetime.combine(date, dt.time(13, 0), tzinfo=EASTERN), 2.0),
+    ]
+
+    regular = normalize_schwab_session_history(
+        "AAPL", date, "regular", candles, received_at=received_at, stale_after_seconds=86400
+    )
+    extended = normalize_schwab_session_history(
+        "AAPL", date, "extended", candles, received_at=received_at, stale_after_seconds=86400
+    )
+
+    assert [bar.close for bar in regular.candles] == [1.0]
+    assert [bar.close for bar in extended.candles] == [2.0]
+    assert "early_close" in regular.data_quality_flags
+    assert "early_close" in extended.data_quality_flags
+
+
+def test_session_history_marks_exchange_holiday_and_returns_no_session_bars() -> None:
+    date = dt.date(2026, 11, 26)  # Thanksgiving
+    received_at = dt.datetime(2026, 11, 27, 17, 0, tzinfo=dt.timezone.utc)
+    unexpected = [_candle(dt.datetime.combine(date, dt.time(10), tzinfo=EASTERN), 1.0)]
+
+    result = normalize_schwab_session_history(
+        "AAPL",
+        date,
+        "regular",
+        unexpected,
+        received_at=received_at,
+        stale_after_seconds=86400,
+    )
+
+    assert result.candles == ()
+    assert "market_holiday" in result.data_quality_flags
+    assert "no_bars_returned" in result.data_quality_flags
 
 
 def test_session_history_drops_malformed_candles_and_flags_them() -> None:

@@ -31,11 +31,13 @@ from schwab_gateway_sdk.models import (
 
 UTC = dt.timezone.utc
 EASTERN = ZoneInfo("America/New_York")
-# Regular session is 09:30-16:00 America/New_York; a candle stamped exactly 16:00:00 is
+# Regular session is normally 09:30-16:00 America/New_York and ends at 13:00 on the
+# recurring US-equity early-close dates below. A candle stamped exactly at the close is
 # the first extended (post-market) bar, not the last regular one, so the upper bound is
-# exclusive. v1 does not special-case early-close calendar days.
+# exclusive.
 REGULAR_SESSION_START = dt.time(9, 30)
 REGULAR_SESSION_END = dt.time(16, 0)
+EARLY_CLOSE_SESSION_END = dt.time(13, 0)
 DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES = 16
@@ -149,10 +151,35 @@ def _is_trading_day(date: dt.date) -> bool:
     return date.weekday() < 5 and date not in _market_holidays(date.year)
 
 
+def _early_close_sessions(year: int) -> frozenset[dt.date]:
+    """Return recurring 13:00 ET US-equity closes for ``year``.
+
+    NYSE/Nasdaq publish their calendars annually. These rules cover the recurring
+    Independence Day, day-after-Thanksgiving, and Christmas Eve closes without claiming
+    to predict one-off exchange closures. The trading-day check handles years in which
+    July 3 or December 24 is instead an observed full holiday.
+    """
+    candidates = {
+        dt.date(year, 7, 3),
+        _nth_weekday(year, 11, 3, 4) + dt.timedelta(days=1),
+        dt.date(year, 12, 24),
+    }
+    return frozenset(date for date in candidates if _is_trading_day(date))
+
+
+def _regular_session_end(date: dt.date) -> dt.time | None:
+    if not _is_trading_day(date):
+        return None
+    if date in _early_close_sessions(date.year):
+        return EARLY_CLOSE_SESSION_END
+    return REGULAR_SESSION_END
+
+
 def _latest_completed_session(at: dt.datetime) -> dt.date:
     eastern = at.astimezone(EASTERN)
     candidate = eastern.date()
-    if not _is_trading_day(candidate) or eastern.time() < REGULAR_SESSION_END:
+    session_end = _regular_session_end(candidate)
+    if session_end is None or eastern.time() < session_end:
         candidate -= dt.timedelta(days=1)
     while not _is_trading_day(candidate):
         candidate -= dt.timedelta(days=1)
@@ -853,9 +880,12 @@ class DirectSchwabMoversUpstream:
             raise UpstreamMalformedError("Schwab movers response was invalid") from exc
 
 
-def _is_regular_session(timestamp: dt.datetime) -> bool:
-    local_time = timestamp.astimezone(EASTERN).time()
-    return REGULAR_SESSION_START <= local_time < REGULAR_SESSION_END
+def _is_regular_session(timestamp: dt.datetime, date: dt.date) -> bool:
+    session_end = _regular_session_end(date)
+    if session_end is None:
+        return False
+    eastern = timestamp.astimezone(EASTERN)
+    return eastern.date() == date and REGULAR_SESSION_START <= eastern.time() < session_end
 
 
 def normalize_schwab_session_history(
@@ -878,6 +908,11 @@ def normalize_schwab_session_history(
         raise ValueError("session history response was not a list of candles")
 
     flags: list[str] = []
+    session_end = _regular_session_end(date)
+    if session_end is None:
+        flags.append("market_holiday")
+    elif session_end == EARLY_CLOSE_SESSION_END:
+        flags.append("early_close")
     bars: list[PriceBarV1] = []
     dropped = 0
     for candle in candles:
@@ -885,7 +920,10 @@ def normalize_schwab_session_history(
         if bar is None:
             dropped += 1
             continue
-        is_regular = _is_regular_session(bar.timestamp)
+        eastern_date = bar.timestamp.astimezone(EASTERN).date()
+        if eastern_date != date or session_end is None:
+            continue
+        is_regular = _is_regular_session(bar.timestamp, date)
         if is_regular is (session == "regular"):
             bars.append(bar)
     if dropped:

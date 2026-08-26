@@ -17,7 +17,9 @@ NDX, 1000 SPX, and 650 XSP) while keeping response memory bounded. Oversized or 
 chains fail closed; the gateway never silently truncates a strategy input. Spot responses
 preserve Schwab quote/trade timestamps for freshness checks. Minute history `days_back`
 means Eastern calendar days; exact historical regular/extended sessions use
-`/v1/session-history`.
+`/v1/session-history`. Session splitting recognizes recurring US-equity holidays and
+13:00 Eastern early closes (Independence Day observance, the day after Thanksgiving, and
+Christmas Eve). One-off exchange closures remain outside the v1 calendar contract.
 
 The full-chain contract also refuses empty or one-sided chains, non-finite numbers,
 nonpositive strikes, and negative prices. Schwab can return a finite, nonnegative bid/ask
