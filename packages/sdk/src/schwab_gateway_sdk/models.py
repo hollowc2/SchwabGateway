@@ -506,6 +506,97 @@ class MoversResponseV1(GatewayModel):
     movers: MoversV1
 
 
+class OrderBookParticipantV1(GatewayModel):
+    """One venue participant contributing size at a displayed price level."""
+
+    exchange: str
+    size: int
+    sequence: int | None = None
+
+    @field_validator("exchange")
+    @classmethod
+    def exchange_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("order-book participant exchange must not be empty")
+        return value
+
+    @field_validator("size")
+    @classmethod
+    def size_must_be_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("order-book participant size must be nonnegative")
+        return value
+
+
+class OrderBookLevelV1(GatewayModel):
+    """One normalized bid or ask level from a venue-specific Schwab book."""
+
+    price: float
+    total_size: int
+    participant_count: int
+    participants: tuple[OrderBookParticipantV1, ...] = ()
+
+    @field_validator("price")
+    @classmethod
+    def price_must_be_finite_and_positive(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("order-book price must be finite and positive")
+        return value
+
+    @field_validator("total_size", "participant_count")
+    @classmethod
+    def counts_must_be_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("order-book counts must be nonnegative")
+        return value
+
+
+class OrderBookSnapshotV1(GatewayModel):
+    """A venue-specific Schwab Level II snapshot; never consolidated depth."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    symbol: str
+    venue: Literal["NASDAQ", "NYSE"]
+    service: Literal["NASDAQ_BOOK", "NYSE_BOOK"]
+    sequence: int | None = None
+    event_timestamp: dt.datetime | None = None
+    gateway_received_at: dt.datetime
+    source: Literal["schwab_streaming"] = "schwab_streaming"
+    is_consolidated: Literal[False] = False
+    bids: tuple[OrderBookLevelV1, ...]
+    asks: tuple[OrderBookLevelV1, ...]
+    data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("symbol")
+    @classmethod
+    def symbol_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("order-book symbol must not be empty")
+        return value
+
+    @field_validator("event_timestamp", "gateway_received_at")
+    @classmethod
+    def timestamps_must_be_timezone_aware(
+        cls, value: dt.datetime | None
+    ) -> dt.datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("order-book timestamps must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def venue_must_match_service(self) -> OrderBookSnapshotV1:
+        expected = f"{self.venue}_BOOK"
+        if self.service != expected:
+            raise ValueError("order-book venue must match the Schwab service")
+        bid_prices = [level.price for level in self.bids]
+        ask_prices = [level.price for level in self.asks]
+        if bid_prices != sorted(bid_prices, reverse=True):
+            raise ValueError("order-book bids must be sorted highest first")
+        if ask_prices != sorted(ask_prices):
+            raise ValueError("order-book asks must be sorted lowest first")
+        return self
+
+
 class GatewayHealthV1(GatewayModel):
     schema_version: Literal["1.0"] = "1.0"
     status: Literal["ok", "ready", "not_ready"]
