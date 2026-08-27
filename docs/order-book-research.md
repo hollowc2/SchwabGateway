@@ -127,3 +127,6 @@ bounded snapshots. `/v1/order-book/stream?symbols=AAPL&venue=NASDAQ` upgrades to
 WebSocket. Both use the existing `X-Internal-API-Key` authentication and
 `market_data:read` capability. Subscriber queues are bounded; a slow client may skip
 intermediate snapshots and must use continuity fields rather than assuming losslessness.
+
+The first live shared-token, venue, derivation, catalog, and consumer smoke results are
+recorded in `order-book-validation-2026-08-27.md`.
