@@ -558,6 +558,8 @@ class OrderBookSnapshotV1(GatewayModel):
     symbol: str
     venue: Literal["NASDAQ", "NYSE"]
     service: Literal["NASDAQ_BOOK", "NYSE_BOOK"]
+    connection_id: int = 1
+    continuity_epoch: int = 1
     sequence: int | None = None
     event_timestamp: dt.datetime | None = None
     gateway_received_at: dt.datetime
@@ -566,6 +568,13 @@ class OrderBookSnapshotV1(GatewayModel):
     bids: tuple[OrderBookLevelV1, ...]
     asks: tuple[OrderBookLevelV1, ...]
     data_quality_flags: tuple[str, ...] = ()
+
+    @field_validator("connection_id", "continuity_epoch")
+    @classmethod
+    def connection_fields_must_be_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("order-book connection fields must be positive")
+        return value
 
     @field_validator("symbol")
     @classmethod

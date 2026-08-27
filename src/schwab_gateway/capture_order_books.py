@@ -11,7 +11,7 @@ from schwab_gateway.order_book_capture import (
     OrderBookCaptureRequest,
     OrderBookResearchRecorder,
     parse_symbols,
-    run_exclusive_order_book_capture,
+    run_order_book_capture,
 )
 
 log = get_logger(__name__)
@@ -50,20 +50,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--authorize-real-credential-read", action="store_true")
     parser.add_argument(
-        "--confirm-exclusive-token-lock",
+        "--confirm-shared-token-bootstrap",
         action="store_true",
-        help="confirm that no HTTP gateway or other token consumer will run concurrently",
+        help="confirm a short exclusive token transaction only while each stream logs in",
     )
+    parser.add_argument("--max-reconnects", type=int, default=3)
+    parser.add_argument("--login-timeout-seconds", type=float, default=8.0)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.authorize_real_credential_read and args.confirm_exclusive_token_lock):
+    if not (
+        args.authorize_real_credential_read and args.confirm_shared_token_bootstrap
+    ):
         parser.error(
-            "order-book capture requires explicit real-credential and exclusive-token-lock "
-            "confirmations"
+            "order-book capture requires explicit real-credential and shared-token-"
+            "bootstrap confirmations"
         )
     try:
         request = OrderBookCaptureRequest(
@@ -81,11 +85,13 @@ def main(argv: list[str] | None = None) -> None:
 
     recorder = OrderBookResearchRecorder(request)
     try:
-        manifest = run_exclusive_order_book_capture(
+        manifest = run_order_book_capture(
             request,
             GatewayUpstreamSettings(),
             client_from_access_functions,
             recorder=recorder,
+            max_reconnects=args.max_reconnects,
+            login_timeout_seconds=args.login_timeout_seconds,
         )
     except Exception as exc:
         log.error(

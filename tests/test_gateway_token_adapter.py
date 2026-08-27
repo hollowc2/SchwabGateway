@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import threading
@@ -307,6 +308,33 @@ def test_read_and_write_callbacks_are_rejected_after_transaction_scope(
     with pytest.raises(TokenCallbackScopeError, match="outside its transaction scope"):
         factory.captured_sdk_write(token_document(1)["token"])
     assert json.loads(path.read_text(encoding="utf-8")) == token_document()
+
+
+@pytest.mark.asyncio
+async def test_async_access_transaction_releases_and_invalidates_callbacks(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_manager = manager(path)
+    escaped: list[Any] = []
+
+    async def bootstrap(read, write) -> str:
+        escaped.extend((read, write))
+        assert read() == token_document()
+        await asyncio.sleep(0)
+        return "connected"
+
+    assert await token_manager.run_access_transaction_async(bootstrap) == "connected"
+    with pytest.raises(TokenCallbackScopeError, match="outside its transaction scope"):
+        escaped[0]()
+    with pytest.raises(TokenCallbackScopeError, match="outside its transaction scope"):
+        escaped[1](token_document())
+
+    second_manager = AtomicTokenManager(
+        AtomicFileTokenStore(path), lock_timeout_seconds=0, clock=lambda: NOW
+    )
+    assert second_manager.load() == token_document()
 
 
 def test_concurrent_client_operations_cover_construction_and_cannot_lose_rotation(

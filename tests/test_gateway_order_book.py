@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -17,6 +18,7 @@ from schwab_gateway_sdk.models import (
 )
 
 from schwab_gateway.capture_order_books import build_parser
+from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.order_book import (
     OrderBookMalformedError,
     normalize_schwab_book_message,
@@ -26,6 +28,7 @@ from schwab_gateway.order_book_capture import (
     OrderBookCaptureRequest,
     OrderBookResearchRecorder,
     capture_order_book_stream,
+    capture_order_book_with_reconnects,
     parse_symbols,
 )
 
@@ -311,6 +314,44 @@ class _DisconnectingStream:
         self.logged_out = True
 
 
+class _ScopedAsyncManager:
+    def __init__(self) -> None:
+        self.in_transaction = False
+        self.calls = 0
+
+    async def run_access_transaction_async(self, operation):
+        self.calls += 1
+        self.in_transaction = True
+        try:
+            return await operation(lambda: {}, lambda _token: None)
+        finally:
+            self.in_transaction = False
+
+
+class _EpochStream(_DisconnectingStream):
+    def __init__(self, client: Any, *, disconnect: bool) -> None:
+        super().__init__(client)
+        self.disconnect = disconnect
+        self.handled = False
+        self._manager: Any = None
+
+    async def login(self) -> None:
+        assert self._manager.in_transaction
+        await super().login()
+
+    async def handle_message(self) -> None:
+        if not self.handled:
+            self.handled = True
+            assert self.decoder is not None
+            assert self.handler is not None
+            raw = json.dumps({"data": [{"service": "NASDAQ_BOOK", "content": []}]})
+            self.decoder.decode_json_string(raw)
+            self.handler(_book_message())
+            if self.disconnect:
+                raise ConnectionError("synthetic disconnect")
+        await asyncio.sleep(1)
+
+
 @pytest.mark.asyncio
 async def test_capture_stream_closes_client_and_preserves_pre_disconnect_data(
     tmp_path: Path,
@@ -340,6 +381,54 @@ async def test_capture_stream_closes_client_and_preserves_pre_disconnect_data(
     assert client.closed is True
     assert recorder.raw_frame_count == 1
     assert recorder.normalized_snapshot_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_bootstrap_reconnects_into_explicit_continuity_epochs(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, duration_seconds=1)
+    recorder = OrderBookResearchRecorder(request)
+    manager = _ScopedAsyncManager()
+    streams: list[_EpochStream] = []
+
+    def client_factory(*_args, **_kwargs) -> _FakeAsyncClient:
+        return _FakeAsyncClient()
+
+    def stream_factory(client: Any) -> _EpochStream:
+        stream = _EpochStream(client, disconnect=not streams)
+        stream._manager = manager
+        streams.append(stream)
+        return stream
+
+    settings = GatewayUpstreamSettings(
+        SCHWAB_API_KEY="fake-key",
+        SCHWAB_SECRET_KEY="fake-secret",
+        SCHWAB_TOKEN_PATH=tmp_path / "tokens.json",
+    )
+    await capture_order_book_with_reconnects(
+        manager,  # type: ignore[arg-type]
+        settings,
+        client_factory,
+        request,
+        recorder,
+        stream_client_factory=stream_factory,
+        reconnect_base_delay_seconds=0,
+    )
+    manifest = json.loads(recorder.finalize(termination_reason="completed").read_text())
+
+    assert manager.calls == 2
+    assert manager.in_transaction is False
+    assert manifest["connection_attempt_count"] == 2
+    assert manifest["successful_connection_count"] == 2
+    assert manifest["reconnect_count"] == 1
+    assert manifest["continuity_epoch_count"] == 2
+    assert recorder.normalized_path is not None
+    snapshots = [
+        json.loads(line) for line in recorder.normalized_path.read_text().splitlines()
+    ]
+    assert [item["continuity_epoch"] for item in snapshots] == [1, 2]
+    assert "reconnect_boundary" in snapshots[1]["data_quality_flags"]
 
 
 def test_request_and_cli_keep_scope_explicit(tmp_path: Path) -> None:
