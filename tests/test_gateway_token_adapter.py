@@ -15,6 +15,7 @@ from schwab_token_store import (
     AtomicFileTokenStore,
     AtomicTokenManager,
     TokenCallbackScopeError,
+    TokenLockTimeoutError,
     TokenManagerState,
     TokenRefreshError,
 )
@@ -335,6 +336,30 @@ async def test_async_access_transaction_releases_and_invalidates_callbacks(
         AtomicFileTokenStore(path), lock_timeout_seconds=0, clock=lambda: NOW
     )
     assert second_manager.load() == token_document()
+
+
+@pytest.mark.asyncio
+async def test_async_access_transaction_waits_for_file_lock_off_event_loop(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    store = AtomicFileTokenStore(path)
+    competing_manager = AtomicTokenManager(
+        AtomicFileTokenStore(path), lock_timeout_seconds=0.1, clock=lambda: NOW
+    )
+
+    async def operation(_read, _write) -> None:
+        raise AssertionError("operation must not run without the file lock")
+
+    with store.locked(1):
+        waiting = asyncio.create_task(
+            competing_manager.run_access_transaction_async(operation)
+        )
+        await asyncio.sleep(0.01)
+        assert waiting.done() is False
+        with pytest.raises(TokenLockTimeoutError):
+            await waiting
 
 
 def test_concurrent_client_operations_cover_construction_and_cannot_lose_rotation(

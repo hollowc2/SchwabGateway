@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import datetime as dt
 import errno
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -540,24 +542,49 @@ class AtomicTokenManager:
         """
 
         entered_store = False
+        context = self._store.locked(self._lock_timeout_seconds)
+        # AtomicFileTokenStore also owns a threading.RLock. A dedicated one-thread
+        # executor guarantees context enter/exit happen on the same OS thread while
+        # leaving the asyncio event loop responsive during flock contention.
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-lock")
+        loop = asyncio.get_running_loop()
+        enter_task = loop.run_in_executor(executor, context.__enter__)
         try:
-            with self._store.locked(self._lock_timeout_seconds) as transaction:
-                entered_store = True
+            try:
+                transaction = await asyncio.shield(enter_task)
+            except asyncio.CancelledError:
+                # to_thread cannot cancel a running flock acquisition. Wait for its
+                # bounded result and release it before propagating cancellation.
                 try:
-                    current = self._load_from_transaction(transaction)
-                except TokenManagerError as exc:
-                    self._record_load_failure(exc)
-                    raise
-                self._transition(TokenManagerState.READY, "token_loaded")
-                callbacks = _ScopedTokenCallbacks(self, transaction, current)
-                try:
-                    return await operation(callbacks.read, callbacks.write)
-                finally:
-                    callbacks.close()
+                    await enter_task
+                except Exception:
+                    raise asyncio.CancelledError from None
+                await asyncio.shield(
+                    loop.run_in_executor(executor, context.__exit__, None, None, None)
+                )
+                raise
+            entered_store = True
+            try:
+                current = self._load_from_transaction(transaction)
+            except TokenManagerError as exc:
+                self._record_load_failure(exc)
+                raise
+            self._transition(TokenManagerState.READY, "token_loaded")
+            callbacks = _ScopedTokenCallbacks(self, transaction, current)
+            try:
+                return await operation(callbacks.read, callbacks.write)
+            finally:
+                callbacks.close()
         except TokenManagerError as exc:
             if not entered_store:
                 self._record_load_failure(exc)
             raise
+        finally:
+            if entered_store:
+                await asyncio.shield(
+                    loop.run_in_executor(executor, context.__exit__, None, None, None)
+                )
+            executor.shutdown(wait=True)
 
     def _load_from_transaction(self, transaction: TokenTransaction) -> TokenDocument:
         token = validate_token_document(transaction.read())
