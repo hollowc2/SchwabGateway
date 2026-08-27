@@ -47,6 +47,11 @@ def test_contract_contains_only_parity_routes() -> None:
     metadata-only ``/v1/chain``. It is bounded to one symbol, one expiration, and 5000
     contracts, and refuses oversized payloads rather than truncating a strategy input.
 
+    ``/v1/order-book/recent`` and ``/v1/order-book/stream`` expose bounded,
+    authenticated, venue-specific Level II snapshots for research consumers. The latter
+    is a WebSocket read stream, not an order-entry surface; both explicitly mark the
+    depth as non-consolidated.
+
     All four remain strictly read-only market data: no account, order, position, or
     transaction route was added, and ``SCHWAB_GATEWAY_ORDER_WRITES_ENABLED`` is untouched.
     """
@@ -63,10 +68,13 @@ def test_contract_contains_only_parity_routes() -> None:
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",
+        "/v1/order-book/recent",
+        "/v1/order-book/stream",
     }
     serialized = json.dumps(contract).lower()
-    for forbidden in ("/account", "/order", "/position", "/transaction", "/stream"):
+    for forbidden in ("/account", "/v1/orders", "/position", "/transaction"):
         assert forbidden not in serialized
+    assert all("post" not in methods for methods in contract["paths"].values())
 
 
 def test_golden_fixture_is_redacted_and_pinned() -> None:

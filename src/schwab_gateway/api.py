@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import re
 import time
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -17,6 +17,8 @@ from schwab_gateway_sdk.models import (
     HistoryResponseV1,
     MoversResponseV1,
     OptionChainResponseV1,
+    OrderBookRecentResponseV1,
+    OrderBookStreamEnvelopeV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -39,6 +41,7 @@ from schwab_gateway.auth import (
     require_capability,
 )
 from schwab_gateway.logging import get_logger
+from schwab_gateway.order_book_store import OrderBookSnapshotStore, OrderBookVenue
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
@@ -82,6 +85,9 @@ MOVER_INDEXES = frozenset(
 )
 MOVER_DIRECTIONS = ("up", "down")
 SESSION_TYPES = ("regular", "extended")
+ORDER_BOOK_VENUES = ("NASDAQ", "NYSE")
+MAX_RECENT_ORDER_BOOK_SNAPSHOTS = 1000
+MAX_STREAM_ORDER_BOOK_SYMBOLS = 25
 
 gateway_requests = Counter(
     "gateway_client_requests_total",
@@ -117,6 +123,7 @@ TOKEN_READINESS_PROVIDER_KEY = web.AppKey(
 ADMISSION_CONTROLLER_KEY = web.AppKey(
     "gateway_admission_controller", AdmissionController
 )
+ORDER_BOOK_STORE_KEY = web.AppKey("gateway_order_book_store", OrderBookSnapshotStore)
 
 
 class TokenReadinessProvider(Protocol):
@@ -317,6 +324,24 @@ def _parse_direction(request: web.Request) -> Literal["up", "down"]:
     if value not in MOVER_DIRECTIONS:
         raise ValueError("direction must be 'up' or 'down'")
     return value  # type: ignore[return-value]
+
+
+def _parse_order_book_venue(request: web.Request) -> OrderBookVenue:
+    value = request.query.get("venue", "").strip().upper()
+    if value not in ORDER_BOOK_VENUES:
+        raise ValueError("venue must be 'NASDAQ' or 'NYSE'")
+    return cast(OrderBookVenue, value)
+
+
+def _parse_order_book_limit(request: web.Request) -> int:
+    raw = request.query.get("limit", "100").strip()
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise ValueError("limit must be an integer") from exc
+    if not 1 <= limit <= MAX_RECENT_ORDER_BOOK_SNAPSHOTS:
+        raise ValueError("limit must be between 1 and 1000")
+    return limit
 
 
 @web.middleware
@@ -602,6 +627,78 @@ async def session_history(request: web.Request) -> web.Response:
     return await _serve_upstream(request, build_response)
 
 
+async def recent_order_book(request: web.Request) -> web.Response:
+    """Return bounded recent venue depth without implying a consolidated book."""
+
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        symbol = _parse_symbol(request)
+        venue = _parse_order_book_venue(request)
+        limit = _parse_order_book_limit(request)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+    snapshots = request.app[ORDER_BOOK_STORE_KEY].recent(symbol, venue, limit=limit)
+    return _json(
+        OrderBookRecentResponseV1(
+            symbol=symbol,
+            venue=venue,
+            snapshots=snapshots,
+            generated_at=dt.datetime.now(UTC),
+        )
+    )
+
+
+async def stream_order_book(request: web.Request) -> web.StreamResponse:
+    """Stream authenticated snapshots through a bounded slow-consumer queue."""
+
+    denied = require_capability(request, "market_data:read")
+    if denied is not None:
+        return denied
+    try:
+        symbols = _parse_symbols(request)
+        if len(symbols) > MAX_STREAM_ORDER_BOOK_SYMBOLS:
+            raise ValueError("at most 25 order-book stream symbols are allowed")
+        venue = _parse_order_book_venue(request)
+    except ValueError as exc:
+        return _error("invalid_request", str(exc), 400)
+
+    store = request.app[ORDER_BOOK_STORE_KEY]
+    subscription = store.subscribe(frozenset(symbols), venue)
+    socket = web.WebSocketResponse(heartbeat=30, autoping=True)
+    await socket.prepare(request)
+    try:
+        for symbol in symbols:
+            for snapshot in store.recent(symbol, venue, limit=1):
+                envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot)
+                await socket.send_json(envelope.model_dump(mode="json"))
+        while not socket.closed:
+            snapshot_task = asyncio.create_task(subscription.queue.get())
+            receive_task = asyncio.create_task(socket.receive())
+            done, pending = await asyncio.wait(
+                (snapshot_task, receive_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if receive_task in done:
+                message = receive_task.result()
+                if message.type in {
+                    web.WSMsgType.CLOSE,
+                    web.WSMsgType.CLOSED,
+                    web.WSMsgType.ERROR,
+                }:
+                    break
+            if snapshot_task in done:
+                envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot_task.result())
+                await socket.send_json(envelope.model_dump(mode="json"))
+    finally:
+        store.unsubscribe(subscription)
+        await socket.close()
+    return socket
+
+
 def create_app(
     upstream: QuoteUpstream,
     authenticator: InternalKeyAuthenticator,
@@ -615,6 +712,7 @@ def create_app(
     history_upstream: HistoryUpstream | None = None,
     movers_upstream: MoversUpstream | None = None,
     session_history_upstream: SessionHistoryUpstream | None = None,
+    order_book_store: OrderBookSnapshotStore | None = None,
 ) -> web.Application:
     if upstream_timeout_seconds <= 0:
         raise ValueError("upstream timeout must be positive")
@@ -638,6 +736,7 @@ def create_app(
     app[ADMISSION_CONTROLLER_KEY] = AdmissionController(
         admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
+    app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
     app.router.add_get("/health", health, name="health")
     app.router.add_get("/ready", ready, name="ready")
     app.router.add_get("/metrics", metrics, name="metrics")
@@ -648,4 +747,6 @@ def create_app(
     app.router.add_get("/v1/history", history, name="history_v1")
     app.router.add_get("/v1/movers", movers, name="movers_v1")
     app.router.add_get("/v1/session-history", session_history, name="session_history_v1")
+    app.router.add_get("/v1/order-book/recent", recent_order_book, name="order_book_recent_v1")
+    app.router.add_get("/v1/order-book/stream", stream_order_book, name="order_book_stream_v1")
     return app

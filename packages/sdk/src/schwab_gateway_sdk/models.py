@@ -606,6 +606,41 @@ class OrderBookSnapshotV1(GatewayModel):
         return self
 
 
+class OrderBookRecentResponseV1(GatewayModel):
+    """Bounded recent venue-specific snapshots, oldest to newest."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    symbol: str
+    venue: Literal["NASDAQ", "NYSE"]
+    is_consolidated: Literal[False] = False
+    snapshots: tuple[OrderBookSnapshotV1, ...]
+    generated_at: dt.datetime
+
+    @field_validator("generated_at")
+    @classmethod
+    def generated_at_must_be_timezone_aware(cls, value: dt.datetime) -> dt.datetime:
+        if value.utcoffset() is None:
+            raise ValueError("order-book response timestamp must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def snapshots_must_match_request(self) -> OrderBookRecentResponseV1:
+        if any(
+            snapshot.symbol != self.symbol or snapshot.venue != self.venue
+            for snapshot in self.snapshots
+        ):
+            raise ValueError("order-book response contains a different symbol or venue")
+        return self
+
+
+class OrderBookStreamEnvelopeV1(GatewayModel):
+    """One authenticated WebSocket depth event."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    type: Literal["order_book_snapshot"] = "order_book_snapshot"
+    snapshot: OrderBookSnapshotV1
+
+
 class GatewayHealthV1(GatewayModel):
     schema_version: Literal["1.0"] = "1.0"
     status: Literal["ok", "ready", "not_ready"]

@@ -27,6 +27,9 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.option_chain_cache_ttl_seconds == 4.0
     assert value.option_chain_cache_max_entries == 16
     assert value.option_chain_max_inflight == 4
+    assert value.order_book_stream_enabled is False
+    assert value.order_book_stream_symbols == ""
+    assert value.order_book_history_limit == 1000
 
 
 def test_gateway_rejects_public_bind_and_order_writes() -> None:
@@ -48,6 +51,16 @@ def test_gateway_rejects_public_bind_and_order_writes() -> None:
 def test_gateway_rejects_nonpositive_or_unbounded_capacity(field: str, value: int) -> None:
     with pytest.raises(ValidationError, match="capacity must be between 1 and 256"):
         settings(**{field: value})
+
+
+def test_gateway_validates_live_order_book_configuration() -> None:
+    value = settings(order_book_stream_symbols="aapl, IBM")
+    assert value.order_book_stream_symbols == "AAPL,IBM"
+
+    with pytest.raises(ValidationError, match="invalid"):
+        settings(order_book_stream_symbols="bad symbol")
+    with pytest.raises(ValidationError, match="unique"):
+        settings(order_book_stream_symbols="AAPL,aapl")
 
 
 @pytest.mark.parametrize(

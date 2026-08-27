@@ -473,7 +473,7 @@ def run_exclusive_order_book_capture(
     return recorder.manifest_path
 
 
-async def _bootstrap_stream_under_token_lock(
+async def bootstrap_stream_under_token_lock(
     manager: AtomicTokenManager,
     upstream_settings: GatewayUpstreamSettings,
     client_factory: Callable[..., Any],
@@ -548,7 +548,7 @@ async def capture_order_book_with_reconnects(
         recorder.record_connection_event("connecting", connection_id=connection_id)
         stream: Any = None
         try:
-            stream = await _bootstrap_stream_under_token_lock(
+            stream = await bootstrap_stream_under_token_lock(
                 manager,
                 upstream_settings,
                 client_factory,

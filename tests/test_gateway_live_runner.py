@@ -246,6 +246,31 @@ def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
     assert len(app.cleanup_ctx) == 1
 
 
+def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
+    app = runner.build_live_app(
+        GatewaySettings(
+            internal_keys_path=_keys_file(tmp_path),
+            order_book_stream_enabled=True,
+            order_book_stream_symbols="AAPL",
+        ),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+    assert len(app.cleanup_ctx) == 2
+
+
+def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no symbols"):
+        runner.build_live_app(
+            GatewaySettings(
+                internal_keys_path=_keys_file(tmp_path),
+                order_book_stream_enabled=True,
+            ),
+            _upstream_settings(_token_file(tmp_path)),
+            _unused_factory,
+        )
+
+
 def test_demo_app_registers_no_readiness_recovery(tmp_path: Path) -> None:
     """The demo readiness is a static fake; there is nothing to recover."""
     app = runner.build_demo_app(_settings(tmp_path))
@@ -341,4 +366,6 @@ def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",
+        "/v1/order-book/recent",
+        "/v1/order-book/stream",
     }

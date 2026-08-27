@@ -13,6 +13,7 @@ from schwab_gateway_sdk.models import (
     HistoryResponseV1,
     MoversResponseV1,
     OptionChainResponseV1,
+    OrderBookRecentResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -205,6 +206,31 @@ class GatewayMarketDataClient:
             "/v1/session-history",
             {"symbol": requested, "date": date.isoformat(), "session": session},
             SessionHistoryResponseV1,
+        )
+
+    async def get_recent_order_book(
+        self,
+        symbol: str,
+        *,
+        venue: str,
+        limit: int = 100,
+    ) -> OrderBookRecentResponseV1:
+        requested = symbol.strip()
+        requested_venue = venue.strip().upper()
+        if not requested:
+            raise ValueError("a symbol is required")
+        if requested_venue not in {"NASDAQ", "NYSE"}:
+            raise ValueError("venue must be 'NASDAQ' or 'NYSE'")
+        if not 1 <= limit <= 1000:
+            raise ValueError("order-book limit must be between 1 and 1000")
+        return await self._get_typed(
+            "/v1/order-book/recent",
+            {
+                "symbol": requested,
+                "venue": requested_venue,
+                "limit": str(limit),
+            },
+            OrderBookRecentResponseV1,
         )
 
     async def close(self) -> None:
