@@ -52,6 +52,7 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -70,6 +71,8 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -220,6 +223,7 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
   /v1/order-book/stream:
     get:
       operationId: streamOrderBookV1
@@ -242,6 +246,8 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     internalApiKey:
@@ -598,7 +604,7 @@ components:
     OrderBookRecentResponseV1:
       type: object
       additionalProperties: false
-      required: [schema_version, symbol, venue, is_consolidated, snapshots, generated_at]
+      required: [schema_version, symbol, venue, is_consolidated, snapshots, generated_at, stale, age_seconds]
       properties:
         schema_version: {$ref: "#/components/schemas/SchemaVersion"}
         symbol: {$ref: "#/components/schemas/Symbol"}
@@ -609,6 +615,8 @@ components:
           maxItems: 1000
           items: {$ref: "#/components/schemas/OrderBookSnapshotV1"}
         generated_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        stale: {type: boolean, const: false}
+        age_seconds: {type: number, minimum: 0}
     OrderBookStreamEnvelopeV1:
       type: object
       additionalProperties: false

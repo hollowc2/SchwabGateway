@@ -124,6 +124,10 @@ ADMISSION_CONTROLLER_KEY = web.AppKey(
     "gateway_admission_controller", AdmissionController
 )
 ORDER_BOOK_STORE_KEY = web.AppKey("gateway_order_book_store", OrderBookSnapshotStore)
+ORDER_BOOK_STREAM_ADMISSION_KEY = web.AppKey(
+    "gateway_order_book_stream_admission", AdmissionController
+)
+ORDER_BOOK_MAX_AGE_KEY = web.AppKey("gateway_order_book_max_age_seconds", float)
 
 
 class TokenReadinessProvider(Protocol):
@@ -639,13 +643,26 @@ async def recent_order_book(request: web.Request) -> web.Response:
         limit = _parse_order_book_limit(request)
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
-    snapshots = request.app[ORDER_BOOK_STORE_KEY].recent(symbol, venue, limit=limit)
+    store = request.app[ORDER_BOOK_STORE_KEY]
+    fresh, age_seconds, reason = store.snapshot_health(
+        symbol,
+        venue,
+        max_age_seconds=request.app[ORDER_BOOK_MAX_AGE_KEY],
+    )
+    if not fresh or age_seconds is None:
+        return _error(
+            "order_book_unavailable",
+            f"order-book snapshot is unavailable ({reason})",
+            503,
+        )
+    snapshots = store.recent(symbol, venue, limit=limit)
     return _json(
         OrderBookRecentResponseV1(
             symbol=symbol,
             venue=venue,
             snapshots=snapshots,
             generated_at=dt.datetime.now(UTC),
+            age_seconds=age_seconds,
         )
     )
 
@@ -665,38 +682,67 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
         return _error("invalid_request", str(exc), 400)
 
     store = request.app[ORDER_BOOK_STORE_KEY]
-    subscription = store.subscribe(frozenset(symbols), venue)
-    socket = web.WebSocketResponse(heartbeat=30, autoping=True)
-    await socket.prepare(request)
+    if store.feed_state(venue) != "connected":
+        return _error(
+            "order_book_unavailable",
+            "order-book feed is not connected",
+            503,
+        )
+    principal = request[PRINCIPAL_KEY]
     try:
-        for symbol in symbols:
-            for snapshot in store.recent(symbol, venue, limit=1):
-                envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot)
-                await socket.send_json(envelope.model_dump(mode="json"))
-        while not socket.closed:
-            snapshot_task = asyncio.create_task(subscription.queue.get())
-            receive_task = asyncio.create_task(socket.receive())
-            done, pending = await asyncio.wait(
-                (snapshot_task, receive_task),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if receive_task in done:
-                message = receive_task.result()
-                if message.type in {
-                    web.WSMsgType.CLOSE,
-                    web.WSMsgType.CLOSED,
-                    web.WSMsgType.ERROR,
-                }:
-                    break
-            if snapshot_task in done:
-                envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot_task.result())
-                await socket.send_json(envelope.model_dump(mode="json"))
-    finally:
-        store.unsubscribe(subscription)
-        await socket.close()
-    return socket
+        async with request.app[ORDER_BOOK_STREAM_ADMISSION_KEY].admit(
+            principal.priority_class
+        ):
+            gateway_admission.labels(
+                priority_class=principal.priority_class.value,
+                outcome="admitted",
+            ).inc()
+            socket = web.WebSocketResponse(heartbeat=30, autoping=True)
+            await socket.prepare(request)
+            subscription = store.subscribe(frozenset(symbols), venue)
+            try:
+                for symbol in symbols:
+                    for snapshot in store.recent(symbol, venue, limit=1):
+                        envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot)
+                        await socket.send_json(envelope.model_dump(mode="json"))
+                while not socket.closed:
+                    snapshot_task = asyncio.create_task(subscription.queue.get())
+                    receive_task = asyncio.create_task(socket.receive())
+                    done, pending = await asyncio.wait(
+                        (snapshot_task, receive_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    if receive_task in done:
+                        message = receive_task.result()
+                        if message.type in {
+                            web.WSMsgType.CLOSE,
+                            web.WSMsgType.CLOSED,
+                            web.WSMsgType.ERROR,
+                        }:
+                            break
+                    if snapshot_task in done:
+                        envelope = OrderBookStreamEnvelopeV1(
+                            snapshot=snapshot_task.result()
+                        )
+                        await socket.send_json(envelope.model_dump(mode="json"))
+            finally:
+                store.unsubscribe(subscription)
+                await socket.close()
+            return socket
+    except AdmissionCapacityError:
+        gateway_admission.labels(
+            priority_class=principal.priority_class.value,
+            outcome="rejected",
+        ).inc()
+        return _error(
+            "gateway_capacity_exceeded",
+            "order-book stream capacity is unavailable",
+            429,
+        )
 
 
 def create_app(
@@ -713,9 +759,13 @@ def create_app(
     movers_upstream: MoversUpstream | None = None,
     session_history_upstream: SessionHistoryUpstream | None = None,
     order_book_store: OrderBookSnapshotStore | None = None,
+    order_book_stream_policy: AdmissionPolicy | None = None,
+    order_book_max_age_seconds: float = 15.0,
 ) -> web.Application:
     if upstream_timeout_seconds <= 0:
         raise ValueError("upstream timeout must be positive")
+    if order_book_max_age_seconds <= 0:
+        raise ValueError("order-book maximum age must be positive")
     app = web.Application(middlewares=[audit_middleware, authentication_middleware])
     app[UPSTREAM_KEY] = upstream
     app[SPOT_UPSTREAM_KEY] = spot_upstream or _UnavailableSpotUpstream()
@@ -737,6 +787,11 @@ def create_app(
         admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
+    app[ORDER_BOOK_STREAM_ADMISSION_KEY] = AdmissionController(
+        order_book_stream_policy
+        or AdmissionPolicy(protected_capacity=4, background_capacity=2)
+    )
+    app[ORDER_BOOK_MAX_AGE_KEY] = order_book_max_age_seconds
     app.router.add_get("/health", health, name="health")
     app.router.add_get("/ready", ready, name="ready")
     app.router.add_get("/metrics", metrics, name="metrics")

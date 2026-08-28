@@ -30,6 +30,9 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.order_book_stream_enabled is False
     assert value.order_book_stream_symbols == ""
     assert value.order_book_history_limit == 1000
+    assert value.order_book_stream_protected_capacity == 4
+    assert value.order_book_stream_background_capacity == 2
+    assert value.order_book_max_snapshot_age_seconds == 15
 
 
 def test_gateway_rejects_public_bind_and_order_writes() -> None:
@@ -61,6 +64,10 @@ def test_gateway_validates_live_order_book_configuration() -> None:
         settings(order_book_stream_symbols="bad symbol")
     with pytest.raises(ValidationError, match="unique"):
         settings(order_book_stream_symbols="AAPL,aapl")
+    with pytest.raises(ValidationError, match="stream capacity"):
+        settings(order_book_stream_protected_capacity=0)
+    with pytest.raises(ValidationError, match="maximum snapshot age"):
+        settings(order_book_max_snapshot_age_seconds=301)
 
 
 @pytest.mark.parametrize(

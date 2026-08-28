@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
 import pytest
@@ -9,6 +10,7 @@ from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 from schwab_gateway_sdk.models import OrderBookLevelV1, OrderBookSnapshotV1
 
+from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import create_app
 from schwab_gateway.auth import (
     InternalKeyAuthenticator,
@@ -88,12 +90,15 @@ async def test_recent_order_book_is_authenticated_bounded_and_venue_specific() -
     assert response.status == 200
     assert payload["venue"] == "NASDAQ"
     assert payload["is_consolidated"] is False
+    assert payload["stale"] is False
+    assert payload["age_seconds"] >= 0
     assert [item["sequence"] for item in payload["snapshots"]] == [2]
 
 
 @pytest.mark.asyncio
 async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> None:
     store = OrderBookSnapshotStore(history_limit=10)
+    store.mark_feed_state("NASDAQ", "connected")
     client = TestClient(
         TestServer(
             create_app(
@@ -122,6 +127,101 @@ async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> No
     assert denied.value.status == 401
     assert message["type"] == "order_book_snapshot"
     assert message["snapshot"]["sequence"] == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_websocket_upgrade_does_not_leak_subscription() -> None:
+    store = OrderBookSnapshotStore(history_limit=10)
+    store.mark_feed_state("NASDAQ", "connected")
+    client = TestClient(
+        TestServer(
+            create_app(
+                _UnusedQuoteUpstream(),
+                _authenticator(),
+                order_book_store=store,
+            )
+        )
+    )
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/v1/order-book/stream?symbols=AAPL&venue=NASDAQ",
+            headers={"X-Internal-API-Key": "valid-key"},
+        )
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert store.subscription_count == 0
+
+
+@pytest.mark.asyncio
+async def test_order_book_websocket_capacity_is_bounded_and_released() -> None:
+    store = OrderBookSnapshotStore(history_limit=10)
+    store.mark_feed_state("NASDAQ", "connected")
+    client = TestClient(
+        TestServer(
+            create_app(
+                _UnusedQuoteUpstream(),
+                _authenticator(),
+                order_book_store=store,
+                order_book_stream_policy=AdmissionPolicy(
+                    protected_capacity=1,
+                    background_capacity=1,
+                ),
+            )
+        )
+    )
+    await client.start_server()
+    path = "/v1/order-book/stream?symbols=AAPL&venue=NASDAQ"
+    headers = {"X-Internal-API-Key": "valid-key"}
+    try:
+        first = await client.ws_connect(path, headers=headers)
+        with pytest.raises(WSServerHandshakeError) as rejected:
+            await client.ws_connect(path, headers=headers)
+        await first.close()
+        await asyncio.sleep(0)
+        replacement = await client.ws_connect(path, headers=headers)
+        await replacement.close()
+    finally:
+        await client.close()
+
+    assert rejected.value.status == 429
+    assert store.subscription_count == 0
+
+
+@pytest.mark.asyncio
+async def test_recent_order_book_fails_closed_when_snapshot_is_stale() -> None:
+    now = [0.0]
+    store = OrderBookSnapshotStore(
+        history_limit=10,
+        monotonic_clock=lambda: now[0],
+    )
+    store.publish(_snapshot(1))
+    now[0] = 16.0
+    client = TestClient(
+        TestServer(
+            create_app(
+                _UnusedQuoteUpstream(),
+                _authenticator(),
+                order_book_store=store,
+                order_book_max_age_seconds=15,
+            )
+        )
+    )
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/v1/order-book/recent?symbol=AAPL&venue=NASDAQ",
+            headers={"X-Internal-API-Key": "valid-key"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "order_book_unavailable"
+    assert "snapshot_stale" in payload["error"]["message"]
 
 
 def test_slow_order_book_subscriber_drops_oldest_without_growing_unbounded() -> None:

@@ -156,3 +156,23 @@ def test_metric_deltas_reset_at_continuity_epoch_boundaries() -> None:
     assert rows[1]["snapshot_interval_seconds"] is None
     assert rows[1]["inferred_added_size"] == 0
     assert rows[1]["inferred_removed_size"] == 0
+
+
+def test_correlations_pair_successive_rows_within_each_symbol_group() -> None:
+    aapl = [
+        _snapshot(0, bid_price=100, ask_price=102, bid_size=20, ask_size=10),
+        _snapshot(1, bid_price=101, ask_price=103, bid_size=30, ask_size=10),
+        _snapshot(2, bid_price=99, ask_price=101, bid_size=10, ask_size=30),
+    ]
+    msft = [
+        _snapshot(0, bid_price=200, ask_price=202, bid_size=15, ask_size=25),
+        _snapshot(1, bid_price=199, ask_price=201, bid_size=10, ask_size=30),
+        _snapshot(2, bid_price=202, ask_price=204, bid_size=40, ask_size=10),
+    ]
+    msft = [snapshot.model_copy(update={"symbol": "MSFT"}) for snapshot in msft]
+    interleaved = [value for pair in zip(aapl, msft, strict=True) for value in pair]
+
+    _rows, summary = derive_metrics(interleaved, depth_levels=1)
+
+    assert summary["imbalance_vs_next_midpoint_return_pearson"] is not None
+    assert summary["depth_vs_next_absolute_midpoint_move_pearson"] is not None

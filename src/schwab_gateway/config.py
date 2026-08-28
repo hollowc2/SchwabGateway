@@ -36,6 +36,9 @@ class GatewaySettings(BaseSettings):
     order_book_stream_symbols: str = ""
     order_book_history_limit: int = 1000
     order_book_subscriber_queue_limit: int = 100
+    order_book_stream_protected_capacity: int = 4
+    order_book_stream_background_capacity: int = 2
+    order_book_max_snapshot_age_seconds: float = 15.0
 
     @field_validator("bind_host")
     @classmethod
@@ -97,6 +100,25 @@ class GatewaySettings(BaseSettings):
     def order_book_queue_limit_must_be_bounded(cls, value: int) -> int:
         if not 1 <= value <= 1000:
             raise ValueError("order-book subscriber queue limit must be between 1 and 1000")
+        return value
+
+    @field_validator(
+        "order_book_stream_protected_capacity",
+        "order_book_stream_background_capacity",
+    )
+    @classmethod
+    def order_book_stream_capacity_must_be_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 64:
+            raise ValueError("order-book stream capacity must be between 1 and 64")
+        return value
+
+    @field_validator("order_book_max_snapshot_age_seconds")
+    @classmethod
+    def order_book_max_age_must_be_bounded(cls, value: float) -> float:
+        if not math.isfinite(value) or not 0 < value <= 300:
+            raise ValueError(
+                "order-book maximum snapshot age must be greater than 0 and at most 300s"
+            )
         return value
 
     @field_validator("order_book_stream_symbols")

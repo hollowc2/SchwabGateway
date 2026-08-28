@@ -615,12 +615,21 @@ class OrderBookRecentResponseV1(GatewayModel):
     is_consolidated: Literal[False] = False
     snapshots: tuple[OrderBookSnapshotV1, ...]
     generated_at: dt.datetime
+    stale: Literal[False] = False
+    age_seconds: float
 
     @field_validator("generated_at")
     @classmethod
     def generated_at_must_be_timezone_aware(cls, value: dt.datetime) -> dt.datetime:
         if value.utcoffset() is None:
             raise ValueError("order-book response timestamp must be timezone-aware")
+        return value
+
+    @field_validator("age_seconds")
+    @classmethod
+    def age_seconds_must_be_nonnegative(cls, value: float) -> float:
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("order-book response age must be finite and nonnegative")
         return value
 
     @model_validator(mode="after")

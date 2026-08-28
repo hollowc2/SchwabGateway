@@ -10,6 +10,10 @@ authenticated `GET /v1/order-book/recent` and the read-only
 order-entry, or other write routes, and
 `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must remain false.
 
+Recent order-book reads are freshness-gated and fail closed during feed outages. The
+WebSocket surface has dedicated protected/background connection limits in addition to
+bounded per-subscriber queues.
+
 For offline research, the repository also provides a bounded, standalone equity
 order-book recorder. It captures one explicitly selected Schwab `NASDAQ_BOOK` or
 `NYSE_BOOK` stream, preserves relevant raw websocket frames, writes normalized snapshots

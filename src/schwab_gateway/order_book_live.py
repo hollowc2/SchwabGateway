@@ -82,6 +82,7 @@ class OrderBookLiveFeed:
         connection_id = 0
         while True:
             stream: Any = None
+            self._store.mark_feed_state(self._venue, "connecting")
             try:
                 stream = await bootstrap_stream_under_token_lock(
                     self._manager,
@@ -91,11 +92,11 @@ class OrderBookLiveFeed:
                     login_timeout_seconds=self._login_timeout_seconds,
                 )
                 connection_id += 1
-                failures = 0
                 decoder = _LiveBookDecoder(BOOK_SERVICE_BY_VENUE[self._venue])
                 seen_symbols: set[str] = set()
 
                 def handle_book(message: Any) -> None:
+                    nonlocal failures
                     if decoder.last_received_at is None:
                         return
                     try:
@@ -106,6 +107,11 @@ class OrderBookLiveFeed:
                         )
                     except OrderBookMalformedError:
                         return
+                    if snapshots:
+                        # Reset backoff only after the connection carries validated data,
+                        # not merely after login. Subscription/transport failure loops
+                        # therefore retain exponential backoff and stop hammering tokens.
+                        failures = 0
                     for snapshot in snapshots:
                         flags = list(snapshot.data_quality_flags)
                         if snapshot.sequence is None:
@@ -130,6 +136,7 @@ class OrderBookLiveFeed:
                 else:
                     stream.add_nyse_book_handler(handle_book)
                     await stream.nyse_book_subs(list(self._symbols))
+                self._store.mark_feed_state(self._venue, "connected")
                 log.info(
                     "gateway_order_book_stream_connected",
                     venue=self._venue,
@@ -141,6 +148,7 @@ class OrderBookLiveFeed:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._store.mark_feed_state(self._venue, "disconnected")
                 failures += 1
                 delay = min(2 ** min(failures - 1, 3), 8)
                 log.warning(
@@ -151,6 +159,7 @@ class OrderBookLiveFeed:
                 )
                 await asyncio.sleep(delay)
             finally:
+                self._store.mark_feed_state(self._venue, "disconnected")
                 if stream is not None:
                     try:
                         await stream.logout()

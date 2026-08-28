@@ -94,6 +94,11 @@ def build_demo_app(settings: GatewaySettings) -> web.Application:
             history_limit=settings.order_book_history_limit,
             subscriber_queue_limit=settings.order_book_subscriber_queue_limit,
         ),
+        order_book_stream_policy=AdmissionPolicy(
+            protected_capacity=settings.order_book_stream_protected_capacity,
+            background_capacity=settings.order_book_stream_background_capacity,
+        ),
+        order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
 
 
@@ -149,6 +154,11 @@ def build_live_app(
         movers_upstream=DirectSchwabMoversUpstream(provider),
         session_history_upstream=DirectSchwabSessionHistoryUpstream(provider),
         order_book_store=order_book_store,
+        order_book_stream_policy=AdmissionPolicy(
+            protected_capacity=settings.order_book_stream_protected_capacity,
+            background_capacity=settings.order_book_stream_background_capacity,
+        ),
+        order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
     if settings.order_book_stream_enabled:

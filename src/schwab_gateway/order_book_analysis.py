@@ -8,6 +8,7 @@ import json
 import math
 import os
 import statistics
+from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -196,17 +197,23 @@ def derive_metrics(
             "midpoint": midpoint,
         }
 
-    next_pairs = list(zip(rows, rows[1:], strict=False))
+    grouped_rows: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped_rows[
+            (row["symbol"], row["venue"], row["continuity_epoch"])
+        ].append(row)
+    next_pairs = [
+        pair
+        for group in grouped_rows.values()
+        for pair in zip(group, group[1:], strict=False)
+    ]
     summary = {
         "row_count": len(rows),
         "imbalance_vs_next_midpoint_return_pearson": _pearson(
             (
                 (current["book_imbalance"], following["midpoint_return_bps"])
                 for current, following in next_pairs
-                if current["symbol"] == following["symbol"]
-                and current["venue"] == following["venue"]
-                and current["continuity_epoch"] == following["continuity_epoch"]
-                and current["book_imbalance"] is not None
+                if current["book_imbalance"] is not None
                 and following["midpoint_return_bps"] is not None
             )
         ),
@@ -214,10 +221,7 @@ def derive_metrics(
             (
                 (current["total_depth_size"], abs(following["midpoint_change"]))
                 for current, following in next_pairs
-                if current["symbol"] == following["symbol"]
-                and current["venue"] == following["venue"]
-                and current["continuity_epoch"] == following["continuity_epoch"]
-                and following["midpoint_change"] is not None
+                if following["midpoint_change"] is not None
             )
         ),
         "correlations_are_descriptive_not_causal": True,

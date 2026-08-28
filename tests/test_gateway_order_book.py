@@ -31,6 +31,8 @@ from schwab_gateway.order_book_capture import (
     capture_order_book_with_reconnects,
     parse_symbols,
 )
+from schwab_gateway.order_book_live import OrderBookLiveFeed
+from schwab_gateway.order_book_store import OrderBookSnapshotStore
 
 UTC = dt.timezone.utc
 RECEIVED_AT = dt.datetime(2026, 8, 27, 16, 0, tzinfo=UTC)
@@ -453,3 +455,57 @@ def test_request_and_cli_keep_scope_explicit(tmp_path: Path) -> None:
         ]
     )
     assert args.venue == "NYSE"
+
+
+@pytest.mark.asyncio
+async def test_live_feed_retains_backoff_until_validated_data_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _ScopedAsyncManager()
+    delays: list[int] = []
+
+    class FailingSubscriptionStream:
+        async def login(self) -> None:
+            assert manager.in_transaction
+
+        def set_json_decoder(self, _decoder: Any) -> None:
+            pass
+
+        def add_nasdaq_book_handler(self, _handler: Any) -> None:
+            pass
+
+        async def nasdaq_book_subs(self, _symbols: list[str]) -> None:
+            raise ConnectionError("synthetic subscription failure")
+
+        async def logout(self) -> None:
+            pass
+
+    async def fake_sleep(delay: int) -> None:
+        delays.append(delay)
+        if len(delays) == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("schwab_gateway.order_book_live.asyncio.sleep", fake_sleep)
+    settings = GatewayUpstreamSettings(
+        SCHWAB_API_KEY="fake-key",
+        SCHWAB_SECRET_KEY="fake-secret",
+        SCHWAB_TOKEN_PATH=tmp_path / "tokens.json",
+    )
+    store = OrderBookSnapshotStore()
+    feed = OrderBookLiveFeed(
+        manager,  # type: ignore[arg-type]
+        settings,
+        lambda *_args, **_kwargs: _FakeAsyncClient(),
+        store,
+        venue="NASDAQ",
+        symbols=("AAPL",),
+        stream_client_factory=lambda _client: FailingSubscriptionStream(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await feed.run_forever()
+
+    assert delays == [1, 2, 4]
+    assert manager.calls == 3
+    assert store.feed_state("NASDAQ") == "disconnected"
