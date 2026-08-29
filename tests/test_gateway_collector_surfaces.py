@@ -837,12 +837,14 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
         "/v1/history",
         "/v1/movers",
         "/v1/session-history",
+        "/v1/order-book/recent",
+        "/v1/order-book/stream",
     }
     assert {method for method, _path in shapes} == {"GET", "HEAD"}
     assert not any(
         sensitive in path
         for _method, path in shapes
-        for sensitive in ("account", "order", "position", "transaction", "stream")
+        for sensitive in ("account", "/v1/orders", "position", "transaction")
     )
 
 

@@ -267,7 +267,7 @@ async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
         'gateway_client_requests_total{operation="unknown",status="404"} 1.0'
         in metrics.text
     )
-    assert all("order" not in path for _method, path in route_shapes)
+    assert all(path != "/v1/orders" for _method, path in route_shapes)
     assert all(method != "POST" for method, _path in route_shapes)
 
 

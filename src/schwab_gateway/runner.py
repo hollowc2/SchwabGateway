@@ -27,6 +27,8 @@ from schwab_gateway.live_provider import (
     TokenReadinessRecovery,
 )
 from schwab_gateway.logging import get_logger, setup_logging
+from schwab_gateway.order_book_live import OrderBookLiveFeed
+from schwab_gateway.order_book_store import OrderBookSnapshotStore
 from schwab_gateway.token_adapter import LockedSchwabClientAdapter
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
@@ -88,6 +90,15 @@ def build_demo_app(settings: GatewaySettings) -> web.Application:
             protected_capacity=settings.protected_capacity,
             background_capacity=settings.background_capacity,
         ),
+        order_book_store=OrderBookSnapshotStore(
+            history_limit=settings.order_book_history_limit,
+            subscriber_queue_limit=settings.order_book_subscriber_queue_limit,
+        ),
+        order_book_stream_policy=AdmissionPolicy(
+            protected_capacity=settings.order_book_stream_protected_capacity,
+            background_capacity=settings.order_book_stream_background_capacity,
+        ),
+        order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
 
 
@@ -114,6 +125,10 @@ def build_live_app(
         app_secret=upstream_settings.app_secret.get_secret_value(),
     )
     provider = LockedSchwabMarketDataProvider(adapter)
+    order_book_store = OrderBookSnapshotStore(
+        history_limit=settings.order_book_history_limit,
+        subscriber_queue_limit=settings.order_book_subscriber_queue_limit,
+    )
 
     # One token read, no Schwab request. Fails closed.
     manager.load()
@@ -138,8 +153,34 @@ def build_live_app(
         history_upstream=DirectSchwabHistoryUpstream(provider),
         movers_upstream=DirectSchwabMoversUpstream(provider),
         session_history_upstream=DirectSchwabSessionHistoryUpstream(provider),
+        order_book_store=order_book_store,
+        order_book_stream_policy=AdmissionPolicy(
+            protected_capacity=settings.order_book_stream_protected_capacity,
+            background_capacity=settings.order_book_stream_background_capacity,
+        ),
+        order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
+    if settings.order_book_stream_enabled:
+        symbols = tuple(
+            symbol for symbol in settings.order_book_stream_symbols.split(",") if symbol
+        )
+        if not symbols:
+            raise ValueError(
+                "live order-book streaming is enabled but no symbols are configured"
+            )
+        app.cleanup_ctx.append(
+            _order_book_feed_ctx(
+                OrderBookLiveFeed(
+                    manager,
+                    upstream_settings,
+                    client_factory,
+                    order_book_store,
+                    venue=settings.order_book_stream_venue,
+                    symbols=symbols,
+                )
+            )
+        )
     return app
 
 
@@ -152,6 +193,19 @@ def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> Any:
 
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
         task = asyncio.create_task(recovery.run_forever())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    return ctx
+
+
+def _order_book_feed_ctx(feed: OrderBookLiveFeed) -> Any:
+    async def ctx(_app: web.Application) -> AsyncIterator[None]:
+        task = asyncio.create_task(feed.run_forever())
         try:
             yield
         finally:

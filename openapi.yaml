@@ -52,6 +52,7 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -70,6 +71,8 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -195,6 +198,56 @@ paths:
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
         "504": {$ref: "#/components/responses/Error"}
+  /v1/order-book/recent:
+    get:
+      operationId: recentOrderBookV1
+      description: >-
+        Bounded recent Schwab venue depth. NASDAQ_BOOK and NYSE_BOOK are venue-specific
+        feeds and are never represented as a consolidated national market system book.
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: {$ref: "#/components/schemas/Symbol"}
+        - in: query
+          name: venue
+          required: true
+          schema: {$ref: "#/components/schemas/OrderBookVenue"}
+        - in: query
+          name: limit
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 100}
+      responses:
+        "200": {$ref: "#/components/responses/OrderBookRecentResponse"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/order-book/stream:
+    get:
+      operationId: streamOrderBookV1
+      description: >-
+        Authenticated WebSocket upgrade. Each server message is an
+        OrderBookStreamEnvelopeV1; subscriber queues are bounded and slow consumers may
+        skip intermediate snapshots.
+      security: [{internalApiKey: []}]
+      parameters:
+        - in: query
+          name: symbols
+          required: true
+          schema: {type: string, minLength: 1}
+        - in: query
+          name: venue
+          required: true
+          schema: {$ref: "#/components/schemas/OrderBookVenue"}
+      responses:
+        "101": {description: WebSocket protocol switch.}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
 components:
   securitySchemes:
     internalApiKey:
@@ -239,6 +292,11 @@ components:
       content:
         application/json:
           schema: {$ref: "#/components/schemas/SessionHistoryResponseV1"}
+    OrderBookRecentResponse:
+      description: Bounded recent venue-specific order-book snapshots.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/OrderBookRecentResponseV1"}
     Error:
       description: Bounded error.
       content:
@@ -502,6 +560,71 @@ components:
       properties:
         schema_version: {$ref: "#/components/schemas/SchemaVersion"}
         session_history: {$ref: "#/components/schemas/SessionHistoryV1"}
+    OrderBookVenue:
+      type: string
+      enum: [NASDAQ, NYSE]
+    OrderBookParticipantV1:
+      type: object
+      additionalProperties: false
+      required: [exchange, size, sequence]
+      properties:
+        exchange: {type: string, minLength: 1}
+        size: {type: integer, minimum: 0}
+        sequence: {type: [integer, "null"]}
+    OrderBookLevelV1:
+      type: object
+      additionalProperties: false
+      required: [price, total_size, participant_count, participants]
+      properties:
+        price: {type: number, exclusiveMinimum: 0}
+        total_size: {type: integer, minimum: 0}
+        participant_count: {type: integer, minimum: 0}
+        participants:
+          type: array
+          items: {$ref: "#/components/schemas/OrderBookParticipantV1"}
+    OrderBookSnapshotV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, symbol, venue, service, connection_id, continuity_epoch, sequence, event_timestamp, gateway_received_at, source, is_consolidated, bids, asks, data_quality_flags]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        venue: {$ref: "#/components/schemas/OrderBookVenue"}
+        service: {type: string, enum: [NASDAQ_BOOK, NYSE_BOOK]}
+        connection_id: {type: integer, minimum: 1}
+        continuity_epoch: {type: integer, minimum: 1}
+        sequence: {type: [integer, "null"]}
+        event_timestamp: {anyOf: [{$ref: "#/components/schemas/AwareTimestamp"}, {type: "null"}]}
+        gateway_received_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        source: {type: string, const: schwab_streaming}
+        is_consolidated: {type: boolean, const: false}
+        bids: {type: array, items: {$ref: "#/components/schemas/OrderBookLevelV1"}}
+        asks: {type: array, items: {$ref: "#/components/schemas/OrderBookLevelV1"}}
+        data_quality_flags: {$ref: "#/components/schemas/QualityFlags"}
+    OrderBookRecentResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, symbol, venue, is_consolidated, snapshots, generated_at, stale, age_seconds]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        symbol: {$ref: "#/components/schemas/Symbol"}
+        venue: {$ref: "#/components/schemas/OrderBookVenue"}
+        is_consolidated: {type: boolean, const: false}
+        snapshots:
+          type: array
+          maxItems: 1000
+          items: {$ref: "#/components/schemas/OrderBookSnapshotV1"}
+        generated_at: {$ref: "#/components/schemas/AwareTimestamp"}
+        stale: {type: boolean, const: false}
+        age_seconds: {type: number, minimum: 0}
+    OrderBookStreamEnvelopeV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, type, snapshot]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        type: {type: string, const: order_book_snapshot}
+        snapshot: {$ref: "#/components/schemas/OrderBookSnapshotV1"}
     GatewayErrorV1:
       type: object
       additionalProperties: false

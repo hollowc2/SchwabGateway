@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ORDER_BOOK_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 
 
 class GatewaySettings(BaseSettings):
@@ -27,6 +31,14 @@ class GatewaySettings(BaseSettings):
     option_chain_cache_ttl_seconds: float = 4.0
     option_chain_cache_max_entries: int = 16
     option_chain_max_inflight: int = 4
+    order_book_stream_enabled: bool = False
+    order_book_stream_venue: Literal["NASDAQ", "NYSE"] = "NASDAQ"
+    order_book_stream_symbols: str = ""
+    order_book_history_limit: int = 1000
+    order_book_subscriber_queue_limit: int = 100
+    order_book_stream_protected_capacity: int = 4
+    order_book_stream_background_capacity: int = 2
+    order_book_max_snapshot_age_seconds: float = 15.0
 
     @field_validator("bind_host")
     @classmethod
@@ -75,6 +87,51 @@ class GatewaySettings(BaseSettings):
         if not 1 <= value <= 16:
             raise ValueError("option-chain cache capacity must be between 1 and 16")
         return value
+
+    @field_validator("order_book_history_limit")
+    @classmethod
+    def order_book_history_limit_must_be_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 10_000:
+            raise ValueError("order-book history limit must be between 1 and 10000")
+        return value
+
+    @field_validator("order_book_subscriber_queue_limit")
+    @classmethod
+    def order_book_queue_limit_must_be_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 1000:
+            raise ValueError("order-book subscriber queue limit must be between 1 and 1000")
+        return value
+
+    @field_validator(
+        "order_book_stream_protected_capacity",
+        "order_book_stream_background_capacity",
+    )
+    @classmethod
+    def order_book_stream_capacity_must_be_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 64:
+            raise ValueError("order-book stream capacity must be between 1 and 64")
+        return value
+
+    @field_validator("order_book_max_snapshot_age_seconds")
+    @classmethod
+    def order_book_max_age_must_be_bounded(cls, value: float) -> float:
+        if not math.isfinite(value) or not 0 < value <= 300:
+            raise ValueError(
+                "order-book maximum snapshot age must be greater than 0 and at most 300s"
+            )
+        return value
+
+    @field_validator("order_book_stream_symbols")
+    @classmethod
+    def order_book_symbols_must_be_bounded(cls, value: str) -> str:
+        symbols = tuple(part.strip().upper() for part in value.split(",") if part.strip())
+        if len(symbols) > 25:
+            raise ValueError("at most 25 live order-book symbols are allowed")
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("live order-book symbols must be unique")
+        if any(not ORDER_BOOK_SYMBOL_PATTERN.fullmatch(symbol) for symbol in symbols):
+            raise ValueError("one or more live order-book symbols are invalid")
+        return ",".join(symbols)
 
     @field_validator("order_writes_enabled")
     @classmethod

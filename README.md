@@ -4,11 +4,23 @@ SchwabGateway is an internal, read-only HTTP service for bounded Charles Schwab
 market-data reads. The repository also builds `schwab_gateway_sdk` and
 `schwab_token_store` as independent Python packages.
 
-The v1 contract exposes only `GET /health`, `/ready`, `/metrics`, `/v1/quotes`,
-`/v1/spot`, `/v1/chain`, `/v1/option-chain`, `/v1/history`, `/v1/movers`, and
-`/v1/session-history`. There are no account, position, transaction, streaming, or order
-routes, and
+The v1 HTTP contract exposes the bounded market-data routes in `openapi.yaml`, including
+authenticated `GET /v1/order-book/recent` and the read-only
+`/v1/order-book/stream` WebSocket upgrade. There are no account, position, transaction,
+order-entry, or other write routes, and
 `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must remain false.
+
+Recent order-book reads are freshness-gated and fail closed during feed outages. The
+WebSocket surface has dedicated protected/background connection limits in addition to
+bounded per-subscriber queues.
+
+For offline research, the repository also provides a bounded, standalone equity
+order-book recorder. It captures one explicitly selected Schwab `NASDAQ_BOOK` or
+`NYSE_BOOK` stream, preserves relevant raw websocket frames, writes normalized snapshots
+separately, and produces a hashed evidence manifest. These are venue-specific Level II
+books, not consolidated market depth. Only the bounded stream-login handshake holds the
+token lock; recording and reconnect backoff run after it is released. Derived metrics and
+catalogs remain separate from immutable raw evidence. See `docs/order-book-research.md`.
 
 `/v1/chain` remains the metadata-only compatibility surface. `/v1/option-chain` returns
 normalized contracts for exactly one symbol and expiration, with a hard limit of 5000

@@ -18,6 +18,9 @@ dependencies = [
 schwab-gateway = "schwab_gateway.runner:main"
 schwab-gateway-issue-keys = "schwab_gateway.issue_keys:main"
 schwab-gateway-probe-credentials = "schwab_gateway.probe_credentials:main"
+schwab-gateway-capture-order-books = "schwab_gateway.capture_order_books:main"
+schwab-gateway-derive-order-books = "schwab_gateway.derive_order_books:main"
+schwab-gateway-catalog-order-books = "schwab_gateway.catalog_order_books:main"
 
 [build-system]
 requires = ["hatchling"]
