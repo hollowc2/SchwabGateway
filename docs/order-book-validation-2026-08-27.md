@@ -142,13 +142,54 @@ healthy and isolated on loopback port 8012. The stopped emergency legacy contain
 `sha256:6eb9f560effae529a2f578b5a4e5a1b0da2fd124cb4566fe9b097f01ec8b0ec8`
 also remained available.
 
-The default `/opt/schwab-gateway` checkout is a dirty detached `v0.1.0` worktree with
-untracked production and candidate overlays, and its production Compose render does not
-select the intended candidate image. The deployment gate therefore fails closed until
-an exact clean release checkout is staged without overwriting those files and Corey
-approves the named production recreate and rollback packet.
+The default `/opt/schwab-gateway` checkout remained untouched because it is a dirty
+detached `v0.1.0` worktree with untracked production and candidate overlays. Instead, the
+release was staged as a clean detached checkout at
+`/tmp/schwab-gateway-release-aa9d6e6`, revision
+`aa9d6e65a91c14eadf70df1c3da15101fb84d3f9`, with local release tag
+`gateway-order-book-aa9d6e6`. The full predeploy gate passed at
+`2026-08-29T01:02:06Z`.
 
-**Live result: PENDING EXPLICIT APPROVAL.** No production rebuild, restart, deployment,
-monitoring change, or candidate action occurred during this validation update. The
-primary rollback baseline is the exact healthy standalone image `sha256:7ea140f...`; the
-preserved legacy image above is the emergency fallback.
+The first approved activation selected the exact candidate image, but the inherited
+production environment rendered the order-book stream disabled with no configured
+symbols. Although the container was healthy, this failed the mandatory AAPL/NASDAQ
+configuration gate. Production was immediately restored to exact image
+`sha256:7ea140f43cf6e1bce8cc1c0328ca991060fb96e09e8f916c79e9972fc2aa2100`.
+The rollback returned healthy with token state `ready`, zero restarts, loopback port
+8011, Prometheus up, and unchanged trading-bot identities before diagnosis continued.
+
+After a second explicit approval, the same immutable image was activated with
+command-scoped, non-secret settings `stream=true`, `venue=NASDAQ`, and `symbols=AAPL`;
+order writes remained disabled. The final production container
+`b1495fe5011934c57619448783659aa760471910b6378ee266938f767bb7c4fb`
+started at `2026-08-29T01:06:14.995197518Z`. Its Schwab stream logged one successful
+AAPL/NASDAQ connection at `2026-08-29T01:06:18.633221Z`.
+
+The postdeploy gate passed at `2026-08-29T01:08:03Z` and the subsequent stability check
+confirmed:
+
+- exact running and configured image
+  `sha256:f1d287294864c05b00ca201d1d86f8344f0d6f61121074982f92667468fec7f0`;
+- exactly one `schwab_gateway_live`, healthy, with zero restarts;
+- user `1001:1001`, read-only root, all capabilities dropped,
+  `no-new-privileges`, and only `127.0.0.1:8011` published;
+- health `200`, readiness `ready`, and token state `ready`;
+- AAPL/NASDAQ streaming enabled, order writes disabled, one connection, zero
+  reconnects, zero logged errors, and zero subscriber drops;
+- authenticated recent HTTP returned the expected freshness-gated
+  `503 order_book_unavailable` after the extended session, while authenticated
+  WebSocket upgraded with `101` and delivered an AAPL/NASDAQ,
+  `is_consolidated=false`, `missing_sequence` snapshot;
+- Prometheus target `schwab-gateway:8011` remained up;
+- the candidate stayed healthy and unchanged on loopback port 8012; and
+- the exact SPX, NDX, and XSP trading-bot container identities remained running with
+  zero restarts.
+
+**Live result: PASS.** The candidate-tested image is live with the required
+venue-specific AAPL/NASDAQ feed and every mandatory postdeployment check passed. The
+primary rollback image
+`sha256:7ea140f43cf6e1bce8cc1c0328ca991060fb96e09e8f916c79e9972fc2aa2100`
+and emergency legacy image
+`sha256:6eb9f560effae529a2f578b5a4e5a1b0da2fd124cb4566fe9b097f01ec8b0ec8`
+remain available; no image, volume, evidence, secret, monitoring configuration, or
+trading-bot service was deleted or altered.
