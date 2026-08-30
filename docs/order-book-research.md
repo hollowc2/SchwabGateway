@@ -131,6 +131,3 @@ Recent reads fail closed with `503` when the configured feed is disconnected, ha
 snapshot for the symbol, or the newest in-memory snapshot exceeds the configured maximum
 age (15 seconds by default). WebSocket connections use separate protected/background
 capacity pools held for each socket's complete lifetime; excess upgrades receive `429`.
-
-The first live shared-token, venue, derivation, catalog, and consumer smoke results are
-recorded in `order-book-validation-2026-08-27.md`.

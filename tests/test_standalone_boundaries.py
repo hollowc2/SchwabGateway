@@ -31,7 +31,7 @@ def test_contract_contains_only_parity_routes() -> None:
     """This lock is deliberately widened, not incidentally edited.
 
     ``/v1/history`` and ``/v1/movers`` were added on top of the original
-    ButterflyGuy-parity extraction (see ``MIGRATION_PROVENANCE.md``) to expose the two
+    ButterflyGuy-parity extraction to expose the two
     additional read-only Schwab surfaces (``get_daily_bars``/``get_intraday_bars`` and
     ``get_market_movers``) the equity scanner needs before it can be extracted onto the
     gateway SDK.
