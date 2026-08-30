@@ -22,6 +22,7 @@ from schwab_gateway.live_provider import (
     LockedSchwabMarketDataProvider,
     extract_spot_price,
     extract_spot_price_and_timestamp,
+    upstream_operation_latency,
 )
 from schwab_gateway.token_adapter import (
     LockedSchwabClientAdapter,
@@ -247,6 +248,33 @@ async def test_spot_read_runs_in_one_transaction_and_closes_its_session() -> Non
     assert client.session.closed == 1
 
 
+def _latency_count(operation: str, status: str) -> float:
+    for metric in upstream_operation_latency.collect():
+        for sample in metric.samples:
+            if (
+                sample.name.endswith("_count")
+                and sample.labels == {"operation": operation, "status": status}
+            ):
+                return sample.value
+    return 0.0
+
+
+@pytest.mark.asyncio
+async def test_execute_records_upstream_latency_by_operation_and_status() -> None:
+    client = _FakeClient()
+    provider, _ = _provider(client)
+    before_success = _latency_count("spot", "success")
+
+    await provider.get_spot_price("$SPX")
+    assert _latency_count("spot", "success") == before_success + 1
+
+    client.quote_response = _Response(None, raises=RuntimeError("upstream refused"))
+    before_error = _latency_count("spot", "error")
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_spot_price("$SPX")
+    assert _latency_count("spot", "error") == before_error + 1
+
+
 @pytest.mark.asyncio
 async def test_spot_read_closes_its_session_even_when_the_call_fails() -> None:
     client = _FakeClient()
@@ -309,7 +337,9 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
     started = loop.time()
     try:
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.02)
+            await asyncio.wait_for(
+                provider._execute("spot", blocking_operation), timeout=0.02
+            )
         assert loop.time() - started < 0.2
         assert entered.is_set()
         assert calls == 1
@@ -317,14 +347,16 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
         # This request times out waiting for the provider lease. It must not create a
         # second daemon thread while the first synchronous transaction is still blocked.
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.02)
+            await asyncio.wait_for(
+                provider._execute("spot", blocking_operation), timeout=0.02
+            )
         assert calls == 1
     finally:
         release.set()
 
-    assert await asyncio.wait_for(provider._execute(blocking_operation), timeout=0.5) == (
-        "complete"
-    )
+    assert await asyncio.wait_for(
+        provider._execute("spot", blocking_operation), timeout=0.5
+    ) == "complete"
     assert calls == 2
 
 

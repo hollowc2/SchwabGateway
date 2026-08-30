@@ -23,9 +23,24 @@ from schwab_token_store import (
     TokenReauthorizationRequiredError,
     TokenRefreshError,
     TokenRevokedError,
+    token_lock_hold_seconds,
+    token_lock_wait_seconds,
 )
 
 NOW = 2_000_000_000.0
+
+
+def _histogram_count(histogram: object, **labels: str) -> float:
+    """Read one labelled histogram's observation count out of the default registry."""
+    target = "_".join(sorted(f"{key}={value}" for key, value in labels.items()))
+    for metric in histogram.collect():
+        for sample in metric.samples:
+            if not sample.name.endswith("_count"):
+                continue
+            got = "_".join(sorted(f"{k}={v}" for k, v in sample.labels.items()))
+            if got == target:
+                return sample.value
+    return 0.0
 
 
 def token_document(generation: int = 0) -> dict:
@@ -120,6 +135,57 @@ def test_read_locked_uses_the_existing_lock_without_write_flags(
     assert len(observed_flags) == 1
     assert observed_flags[0] & os.O_ACCMODE == os.O_RDONLY
     assert observed_flags[0] & os.O_CREAT == 0
+
+
+def test_lock_acquisition_and_hold_are_observed_per_mode(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    store = AtomicFileTokenStore(path)
+    with store.locked(1.0):  # create the lock file so read_locked can open it
+        pass
+
+    read_wait = _histogram_count(token_lock_wait_seconds, mode="shared", outcome="acquired")
+    read_hold = _histogram_count(token_lock_hold_seconds, mode="shared")
+    write_wait = _histogram_count(
+        token_lock_wait_seconds, mode="exclusive", outcome="acquired"
+    )
+    write_hold = _histogram_count(token_lock_hold_seconds, mode="exclusive")
+
+    with store.read_locked(1.0):
+        pass
+    with store.locked(1.0):
+        pass
+
+    assert _histogram_count(
+        token_lock_wait_seconds, mode="shared", outcome="acquired"
+    ) == read_wait + 1
+    assert _histogram_count(token_lock_hold_seconds, mode="shared") == read_hold + 1
+    assert _histogram_count(
+        token_lock_wait_seconds, mode="exclusive", outcome="acquired"
+    ) == write_wait + 1
+    assert _histogram_count(token_lock_hold_seconds, mode="exclusive") == write_hold + 1
+
+
+def test_lock_wait_timeout_is_observed_without_a_hold_sample(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    store = AtomicFileTokenStore(path)
+
+    blocker = AtomicFileTokenStore(path)
+    with blocker.locked(1.0):
+        timeouts = _histogram_count(
+            token_lock_wait_seconds, mode="exclusive", outcome="timeout"
+        )
+        holds = _histogram_count(token_lock_hold_seconds, mode="exclusive")
+
+        with pytest.raises(TokenLockTimeoutError):
+            with store.locked(0.01):
+                pass
+
+        assert _histogram_count(
+            token_lock_wait_seconds, mode="exclusive", outcome="timeout"
+        ) == timeouts + 1
+        assert _histogram_count(token_lock_hold_seconds, mode="exclusive") == holds
 
 
 def test_read_locked_refuses_to_create_a_missing_lock_file(tmp_path: Path) -> None:

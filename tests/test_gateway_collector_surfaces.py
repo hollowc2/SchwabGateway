@@ -584,6 +584,38 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
 
 
 @pytest.mark.asyncio
+async def test_active_admitted_gauge_tracks_in_flight_requests() -> None:
+    release = asyncio.Event()
+
+    class BlockingSpot:
+        async def get_spot(self, symbol: str) -> SpotV1:
+            await release.wait()
+            raise UpstreamUnavailableError("never returns a value in this test")
+
+    server = TestServer(app(spot_upstream=BlockingSpot()))
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            held = asyncio.create_task(
+                http.get(
+                    "/v1/spot",
+                    params={"symbol": "$SPX"},
+                    headers={"X-Internal-API-Key": "valid-key"},
+                )
+            )
+            await asyncio.sleep(0.05)
+            in_flight = await http.get("/metrics")
+            release.set()
+            await held
+            settled = await http.get("/metrics")
+    finally:
+        await server.close()
+
+    assert 'gateway_active_admitted_requests{priority_class="protected"} 1.0' in in_flight.text
+    assert 'gateway_active_admitted_requests{priority_class="protected"} 0.0' in settled.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [

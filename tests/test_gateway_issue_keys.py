@@ -89,3 +89,39 @@ def test_cli_never_overwrites_existing_output(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         issue_keys.main(args(output))
     assert output.read_text() == "preserve"
+
+
+def test_cli_can_write_plaintext_to_private_file_without_printing_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    output = tmp_path / "keys.json"
+    plaintext_output = tmp_path / "load-test.key"
+
+    issue_keys.main(
+        [*args(output), "--plaintext-output", str(plaintext_output)]
+    )
+
+    printed = capsys.readouterr().out
+    plaintext = plaintext_output.read_text().strip()
+    assert plaintext
+    assert plaintext not in printed
+    assert "value was not printed" in printed
+    assert stat.S_IMODE(plaintext_output.stat().st_mode) == 0o600
+    assert plaintext not in output.read_text()
+    assert InternalKeyAuthenticator.from_file(output).authenticate(plaintext).client_id == (
+        "new-consumer"
+    )
+
+
+def test_cli_never_overwrites_plaintext_output(tmp_path: Path) -> None:
+    output = tmp_path / "keys.json"
+    plaintext_output = tmp_path / "load-test.key"
+    plaintext_output.write_text("preserve")
+
+    with pytest.raises(SystemExit):
+        issue_keys.main(
+            [*args(output), "--plaintext-output", str(plaintext_output)]
+        )
+
+    assert not output.exists()
+    assert plaintext_output.read_text() == "preserve"

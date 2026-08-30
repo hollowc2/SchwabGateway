@@ -28,12 +28,14 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from prometheus_client import Histogram
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from schwab_token_store import (
@@ -55,6 +57,12 @@ EASTERN = ZoneInfo("America/New_York")
 # date in a single fetch; the upstream normalizer does the actual session split.
 EXTENDED_SESSION_WINDOW_START = dt.time(4, 0)
 EXTENDED_SESSION_WINDOW_END = dt.time(20, 0)
+
+upstream_operation_latency = Histogram(
+    "schwab_gateway_upstream_operation_latency_seconds",
+    "Live Schwab transaction latency including worker and token-lock wait",
+    ["operation", "status"],
+)
 
 
 class GatewayUpstreamSettings(BaseSettings):
@@ -168,7 +176,7 @@ class LockedSchwabMarketDataProvider:
         with self._worker_lease_guard:
             self._worker_active = False
 
-    async def _execute(self, operation: Any) -> Any:
+    async def _execute(self, operation_name: str, operation: Any) -> Any:
         """Run one synchronous locked transaction behind a one-worker lease.
 
         Response cancellation propagates immediately so the API timeout can return 504.
@@ -176,48 +184,61 @@ class LockedSchwabMarketDataProvider:
         transaction finishes. Requests that arrive meanwhile wait on the lease and can
         time out without spawning more blocked threads.
         """
-        await self._acquire_worker_lease()
-        loop = asyncio.get_running_loop()
-        completion: asyncio.Future[Any] = loop.create_future()
-
-        def deliver_result(result: Any = None, error: BaseException | None = None) -> None:
-            if not completion.done():
-                if error is None:
-                    completion.set_result(result)
-                else:
-                    completion.set_exception(error)
-
-        def consume_unobserved_result(future: asyncio.Future[Any]) -> None:
-            if future.cancelled():
-                return
-            try:
-                future.exception()
-            except Exception:
-                pass
-
-        completion.add_done_callback(consume_unobserved_result)
-
-        def execute_and_signal() -> None:
-            worker_error: BaseException | None = None
-            try:
-                result = self._adapter.execute(operation)
-            except BaseException as error:
-                result = None
-                worker_error = error
-            self._release_worker_lease()
-            loop.call_soon_threadsafe(deliver_result, result, worker_error)
-
-        worker = threading.Thread(
-            target=execute_and_signal,
-            name="schwab-gateway-read",
-            daemon=True,
-        )
+        started = time.perf_counter()
+        status = "error"
         try:
-            worker.start()
-        except Exception:
-            self._release_worker_lease()
+            await self._acquire_worker_lease()
+            loop = asyncio.get_running_loop()
+            completion: asyncio.Future[Any] = loop.create_future()
+
+            def deliver_result(result: Any = None, error: BaseException | None = None) -> None:
+                if not completion.done():
+                    if error is None:
+                        completion.set_result(result)
+                    else:
+                        completion.set_exception(error)
+
+            def consume_unobserved_result(future: asyncio.Future[Any]) -> None:
+                if future.cancelled():
+                    return
+                try:
+                    future.exception()
+                except Exception:
+                    pass
+
+            completion.add_done_callback(consume_unobserved_result)
+
+            def execute_and_signal() -> None:
+                worker_error: BaseException | None = None
+                try:
+                    result = self._adapter.execute(operation)
+                except BaseException as error:
+                    result = None
+                    worker_error = error
+                self._release_worker_lease()
+                loop.call_soon_threadsafe(deliver_result, result, worker_error)
+
+            worker = threading.Thread(
+                target=execute_and_signal,
+                name="schwab-gateway-read",
+                daemon=True,
+            )
+            try:
+                worker.start()
+            except Exception:
+                self._release_worker_lease()
+                raise
+            result = await asyncio.shield(completion)
+            status = "success"
+            return result
+        except asyncio.CancelledError:
+            status = "cancelled"
             raise
-        return await asyncio.shield(completion)
+        finally:
+            upstream_operation_latency.labels(
+                operation=operation_name,
+                status=status,
+            ).observe(time.perf_counter() - started)
 
     async def get_spot_price(self, symbol: str = "$SPX") -> float:
         price, _timestamp = await self.get_spot_snapshot(symbol)
@@ -238,7 +259,7 @@ class LockedSchwabMarketDataProvider:
         # failed fetch. That keeps the two failure modes distinguishable at the gateway
         # boundary the same way ``get_option_chain``/``normalize_schwab_chain_metadata``
         # already are.
-        payload = await self._execute(operation)
+        payload = await self._execute("spot", operation)
         return extract_spot_price_and_timestamp(payload, symbol)
 
     async def get_option_chain(
@@ -257,7 +278,7 @@ class LockedSchwabMarketDataProvider:
                     raise ValueError("option chain response was not an object")
                 return payload
 
-        return await self._execute(operation)
+        return await self._execute("option_chain", operation)
 
     async def get_equity_quotes(
         self,
@@ -287,7 +308,7 @@ class LockedSchwabMarketDataProvider:
 
         # Every batch shares one transaction, so a multi-batch scanner request takes the
         # token lock once rather than once per batch.
-        return await self._execute(operation)
+        return await self._execute("quotes", operation)
 
     async def get_daily_bars(self, symbol: str, days_back: int = 10) -> list[dict[str, Any]]:
         """Fetch daily OHLCV bars.
@@ -318,7 +339,7 @@ class LockedSchwabMarketDataProvider:
                     raise ValueError("price history response carried no candle list")
                 return candles
 
-        return await self._execute(operation)
+        return await self._execute("daily_history", operation)
 
     async def get_intraday_bars(self, symbol: str, days_back: int = 1) -> list[dict[str, Any]]:
         """Fetch per-minute OHLCV bars for the trailing ``days_back`` days.
@@ -352,7 +373,7 @@ class LockedSchwabMarketDataProvider:
                     raise ValueError("price history response carried no candle list")
                 return candles
 
-        return await self._execute(operation)
+        return await self._execute("minute_history", operation)
 
     async def get_market_movers(
         self, index: str, *, sort_order: str = "PERCENT_CHANGE_UP"
@@ -377,7 +398,7 @@ class LockedSchwabMarketDataProvider:
                     return payload.get("screeners", payload.get("movers", []))
                 raise ValueError("movers response was neither a list nor an object")
 
-        return await self._execute(operation)
+        return await self._execute("movers", operation)
 
     async def get_session_bars(self, symbol: str, date: dt.date) -> list[dict[str, Any]]:
         """Fetch one calendar day's minute bars, spanning pre-market through after-hours.
@@ -413,7 +434,7 @@ class LockedSchwabMarketDataProvider:
                     raise ValueError("price history response carried no candle list")
                 return candles
 
-        return await self._execute(operation)
+        return await self._execute("session_history", operation)
 
 
 class TokenReadinessRecovery:
