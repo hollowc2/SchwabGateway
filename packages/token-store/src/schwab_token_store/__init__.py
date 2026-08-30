@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 import structlog
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 log = structlog.get_logger(__name__)
 UTC = dt.timezone.utc
@@ -40,6 +40,16 @@ token_state = Gauge(
     "schwab_gateway_token_state",
     "Current single-token manager state (one-hot)",
     ["state"],
+)
+token_lock_wait_seconds = Histogram(
+    "schwab_gateway_token_lock_wait_seconds",
+    "Time spent waiting to acquire the token-file lock",
+    ["mode", "outcome"],
+)
+token_lock_hold_seconds = Histogram(
+    "schwab_gateway_token_lock_hold_seconds",
+    "Time the token-file lock is held",
+    ["mode"],
 )
 
 TokenDocument = dict[str, Any]
@@ -290,11 +300,16 @@ class AtomicFileTokenStore:
         if not self.path.parent.is_dir():
             raise TokenPersistenceError("token parent directory is unavailable")
 
-        deadline = time.monotonic() + timeout_seconds
+        wait_started = time.monotonic()
+        deadline = wait_started + timeout_seconds
         if not self._thread_lock.acquire(timeout=timeout_seconds):
+            token_lock_wait_seconds.labels(mode="shared", outcome="timeout").observe(
+                time.monotonic() - wait_started
+            )
             raise TokenLockTimeoutError("timed out waiting for the token lock")
 
         lock_fd = -1
+        hold_started: float | None = None
         try:
             flags = (
                 os.O_RDONLY
@@ -324,13 +339,24 @@ class AtomicFileTokenStore:
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        token_lock_wait_seconds.labels(
+                            mode="shared", outcome="timeout"
+                        ).observe(time.monotonic() - wait_started)
                         raise TokenLockTimeoutError("timed out waiting for the token lock")
                     time.sleep(min(0.01, remaining))
                 except OSError:
                     raise TokenPersistenceError("token lock could not be acquired") from None
 
+            token_lock_wait_seconds.labels(mode="shared", outcome="acquired").observe(
+                time.monotonic() - wait_started
+            )
+            hold_started = time.monotonic()
             yield _AtomicFileTokenTransaction(self.path, self._max_token_bytes)
         finally:
+            if hold_started is not None:
+                token_lock_hold_seconds.labels(mode="shared").observe(
+                    time.monotonic() - hold_started
+                )
             if lock_fd >= 0:
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -345,11 +371,16 @@ class AtomicFileTokenStore:
         if not self.path.parent.is_dir():
             raise TokenPersistenceError("token parent directory is unavailable")
 
-        deadline = time.monotonic() + timeout_seconds
+        wait_started = time.monotonic()
+        deadline = wait_started + timeout_seconds
         if not self._thread_lock.acquire(timeout=timeout_seconds):
+            token_lock_wait_seconds.labels(mode="exclusive", outcome="timeout").observe(
+                time.monotonic() - wait_started
+            )
             raise TokenLockTimeoutError("timed out waiting for the token lock")
 
         lock_fd = -1
+        hold_started: float | None = None
         try:
             flags = (
                 os.O_RDWR
@@ -370,13 +401,24 @@ class AtomicFileTokenStore:
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        token_lock_wait_seconds.labels(
+                            mode="exclusive", outcome="timeout"
+                        ).observe(time.monotonic() - wait_started)
                         raise TokenLockTimeoutError("timed out waiting for the token lock")
                     time.sleep(min(0.01, remaining))
                 except OSError:
                     raise TokenPersistenceError("token lock could not be acquired") from None
 
+            token_lock_wait_seconds.labels(
+                mode="exclusive", outcome="acquired"
+            ).observe(time.monotonic() - wait_started)
+            hold_started = time.monotonic()
             yield _AtomicFileTokenTransaction(self.path, self._max_token_bytes)
         finally:
+            if hold_started is not None:
+                token_lock_hold_seconds.labels(mode="exclusive").observe(
+                    time.monotonic() - hold_started
+                )
             if lock_fd >= 0:
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)

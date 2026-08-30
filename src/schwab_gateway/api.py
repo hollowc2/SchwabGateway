@@ -6,10 +6,12 @@ import asyncio
 import datetime as dt
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal, Protocol, cast
 
 from aiohttp import web
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
     GatewayHealthV1,
@@ -37,6 +39,7 @@ from schwab_gateway.auth import (
     AUTHENTICATOR_KEY,
     PRINCIPAL_KEY,
     InternalKeyAuthenticator,
+    PriorityClass,
     authentication_middleware,
     require_capability,
 )
@@ -104,6 +107,16 @@ gateway_admission = Counter(
     "Bounded gateway admission decisions",
     ["priority_class", "outcome"],
 )
+gateway_active_admitted = Gauge(
+    "gateway_active_admitted_requests",
+    "Currently admitted HTTP market-data requests",
+    ["priority_class"],
+)
+gateway_event_loop_lag = Gauge(
+    "gateway_event_loop_lag_seconds",
+    "Delay beyond the expected event-loop observation interval",
+)
+EVENT_LOOP_LAG_INTERVAL_SECONDS = 1.0
 
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
@@ -419,6 +432,45 @@ async def metrics(_request: web.Request) -> web.Response:
     return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
 
 
+@asynccontextmanager
+async def _admit_and_track(
+    controller: AdmissionController,
+    priority: PriorityClass,
+) -> AsyncIterator[None]:
+    async with controller.admit(priority):
+        active = gateway_active_admitted.labels(priority_class=priority.value)
+        active.inc()
+        try:
+            yield
+        finally:
+            active.dec()
+
+
+async def _observe_event_loop_lag() -> None:
+    loop = asyncio.get_running_loop()
+    expected = loop.time() + EVENT_LOOP_LAG_INTERVAL_SECONDS
+    while True:
+        await asyncio.sleep(EVENT_LOOP_LAG_INTERVAL_SECONDS)
+        now = loop.time()
+        gateway_event_loop_lag.set(max(0.0, now - expected))
+        expected = now + EVENT_LOOP_LAG_INTERVAL_SECONDS
+
+
+async def event_loop_lag_context(_app: web.Application) -> AsyncIterator[None]:
+    """Expose one process-level loop-lag sample for the application lifetime.
+
+    Registered only by the live runner: the demo app serves static fakes under no
+    real load, so a lag sample from it would mean nothing.
+    """
+    task = asyncio.create_task(_observe_event_loop_lag())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        gateway_event_loop_lag.set(0.0)
+
+
 async def quotes(request: web.Request) -> web.Response:
     denied = require_capability(request, "market_data:read")
     if denied is not None:
@@ -435,7 +487,7 @@ async def quotes(request: web.Request) -> web.Response:
     principal = request[PRINCIPAL_KEY]
     priority = principal.priority_class
     try:
-        async with request.app[ADMISSION_CONTROLLER_KEY].admit(priority):
+        async with _admit_and_track(request.app[ADMISSION_CONTROLLER_KEY], priority):
             gateway_admission.labels(
                 priority_class=priority.value,
                 outcome="admitted",
@@ -480,7 +532,7 @@ async def _serve_upstream(request: web.Request, build_response) -> web.Response:
     principal = request[PRINCIPAL_KEY]
     priority = principal.priority_class
     try:
-        async with request.app[ADMISSION_CONTROLLER_KEY].admit(priority):
+        async with _admit_and_track(request.app[ADMISSION_CONTROLLER_KEY], priority):
             gateway_admission.labels(
                 priority_class=priority.value,
                 outcome="admitted",

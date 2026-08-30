@@ -21,6 +21,7 @@ schwab-gateway-probe-credentials = "schwab_gateway.probe_credentials:main"
 schwab-gateway-capture-order-books = "schwab_gateway.capture_order_books:main"
 schwab-gateway-derive-order-books = "schwab_gateway.derive_order_books:main"
 schwab-gateway-catalog-order-books = "schwab_gateway.catalog_order_books:main"
+schwab-gateway-load-test = "schwab_gateway.load_test:main"
 
 [build-system]
 requires = ["hatchling"]

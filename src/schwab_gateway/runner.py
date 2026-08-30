@@ -18,7 +18,11 @@ from schwab_token_store import (
 )
 
 from schwab_gateway.admission import AdmissionPolicy
-from schwab_gateway.api import StaticTokenReadinessProvider, create_app
+from schwab_gateway.api import (
+    StaticTokenReadinessProvider,
+    create_app,
+    event_loop_lag_context,
+)
 from schwab_gateway.auth import InternalKeyAuthenticator
 from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import (
@@ -160,6 +164,7 @@ def build_live_app(
         ),
         order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
+    app.cleanup_ctx.append(event_loop_lag_context)
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
     if settings.order_book_stream_enabled:
         symbols = tuple(

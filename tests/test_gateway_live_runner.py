@@ -30,6 +30,7 @@ from schwab_gateway.api import (
     SPOT_UPSTREAM_KEY,
     TOKEN_READINESS_PROVIDER_KEY,
     UPSTREAM_KEY,
+    event_loop_lag_context,
 )
 from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import TokenReadinessRecovery
@@ -243,7 +244,9 @@ def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    assert len(app.cleanup_ctx) == 1
+    # event-loop lag sampler + readiness recovery
+    assert len(app.cleanup_ctx) == 2
+    assert event_loop_lag_context in app.cleanup_ctx
 
 
 def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
@@ -256,7 +259,8 @@ def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    assert len(app.cleanup_ctx) == 2
+    # event-loop lag sampler + readiness recovery + order-book feed
+    assert len(app.cleanup_ctx) == 3
 
 
 def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path) -> None:

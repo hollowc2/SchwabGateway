@@ -88,10 +88,27 @@ def write_private_json(path: Path, document: dict[str, object]) -> None:
         handle.write("\n")
 
 
+def write_private_text(path: Path, value: str) -> None:
+    """Write a non-recoverable plaintext key once without exposing it on stdout."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(value)
+        handle.write("\n")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--existing-input", type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--plaintext-output",
+        type=Path,
+        help=(
+            "write the one-time plaintext key to a new mode-0600 file instead of "
+            "printing it"
+        ),
+    )
     parser.add_argument("--application-id", required=True)
     parser.add_argument(
         "--capability", required=True, choices=sorted(KNOWN_CAPABILITIES)
@@ -103,7 +120,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.output.exists():
         parser.error("output path already exists; choose a new output path")
+    if args.plaintext_output is not None and args.plaintext_output.exists():
+        parser.error("plaintext output path already exists; choose a new output path")
     priority = PriorityClass(args.priority)
+    digest_written = False
+    plaintext_written = False
     try:
         if args.existing_input is None:
             document, plaintext = build_keys_document(
@@ -114,13 +135,26 @@ def main(argv: list[str] | None = None) -> None:
                 args.existing_input, args.application_id, args.capability, priority
             )
         write_private_json(args.output, document)
+        digest_written = True
         InternalKeyAuthenticator.from_file(args.output)
+        if args.plaintext_output is not None:
+            write_private_text(args.plaintext_output, plaintext)
+            plaintext_written = True
     except (OSError, ValueError) as exc:
-        args.output.unlink(missing_ok=True)
+        if digest_written:
+            args.output.unlink(missing_ok=True)
+        if args.plaintext_output is not None and plaintext_written:
+            args.plaintext_output.unlink(missing_ok=True)
         parser.error(str(exc))
 
-    sys.stdout.write("Distribute this new key now; it cannot be recovered.\n\n")
-    sys.stdout.write(f"{args.application_id}: {plaintext}\n")
+    if args.plaintext_output is None:
+        sys.stdout.write("Distribute this new key now; it cannot be recovered.\n\n")
+        sys.stdout.write(f"{args.application_id}: {plaintext}\n")
+    else:
+        sys.stdout.write(
+            "Wrote the one-time plaintext key to the requested mode-0600 file; "
+            "its value was not printed.\n"
+        )
     sys.stdout.write(
         f"\nAdded 1 new digest; wrote {len(document['clients'])} total digest(s) "
         "at mode 0600.\n"
