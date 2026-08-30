@@ -1169,7 +1169,7 @@ wheels = [
 
 [[package]]
 name = "schwab-gateway"
-version = "0.2.5"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1214,7 +1214,7 @@ dev = [
 
 [[package]]
 name = "schwab-gateway-sdk"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "packages/sdk" }
 dependencies = [
     { name = "httpx" },
@@ -1252,7 +1252,7 @@ wheels = [
 
 [[package]]
 name = "schwab-token-store"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/token-store" }
 dependencies = [
     { name = "prometheus-client" },

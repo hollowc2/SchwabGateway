@@ -95,3 +95,11 @@ SCHWAB_GATEWAY_DEMO_KEYS_PATH=/tmp/schwab-gateway-demo-keys.json \
 ```
 
 See `openapi.yaml`, `docs/runbooks/helios.md`, and `docs/runbooks/rollback.md`.
+
+## Versioning
+
+The gateway distribution, OpenAPI document, and SDK are released together when the
+HTTP or SDK surface changes. Their package/document versions therefore match. The wire
+`schema_version` is independent and changes only for an incompatible JSON contract.
+The token-store package is independently versioned because it can be installed without
+the gateway or SDK.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SchwabGateway
-  version: 0.2.0
+  version: 0.3.0
   description: Internal market-data-only Schwab gateway; wire schema version 1.0.
 servers:
   - url: http://schwab-gateway:8011
