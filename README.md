@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.jpg" alt="SchwabGateway" width="720">
+</p>
+
 # SchwabGateway
 
 An internal, read-only HTTP service for bounded Charles Schwab market-data reads.
