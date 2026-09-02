@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 
 import pytest
@@ -12,6 +13,10 @@ from schwab_gateway.scheduler import (
     SchedulerCapacityError,
     SchedulerQueueTimeoutError,
     SchedulerUpstreamTimeoutError,
+    gateway_active_admitted,
+    scheduler_allocated,
+    scheduler_execution,
+    scheduler_queue_depth,
 )
 
 
@@ -253,6 +258,62 @@ async def test_queue_timeout_removes_job_and_it_never_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_atomically_rejects_job_expired_during_event_loop_stall() -> None:
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=2, background_capacity=1)
+    )
+    probe = ConcurrencyProbe()
+    active_entered = asyncio.Event()
+    block_loop = asyncio.Event()
+
+    async def active() -> str:
+        active_entered.set()
+        await block_loop.wait()
+        time.sleep(0.03)
+        return await probe.call("active")
+
+    first = submit(scheduler, PriorityClass.PROTECTED, "active", active)
+    await active_entered.wait()
+    expired = submit(
+        scheduler,
+        PriorityClass.PROTECTED,
+        "expired",
+        lambda: probe.call("expired"),
+        queue_timeout=0.005,
+    )
+    await wait_for(lambda: scheduler.snapshot().queued_protected == 1)
+    block_loop.set()
+
+    assert await first == "active"
+    with pytest.raises(SchedulerQueueTimeoutError):
+        await expired
+    assert probe.started == ["active"]
+    assert scheduler.snapshot().total == 0
+
+
+@pytest.mark.asyncio
+async def test_execution_deadline_uses_completion_time_after_event_loop_stall() -> None:
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=1, background_capacity=1)
+    )
+
+    async def late_operation() -> str:
+        time.sleep(0.03)
+        return "late"
+
+    with pytest.raises(SchedulerUpstreamTimeoutError):
+        await scheduler.execute(
+            PriorityClass.PROTECTED,
+            "late",
+            late_operation,
+            queue_timeout_seconds=1,
+            execution_timeout_seconds=0.005,
+        )
+    await scheduler.wait_idle()
+    assert scheduler.snapshot().total == 0
+
+
+@pytest.mark.asyncio
 async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> None:
     scheduler = ExecutionScheduler(
         AdmissionPolicy(protected_capacity=2, background_capacity=1)
@@ -285,6 +346,47 @@ async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> 
     assert probe.started == ["slow", "next"]
     assert probe.maximum == 1
     assert scheduler.snapshot().total == 0
+
+    outcomes = {
+        sample.labels["outcome"]
+        for metric in scheduler_execution.collect()
+        for sample in metric.samples
+        if sample.name.endswith("_count") and sample.labels.get("operation") == "slow"
+    }
+    assert "timeout_drained_success" in outcomes
+
+
+@pytest.mark.asyncio
+async def test_actual_timeout_reports_eventual_drain_error() -> None:
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=1, background_capacity=1)
+    )
+    release = asyncio.Event()
+
+    async def fails_after_timeout() -> str:
+        await release.wait()
+        raise RuntimeError("late failure")
+
+    timed_out = submit(
+        scheduler,
+        PriorityClass.PROTECTED,
+        "timeout-then-error",
+        fails_after_timeout,
+        execution_timeout=0.005,
+    )
+    with pytest.raises(SchedulerUpstreamTimeoutError):
+        await timed_out
+    release.set()
+    await scheduler.wait_idle()
+
+    outcomes = {
+        sample.labels["outcome"]
+        for metric in scheduler_execution.collect()
+        for sample in metric.samples
+        if sample.name.endswith("_count")
+        and sample.labels.get("operation") == "timeout-then-error"
+    }
+    assert outcomes == {"timeout_drained_error"}
 
 
 @pytest.mark.asyncio
@@ -342,3 +444,55 @@ async def test_failure_is_one_attempt_and_releases_capacity() -> None:
         )
     assert probe.started == ["fails"]
     assert scheduler.snapshot().total == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_removes_queue_and_cannot_release_running_slot_early() -> None:
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=2, background_capacity=1)
+    )
+    probe = ConcurrencyProbe()
+    release = asyncio.Event()
+    running = submit(
+        scheduler,
+        PriorityClass.PROTECTED,
+        "shutdown-running",
+        lambda: probe.call("shutdown-running", release=release),
+    )
+    await wait_for(lambda: probe.started == ["shutdown-running"])
+    queued = submit(
+        scheduler,
+        PriorityClass.PROTECTED,
+        "shutdown-queued",
+        lambda: probe.call("shutdown-queued"),
+    )
+    await wait_for(lambda: scheduler.snapshot().queued_protected == 1)
+
+    shutdown = asyncio.create_task(scheduler.shutdown())
+    await wait_for(lambda: scheduler.snapshot().queued_protected == 0)
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    shutdown.cancel()
+    await asyncio.sleep(0)
+    assert not shutdown.done()
+    assert scheduler.snapshot().worker_active is True
+    assert probe.active == 1
+
+    release.set()
+    assert await running == "shutdown-running"
+    await shutdown
+    assert probe.started == ["shutdown-running"]
+    assert scheduler.snapshot().total == 0
+
+
+def test_scheduler_initializes_zero_metric_series_for_both_classes() -> None:
+    ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
+
+    for metric in (scheduler_queue_depth, scheduler_allocated, gateway_active_admitted):
+        values = {
+            sample.labels["priority_class"]: sample.value
+            for family in metric.collect()
+            for sample in family.samples
+            if sample.name == metric._name  # noqa: SLF001 - Prometheus exposes no public name
+        }
+        assert values == {"protected": 0, "background": 0}

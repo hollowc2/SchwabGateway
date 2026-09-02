@@ -41,6 +41,8 @@ manifest. See `docs/order-book-research.md`.
   delayed or shed before it can consume ButterflyGuy capacity. `429` means class
   capacity is full, `503 gateway_queue_timeout` means dispatch wait expired, and `504
   upstream_timeout` means a dispatched operation exceeded its three-second budget.
+  Optional order-book stream login is background work in this same scheduler; only its
+  established socket runs independently after the token transaction has completed.
 - **Venue-specific depth.** `NASDAQ_BOOK` / `NYSE_BOOK` are Level II books for one
   venue, not consolidated market depth.
 - **Chain cache is paper-only.** Successful full chains are cached for a fixed 4

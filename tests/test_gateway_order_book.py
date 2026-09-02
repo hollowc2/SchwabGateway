@@ -17,6 +17,7 @@ from schwab_gateway_sdk.models import (
     OrderBookSnapshotV1,
 )
 
+from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.capture_order_books import build_parser
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.order_book import (
@@ -33,6 +34,7 @@ from schwab_gateway.order_book_capture import (
 )
 from schwab_gateway.order_book_live import OrderBookLiveFeed
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
+from schwab_gateway.scheduler import ExecutionScheduler
 
 UTC = dt.timezone.utc
 RECEIVED_AT = dt.datetime(2026, 8, 27, 16, 0, tzinfo=UTC)
@@ -493,6 +495,9 @@ async def test_live_feed_retains_backoff_until_validated_data_arrives(
         SCHWAB_TOKEN_PATH=tmp_path / "tokens.json",
     )
     store = OrderBookSnapshotStore()
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=1, background_capacity=1)
+    )
     feed = OrderBookLiveFeed(
         manager,  # type: ignore[arg-type]
         settings,
@@ -500,6 +505,8 @@ async def test_live_feed_retains_backoff_until_validated_data_arrives(
         store,
         venue="NASDAQ",
         symbols=("AAPL",),
+        scheduler=scheduler,
+        queue_timeout_seconds=1,
         stream_client_factory=lambda _client: FailingSubscriptionStream(),
     )
 
@@ -508,4 +515,5 @@ async def test_live_feed_retains_backoff_until_validated_data_arrives(
 
     assert delays == [1, 2, 4]
     assert manager.calls == 3
+    assert scheduler.snapshot().total == 0
     assert store.feed_state("NASDAQ") == "disconnected"

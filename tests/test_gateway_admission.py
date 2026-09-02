@@ -314,6 +314,138 @@ async def test_upstream_timeout_retains_worker_until_real_completion() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_disconnect_removes_queued_scheduler_job() -> None:
+    upstream = BlockingUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+        admission_policy=AdmissionPolicy(protected_capacity=2, background_capacity=1),
+    )
+    server = TestServer(app, handler_cancellation=True)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            active = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "SPX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            await upstream.wait_for_calls(1)
+            disconnected = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "NDX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            while app[EXECUTION_SCHEDULER_KEY].snapshot().queued_protected != 1:
+                await asyncio.sleep(0)
+
+            disconnected.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await disconnected
+            async with asyncio.timeout(1):
+                while app[EXECUTION_SCHEDULER_KEY].snapshot().queued_protected:
+                    await asyncio.sleep(0)
+            assert upstream.calls == [("SPX",)]
+
+            upstream.release.set()
+            assert (await active).status_code == 200
+            await app[EXECUTION_SCHEDULER_KEY].wait_idle()
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
+
+
+@pytest.mark.asyncio
+async def test_http_disconnect_does_not_release_running_physical_slot() -> None:
+    upstream = BlockingUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+        admission_policy=AdmissionPolicy(protected_capacity=2, background_capacity=1),
+    )
+    server = TestServer(app, handler_cancellation=True)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            disconnected = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "SPX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            await upstream.wait_for_calls(1)
+            disconnected.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await disconnected
+
+            following = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "NDX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            await asyncio.sleep(0.02)
+            assert upstream.calls == [("SPX",)]
+            assert app[EXECUTION_SCHEDULER_KEY].snapshot().worker_active is True
+
+            upstream.release.set()
+            assert (await following).status_code == 200
+            await app[EXECUTION_SCHEDULER_KEY].wait_idle()
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert upstream.calls == [("SPX",), ("NDX",)]
+    assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
+
+
+@pytest.mark.asyncio
+async def test_application_cleanup_waits_for_timed_out_worker_drain() -> None:
+    upstream = BlockingUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+        admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
+        upstream_timeout_seconds=0.01,
+    )
+    server = TestServer(app, handler_cancellation=True)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            response = await client.get(
+                "/v1/quotes",
+                params={"symbols": "SPX"},
+                headers=headers("butterfly-guy"),
+            )
+        assert response.status_code == 504
+        assert app[EXECUTION_SCHEDULER_KEY].snapshot().worker_active is True
+
+        closing = asyncio.create_task(server.close())
+        await asyncio.sleep(0.02)
+        assert not closing.done()
+        assert app[EXECUTION_SCHEDULER_KEY].snapshot().worker_active is True
+
+        upstream.release.set()
+        await closing
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
+
+
+@pytest.mark.asyncio
 async def test_permits_release_after_success_failure_timeout_and_cancellation() -> None:
     controller = AdmissionController(
         AdmissionPolicy(protected_capacity=1, background_capacity=1)

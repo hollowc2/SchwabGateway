@@ -8,6 +8,10 @@
   execution timeout and classify queue expiry as `503 gateway_queue_timeout`.
 - Retain the worker slot after caller cancellation or execution timeout until the real
   synchronous worker finishes, and add scheduler lifecycle metrics and an offline proof.
+- Enforce absolute queue and execution deadlines at dispatch/completion boundaries, drain
+  the scheduler on graceful shutdown, and propagate HTTP peer disconnect cancellation.
+- Route optional order-book stream login through the same scheduler as bounded background
+  work so it cannot acquire the token transaction ahead of queued protected reads.
 - Raise the SDK's default whole-request timeout to 12 seconds so three serialized
   protected reads can use the server's seven-second queue budget plus execution budget.
 

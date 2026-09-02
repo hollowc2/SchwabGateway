@@ -19,6 +19,7 @@ from schwab_token_store import (
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import (
+    EXECUTION_SCHEDULER_KEY,
     StaticTokenReadinessProvider,
     create_app,
     event_loop_lag_context,
@@ -187,6 +188,8 @@ def build_live_app(
                     order_book_store,
                     venue=settings.order_book_stream_venue,
                     symbols=symbols,
+                    scheduler=app[EXECUTION_SCHEDULER_KEY],
+                    queue_timeout_seconds=settings.background_queue_timeout_seconds,
                 )
             )
         )
@@ -258,7 +261,12 @@ def main(argv: list[str] | None = None) -> None:
         upstream=upstream_name,
         order_writes_enabled=False,
     )
-    web.run_app(app, host=settings.bind_host, port=settings.port)
+    web.run_app(
+        app,
+        host=settings.bind_host,
+        port=settings.port,
+        handler_cancellation=True,
+    )
 
 
 if __name__ == "__main__":

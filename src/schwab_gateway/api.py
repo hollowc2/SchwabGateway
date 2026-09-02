@@ -458,6 +458,12 @@ async def event_loop_lag_context(_app: web.Application) -> AsyncIterator[None]:
         gateway_event_loop_lag.set(0.0)
 
 
+async def execution_scheduler_context(app: web.Application) -> AsyncIterator[None]:
+    """Drain detached worker work before graceful application shutdown completes."""
+    yield
+    await app[EXECUTION_SCHEDULER_KEY].shutdown()
+
+
 async def quotes(request: web.Request) -> web.Response:
     denied = require_capability(request, "market_data:read")
     if denied is not None:
@@ -844,6 +850,7 @@ def create_app(
     app[EXECUTION_SCHEDULER_KEY] = ExecutionScheduler(
         admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
+    app.cleanup_ctx.append(execution_scheduler_context)
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
     app[ORDER_BOOK_STREAM_ADMISSION_KEY] = AdmissionController(
         order_book_stream_policy

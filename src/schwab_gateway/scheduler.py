@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -108,10 +107,12 @@ class _Job:
     operation: Callable[[], Awaitable[Any]]
     execution_timeout_seconds: float
     enqueued_at: float
+    queue_deadline: float
     started: asyncio.Future[None]
     result: asyncio.Future[Any]
     state: Literal["queued", "running", "finished"] = "queued"
     caller_cancelled: bool = False
+    queue_timed_out: bool = False
 
 
 def _consume_future_exception(future: asyncio.Future[Any]) -> None:
@@ -143,8 +144,12 @@ class ExecutionScheduler:
         self._lock = asyncio.Lock()
         self._worker_active = False
         self._lifecycle_tasks: set[asyncio.Task[None]] = set()
+        self._accepting = True
         self._idle = asyncio.Event()
         self._idle.set()
+        scheduler_worker_active.set(0)
+        for priority in PriorityClass:
+            self._update_class_metrics(priority)
 
     async def execute(
         self,
@@ -167,18 +172,23 @@ class ExecutionScheduler:
                 raise ValueError(f"scheduler {label} must be finite and positive")
 
         loop = asyncio.get_running_loop()
+        enqueued_at = loop.time()
         job = _Job(
             priority=priority,
             operation_name=operation_name,
             operation=operation,
             execution_timeout_seconds=execution_timeout_seconds,
-            enqueued_at=time.perf_counter(),
+            enqueued_at=enqueued_at,
+            queue_deadline=enqueued_at + queue_timeout_seconds,
             started=loop.create_future(),
             result=loop.create_future(),
         )
+        job.started.add_done_callback(_consume_future_exception)
         job.result.add_done_callback(_consume_future_exception)
 
         async with self._lock:
+            if not self._accepting:
+                raise SchedulerCapacityError("gateway scheduler is shutting down")
             if self._allocated[priority] >= self._limits[priority]:
                 scheduler_capacity_rejections.labels(priority_class=priority.value).inc()
                 log.warning(
@@ -195,27 +205,13 @@ class ExecutionScheduler:
 
         try:
             try:
-                async with asyncio.timeout(queue_timeout_seconds):
+                async with asyncio.timeout_at(job.queue_deadline):
                     await asyncio.shield(job.started)
             except TimeoutError:
                 async with self._lock:
                     if job.state == "queued":
-                        wait_seconds = time.perf_counter() - job.enqueued_at
-                        self._remove_queued_locked(job)
-                        scheduler_queue_wait.labels(
-                            priority_class=priority.value,
-                            operation=operation_name,
-                        ).observe(wait_seconds)
-                        scheduler_queue_timeouts.labels(
-                            priority_class=priority.value,
-                            operation=operation_name,
-                        ).inc()
-                        log.warning(
-                            "gateway_scheduler_queue_timeout",
-                            priority_class=priority.value,
-                            operation=operation_name,
-                            queue_wait_ms=round(wait_seconds * 1000, 2),
-                        )
+                        self._expire_queued_locked(job, asyncio.get_running_loop().time())
+                    if job.queue_timed_out:
                         raise SchedulerQueueTimeoutError(
                             "gateway worker queue wait timed out"
                         ) from None
@@ -225,7 +221,7 @@ class ExecutionScheduler:
         except asyncio.CancelledError:
             async with self._lock:
                 if job.state == "queued":
-                    wait_seconds = time.perf_counter() - job.enqueued_at
+                    wait_seconds = asyncio.get_running_loop().time() - job.enqueued_at
                     self._remove_queued_locked(job)
                     scheduler_queue_wait.labels(
                         priority_class=priority.value,
@@ -268,6 +264,30 @@ class ExecutionScheduler:
         if tasks:
             await asyncio.gather(*tasks)
 
+    async def shutdown(self) -> None:
+        """Stop admission, remove queued callers, and drain the physical worker.
+
+        Cleanup cancellation is deliberately deferred until the running operation really
+        finishes. This is the graceful-shutdown counterpart to caller cancellation: neither
+        event is allowed to release the one physical slot while synchronous token work is
+        still alive.
+        """
+        async with self._lock:
+            self._accepting = False
+            queued = tuple(job for queue in self._queues.values() for job in queue)
+            for job in queued:
+                self._remove_queued_locked(job)
+            if queued:
+                log.info("gateway_scheduler_shutdown_queue_removed", count=len(queued))
+
+        waiter = asyncio.create_task(self._idle.wait())
+        while not waiter.done():
+            try:
+                await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                log.warning("gateway_scheduler_shutdown_cancellation_deferred")
+        await waiter
+
     def _update_class_metrics(self, priority: PriorityClass) -> None:
         scheduler_queue_depth.labels(priority_class=priority.value).set(
             len(self._queues[priority])
@@ -289,23 +309,57 @@ class ExecutionScheduler:
         if not any(self._allocated.values()):
             self._idle.set()
 
+    def _expire_queued_locked(self, job: _Job, now: float) -> None:
+        self._queues[job.priority].remove(job)
+        job.state = "finished"
+        job.queue_timed_out = True
+        error = SchedulerQueueTimeoutError("gateway worker queue wait timed out")
+        if not job.started.done():
+            job.started.set_exception(error)
+        if not job.result.done():
+            job.result.cancel()
+        self._allocated[job.priority] -= 1
+        self._update_class_metrics(job.priority)
+        wait_seconds = max(0.0, now - job.enqueued_at)
+        scheduler_queue_wait.labels(
+            priority_class=job.priority.value,
+            operation=job.operation_name,
+        ).observe(wait_seconds)
+        scheduler_queue_timeouts.labels(
+            priority_class=job.priority.value,
+            operation=job.operation_name,
+        ).inc()
+        log.warning(
+            "gateway_scheduler_queue_timeout",
+            priority_class=job.priority.value,
+            operation=job.operation_name,
+            queue_wait_ms=round(wait_seconds * 1000, 2),
+        )
+        if not any(self._allocated.values()):
+            self._idle.set()
+
     def _dispatch_locked(self) -> None:
         if self._worker_active:
             return
-        queue = self._queues[PriorityClass.PROTECTED]
-        if not queue:
-            queue = self._queues[PriorityClass.BACKGROUND]
-        if not queue:
-            if not any(self._allocated.values()):
-                self._idle.set()
-            return
+        now = asyncio.get_running_loop().time()
+        while True:
+            queue = self._queues[PriorityClass.PROTECTED]
+            if not queue:
+                queue = self._queues[PriorityClass.BACKGROUND]
+            if not queue:
+                if not any(self._allocated.values()):
+                    self._idle.set()
+                return
+            if queue[0].queue_deadline > now:
+                break
+            self._expire_queued_locked(queue[0], now)
 
         job = queue.popleft()
         job.state = "running"
         self._worker_active = True
         scheduler_worker_active.set(1)
         self._update_class_metrics(job.priority)
-        wait_seconds = time.perf_counter() - job.enqueued_at
+        wait_seconds = max(0.0, now - job.enqueued_at)
         scheduler_queue_wait.labels(
             priority_class=job.priority.value,
             operation=job.operation_name,
@@ -326,34 +380,42 @@ class ExecutionScheduler:
         task.add_done_callback(self._lifecycle_tasks.discard)
 
     async def _run_job(self, job: _Job) -> None:
-        started_at = time.perf_counter()
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        execution_deadline = started_at + job.execution_timeout_seconds
+        operation_completed_at: float | None = None
         outcome = "error"
 
         async def invoke() -> Any:
-            return await job.operation()
+            nonlocal operation_completed_at
+            try:
+                return await job.operation()
+            finally:
+                operation_completed_at = loop.time()
 
         operation_task = asyncio.create_task(invoke())
         try:
-            done, _pending = await asyncio.wait(
-                {operation_task}, timeout=job.execution_timeout_seconds
-            )
-            if done:
+            while not operation_task.done():
+                remaining = execution_deadline - loop.time()
+                if remaining <= 0:
+                    break
                 try:
-                    value = operation_task.result()
+                    done, _pending = await asyncio.wait(
+                        {operation_task}, timeout=remaining
+                    )
                 except asyncio.CancelledError:
-                    outcome = "cancelled"
-                    if not job.result.done():
-                        job.result.cancel()
-                except BaseException as exc:
-                    outcome = "error"
-                    if not job.result.done():
-                        job.result.set_exception(exc)
+                    # The scheduler lifecycle is internal and non-preemptible. Defer its
+                    # cancellation exactly as we defer an HTTP caller's cancellation.
+                    log.warning("gateway_scheduler_lifecycle_cancellation_deferred")
                 else:
-                    outcome = "success"
-                    if not job.result.done():
-                        job.result.set_result(value)
-            else:
-                outcome = "timeout"
+                    if not done:
+                        break
+
+            completed_in_budget = (
+                operation_completed_at is not None
+                and operation_completed_at <= execution_deadline
+            )
+            if not completed_in_budget:
                 scheduler_upstream_timeouts.labels(
                     priority_class=job.priority.value,
                     operation=job.operation_name,
@@ -368,15 +430,41 @@ class ExecutionScheduler:
                     operation=job.operation_name,
                     execution_timeout_seconds=job.execution_timeout_seconds,
                 )
-                # Never cancel a timed-out synchronous operation. The provider awaits a
-                # shielded completion future, so retaining this task also retains the
-                # physical worker lease until its daemon thread really exits.
+                # Never cancel timed-out work. Even cancellation of this internal lifecycle
+                # is deferred until the operation and any synchronous provider thread drain.
+                while not operation_task.done():
+                    try:
+                        await asyncio.shield(operation_task)
+                    except asyncio.CancelledError:
+                        log.warning("gateway_scheduler_lifecycle_cancellation_deferred")
+                    except Exception:
+                        break
+                if operation_task.cancelled():
+                    outcome = "timeout_drained_cancelled"
+                else:
+                    try:
+                        operation_task.result()
+                    except Exception:
+                        outcome = "timeout_drained_error"
+                    else:
+                        outcome = "timeout_drained_success"
+            else:
                 try:
-                    await asyncio.shield(operation_task)
-                except BaseException:
-                    pass
+                    value = operation_task.result()
+                except asyncio.CancelledError:
+                    outcome = "cancelled"
+                    if not job.result.done():
+                        job.result.cancel()
+                except Exception as exc:
+                    outcome = "error"
+                    if not job.result.done():
+                        job.result.set_exception(exc)
+                else:
+                    outcome = "success"
+                    if not job.result.done():
+                        job.result.set_result(value)
         finally:
-            elapsed = time.perf_counter() - started_at
+            elapsed = loop.time() - started_at
             scheduler_execution.labels(
                 priority_class=job.priority.value,
                 operation=job.operation_name,

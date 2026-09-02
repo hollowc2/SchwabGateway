@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from schwab_gateway.api import (
     TOKEN_READINESS_PROVIDER_KEY,
     UPSTREAM_KEY,
     event_loop_lag_context,
+    execution_scheduler_context,
 )
 from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import TokenReadinessRecovery
@@ -142,6 +144,40 @@ def test_demo_mode_needs_no_confirmations() -> None:
     assert args.serve_live is False
 
 
+def test_runner_enables_transport_handler_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+    settings = SimpleNamespace(
+        internal_keys_path=Path("/unused"),
+        log_level="INFO",
+        bind_host="127.0.0.1",
+        port=8010,
+    )
+    app = object()
+    monkeypatch.setattr(runner, "GatewaySettings", lambda: settings)
+    monkeypatch.setattr(runner, "build_demo_app", lambda _settings: app)
+    monkeypatch.setattr(runner, "setup_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner.web,
+        "run_app",
+        lambda value, **kwargs: calls.append((value, kwargs)),
+    )
+
+    runner.main(["--demo"])
+
+    assert calls == [
+        (
+            app,
+            {
+                "host": "127.0.0.1",
+                "port": 8010,
+                "handler_cancellation": True,
+            },
+        )
+    ]
+
+
 # --- Demo mode is unchanged ----------------------------------------------------------
 
 
@@ -244,8 +280,9 @@ def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    # event-loop lag sampler + readiness recovery
-    assert len(app.cleanup_ctx) == 2
+    # scheduler drain + event-loop lag sampler + readiness recovery
+    assert len(app.cleanup_ctx) == 3
+    assert execution_scheduler_context in app.cleanup_ctx
     assert event_loop_lag_context in app.cleanup_ctx
 
 
@@ -259,8 +296,8 @@ def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    # event-loop lag sampler + readiness recovery + order-book feed
-    assert len(app.cleanup_ctx) == 3
+    # scheduler drain + event-loop lag sampler + readiness recovery + order-book feed
+    assert len(app.cleanup_ctx) == 4
 
 
 def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path) -> None:
@@ -275,10 +312,10 @@ def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path
         )
 
 
-def test_demo_app_registers_no_readiness_recovery(tmp_path: Path) -> None:
-    """The demo readiness is a static fake; there is nothing to recover."""
+def test_demo_app_registers_only_scheduler_cleanup(tmp_path: Path) -> None:
+    """The demo has no recovery loop, but still owns a scheduled fake worker."""
     app = runner.build_demo_app(_settings(tmp_path))
-    assert list(app.cleanup_ctx) == []
+    assert list(app.cleanup_ctx) == [execution_scheduler_context]
 
 
 # --- Readiness recovery --------------------------------------------------------------
