@@ -19,7 +19,8 @@ Options:
                               SCHWAB_GATEWAY_PRODUCTION_IMAGE
   --phase PHASE               predeploy or postdeploy (default: predeploy)
   --container NAME            Live container (default: schwab_gateway_live)
-  --candidate-container NAME  Candidate container (default: schwab_gateway_candidate)
+  --candidate-container NAME  Retired candidate identity that must be absent
+                              (default: schwab_gateway_candidate)
   --legacy-container NAME     Preserved rollback container
                               (default: butterfly_schwab_gateway_live)
   --service NAME              Compose service (default: live)
@@ -27,13 +28,12 @@ Options:
   --network NAME              Expected Docker network (default: monitoring_net)
   --network-alias NAME        Required alias (default: schwab-gateway)
   --candidate-network-alias NAME
-                              Candidate alias (default: schwab-gateway-candidate)
+                              Retired compatibility option; no candidate is contacted
   --port PORT                 Required loopback host/container port (default: 8011)
-  --candidate-port PORT       Candidate loopback port (default: 8012)
+  --candidate-port PORT       Retired compatibility option; port must remain unused
   --health-url URL            Health URL (default: http://127.0.0.1:8011/health)
   --ready-url URL             Readiness URL (default: http://127.0.0.1:8011/ready)
-  --candidate-ready-url URL   Candidate readiness URL
-                              (default: http://127.0.0.1:8012/ready)
+  --candidate-ready-url URL   Retired compatibility option; URL is never contacted
   --prometheus-url URL        Prometheus targets API
   --prometheus-target TARGET  Required active/up target (default: schwab-gateway:8011)
   --keys-path PATH            Digest-key file; otherwise derived from its container mount
@@ -390,77 +390,11 @@ run_audit() {
     candidate_state=$(inspect_field '{{.State.Status}}' "$candidate_container" || true)
     candidate_health=$(inspect_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$candidate_container" || true)
 
-    if [[ "$phase" == predeploy ]]; then
-        check candidate-container
-        if [[ "$candidate_exists" == true ]]; then
-            pass candidate-container "name=$candidate_container"
-        else
-            fail candidate-container "name=$candidate_container absent"
-        fi
-
-        check candidate-image
-        if [[ -n "$candidate_image_id" && "$candidate_image_id" == "$tagged_image_id" ]]; then
-            pass candidate-image "reference=${candidate_image:-unavailable} id=$candidate_image_id intended-id=$tagged_image_id"
-        else
-            fail candidate-image "reference=${candidate_image:-unavailable} id=${candidate_image_id:-unavailable} intended-id=${tagged_image_id:-unavailable}"
-        fi
-
-        check candidate-health
-        if [[ "$candidate_state" == running && "$candidate_health" == healthy ]]; then
-            pass candidate-health "state=$candidate_state health=$candidate_health"
-        else
-            fail candidate-health "state=${candidate_state:-unavailable} health=${candidate_health:-unavailable}"
-        fi
-
-        candidate_restart=$(inspect_field '{{.HostConfig.RestartPolicy.Name}}' "$candidate_container" || true)
-        check candidate-restart-policy
-        if [[ "$candidate_restart" == "$restart_policy" ]]; then
-            pass candidate-restart-policy "actual=$candidate_restart"
-        else
-            fail candidate-restart-policy "expected=$restart_policy actual=${candidate_restart:-unavailable}"
-        fi
-
-        candidate_user=$(inspect_field '{{.Config.User}}' "$candidate_container" || true)
-        check candidate-user
-        if [[ "$candidate_user" == "$expected_user" ]]; then
-            pass candidate-user "actual=$candidate_user"
-        else
-            fail candidate-user "expected=$expected_user actual=${candidate_user:-unset}"
-        fi
-
-        candidate_read_only=$(inspect_field '{{.HostConfig.ReadonlyRootfs}}' "$candidate_container" || true)
-        check candidate-read-only-root
-        if [[ "$candidate_read_only" == true ]]; then
-            pass candidate-read-only-root
-        else
-            fail candidate-read-only-root "actual=${candidate_read_only:-unavailable}"
-        fi
-
-        candidate_ports=$(inspect_field "{{json (index .NetworkSettings.Ports \"$candidate_port/tcp\")}}" "$candidate_container" || true)
-        check candidate-loopback-port
-        if [[ "$candidate_ports" == "[{\"HostIp\":\"127.0.0.1\",\"HostPort\":\"$candidate_port\"}]" ]]; then
-            pass candidate-loopback-port "binding=127.0.0.1:$candidate_port:$candidate_port"
-        else
-            fail candidate-loopback-port "expected=127.0.0.1:$candidate_port:$candidate_port actual=${candidate_ports:-unavailable}"
-        fi
-
-        candidate_aliases=$(inspect_field "{{range \$name, \$settings := .NetworkSettings.Networks}}{{if eq \$name \"$network\"}}{{range \$settings.Aliases}}{{println .}}{{end}}{{end}}{{end}}" "$candidate_container" || true)
-        check candidate-network-alias
-        if printf '%s\n' "$candidate_aliases" | grep -Fxq -- "$candidate_network_alias"; then
-            pass candidate-network-alias "network=$network alias=$candidate_network_alias"
-        else
-            fail candidate-network-alias "network=$network alias=$candidate_network_alias absent"
-        fi
-
-        check candidate-readiness
-        if curl --fail --silent --show-error --max-time 5 --output /dev/null -- "$candidate_ready_url" 2>/dev/null; then
-            pass candidate-readiness "url=$candidate_ready_url"
-        else
-            fail candidate-readiness "url=$candidate_ready_url"
-        fi
+    check retired-candidate-absent
+    if [[ "$candidate_exists" == false ]]; then
+        pass retired-candidate-absent "name=$candidate_container port=$candidate_port"
     else
-        check candidate-report
-        pass candidate-report "present=$candidate_exists state=${candidate_state:-unavailable} health=${candidate_health:-unavailable} reference=${candidate_image:-unavailable} id=${candidate_image_id:-unavailable}"
+        fail retired-candidate-absent "name=$candidate_container state=${candidate_state:-unavailable} port=$candidate_port must-not-exist"
     fi
 
     check rollback-container

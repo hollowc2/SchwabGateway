@@ -13,10 +13,10 @@ Three properties are deliberate and load-bearing:
   operation, persists any rotation, and invalidates its callbacks before releasing the
   token lock. That is the lifecycle the adapter was fake-proven and host-proven under, and
   it is why the gateway can hold a production token safely.
-- **The lock serializes everything.** The token manager holds an exclusive lock for the
-  duration of each transaction, so concurrent gateway requests queue behind one another
-  regardless of the admission policy's capacities. Admission bounds queue depth here, not
-  parallelism.
+- **The lock serializes everything.** The API's strict-priority scheduler dispatches one
+  read at a time, and the token manager still holds an exclusive lock for each complete
+  transaction. The provider's worker lease remains a final safety backstop for direct
+  callers and detached timeout drain; neither layer permits overlapping token writers.
 - **No retries.** ``SchwabClientWrapper._retry`` retries three times with backoff on the
   direct path. This one does not, because retrying inside a held token lock multiplies
   the time every other caller waits, and the gateway client is specified to add no
@@ -60,7 +60,7 @@ EXTENDED_SESSION_WINDOW_END = dt.time(20, 0)
 
 upstream_operation_latency = Histogram(
     "schwab_gateway_upstream_operation_latency_seconds",
-    "Live Schwab transaction latency including worker and token-lock wait",
+    "Live provider latency including its defensive worker lease and token transaction",
     ["operation", "status"],
 )
 

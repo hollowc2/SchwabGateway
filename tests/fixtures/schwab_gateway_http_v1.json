@@ -224,6 +224,10 @@
       "status": 429,
       "body": {"schema_version": "1.0", "error": {"code": "gateway_capacity_exceeded", "message": "gateway request capacity is unavailable"}}
     },
+    "gateway_queue_timeout": {
+      "status": 503,
+      "body": {"schema_version": "1.0", "error": {"code": "gateway_queue_timeout", "message": "gateway worker queue wait timed out"}}
+    },
     "quote_upstream_timeout": {
       "status": 504,
       "body": {"schema_version": "1.0", "error": {"code": "upstream_timeout", "message": "quote upstream timed out"}}

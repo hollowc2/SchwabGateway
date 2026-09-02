@@ -16,7 +16,11 @@ from schwab_gateway.admission import (
     AdmissionController,
     AdmissionPolicy,
 )
-from schwab_gateway.api import StaticTokenReadinessProvider, create_app
+from schwab_gateway.api import (
+    EXECUTION_SCHEDULER_KEY,
+    StaticTokenReadinessProvider,
+    create_app,
+)
 from schwab_gateway.auth import (
     InternalKeyAuthenticator,
     InternalPrincipal,
@@ -86,7 +90,7 @@ class BlockingUpstream:
 
 
 @pytest.mark.asyncio
-async def test_default_policy_admits_three_chains_plus_two_auxiliary_reads() -> None:
+async def test_default_policy_admits_five_protected_reads_but_runs_one_at_a_time() -> None:
     upstream = BlockingUpstream()
     app = create_app(
         upstream,
@@ -107,7 +111,9 @@ async def test_default_policy_admits_three_chains_plus_two_auxiliary_reads() -> 
                 )
                 for index in range(5)
             ]
-            await asyncio.wait_for(upstream.wait_for_calls(5), timeout=1)
+            await asyncio.wait_for(upstream.wait_for_calls(1), timeout=1)
+            await asyncio.sleep(0.02)
+            assert len(upstream.calls) == 1
             upstream.release.set()
             responses = await asyncio.gather(*requests)
     finally:
@@ -144,7 +150,9 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
                     headers=headers("afterhours-lab"),
                 )
             )
-            await upstream.wait_for_calls(2)
+            await upstream.wait_for_calls(1)
+            while app[EXECUTION_SCHEDULER_KEY].snapshot().background < 2:
+                await asyncio.sleep(0)
 
             rejected = await client.get(
                 "/v1/quotes",
@@ -165,7 +173,9 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
                     headers=headers("butterfly-guy"),
                 )
             )
-            await upstream.wait_for_calls(3)
+            while app[EXECUTION_SCHEDULER_KEY].snapshot().protected < 1:
+                await asyncio.sleep(0)
+            assert upstream.calls == [("SCAN",)]
             assert not protected.done()
 
             upstream.release.set()
@@ -180,6 +190,7 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
         "message": "gateway request capacity is unavailable",
     }
     assert [response.status_code for response in responses] == [200, 200, 200]
+    assert upstream.calls == [("SCAN",), ("SPX",), ("LAB",)]
     admission_lines = [
         line for line in metrics.text.splitlines() if line.startswith("gateway_admission_total{")
     ]
@@ -190,6 +201,116 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
         for line in admission_lines
         if (match := re.search(r'priority_class="([^"]+)"', line))
     } <= {"protected", "background"}
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_timeout_is_503_and_expired_request_never_runs() -> None:
+    upstream = BlockingUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+        admission_policy=AdmissionPolicy(protected_capacity=2, background_capacity=1),
+        protected_queue_timeout_seconds=0.01,
+    )
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            active = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "SPX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            await upstream.wait_for_calls(1)
+            expired = await client.get(
+                "/v1/quotes",
+                params={"symbols": "NDX"},
+                headers=headers("butterfly-guy"),
+            )
+            upstream.release.set()
+            completed = await active
+            await app[EXECUTION_SCHEDULER_KEY].wait_idle()
+            metrics = await client.get("/metrics")
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert completed.status_code == 200
+    assert expired.status_code == 503
+    assert expired.json()["error"] == {
+        "code": "gateway_queue_timeout",
+        "message": "gateway worker queue wait timed out",
+    }
+    assert upstream.calls == [("SPX",)]
+    assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
+    assert "schwab_gateway_scheduler_queue_wait_timeouts_total" in metrics.text
+
+
+@pytest.mark.asyncio
+async def test_upstream_timeout_retains_worker_until_real_completion() -> None:
+    class SlowFirstUpstream:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+            self.release = asyncio.Event()
+
+        async def get_quotes(self, symbols: tuple[str, ...]) -> tuple[QuoteV1, ...]:
+            self.calls.append(symbols)
+            if symbols == ("SPX",):
+                await self.release.wait()
+            now = dt.datetime.now(dt.timezone.utc)
+            return tuple(
+                QuoteV1(
+                    symbol=symbol,
+                    gateway_received_at=now,
+                    source="fake",
+                    stale=False,
+                )
+                for symbol in symbols
+            )
+
+    upstream = SlowFirstUpstream()
+    app = create_app(
+        upstream,
+        authenticator(),
+        token_readiness_provider=ready_provider(),
+        admission_policy=AdmissionPolicy(protected_capacity=2, background_capacity=1),
+        upstream_timeout_seconds=0.01,
+        protected_queue_timeout_seconds=0.2,
+    )
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            timed_out = await client.get(
+                "/v1/quotes",
+                params={"symbols": "SPX"},
+                headers=headers("butterfly-guy"),
+            )
+            queued = asyncio.create_task(
+                client.get(
+                    "/v1/quotes",
+                    params={"symbols": "NDX"},
+                    headers=headers("butterfly-guy"),
+                )
+            )
+            await asyncio.sleep(0.02)
+            assert upstream.calls == [("SPX",)]
+            assert app[EXECUTION_SCHEDULER_KEY].snapshot().worker_active is True
+            upstream.release.set()
+            completed = await queued
+            await app[EXECUTION_SCHEDULER_KEY].wait_idle()
+    finally:
+        upstream.release.set()
+        await server.close()
+
+    assert timed_out.status_code == 504
+    assert timed_out.json()["error"]["code"] == "upstream_timeout"
+    assert completed.status_code == 200
+    assert upstream.calls == [("SPX",), ("NDX",)]
+    assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
 @pytest.mark.asyncio

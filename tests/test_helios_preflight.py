@@ -60,6 +60,9 @@ target="${{@: -1}}"
 if [[ "$target" == butterfly_schwab_gateway_live && "${{FAKE_NO_LEGACY:-false}}" == true ]]; then
   exit 1
 fi
+if [[ "$target" == schwab_gateway_candidate && "${{FAKE_CANDIDATE_PRESENT:-false}}" != true ]]; then
+  exit 1
+fi
 case "$target" in
   schwab_gateway_live|schwab_gateway_candidate|butterfly_schwab_gateway_live) ;;
   *) exit 1 ;;
@@ -231,10 +234,7 @@ def test_preflight_passes_and_writes_sanitized_rollback_record(tmp_path: Path) -
         f"PASS live-image baseline-reference={IMAGE_ID} baseline-id={RUNNING_IMAGE_ID}"
         in result.stdout
     )
-    assert (
-        "PASS candidate-image reference=schwab-gateway-candidate:local "
-        f"id={RUNNING_IMAGE_ID}" in result.stdout
-    )
+    assert "PASS retired-candidate-absent" in result.stdout
     assert "PASS prometheus-target target=schwab-gateway:8011 state=up" in result.stdout
     assert "PASS digest-keys-metadata" in result.stdout
     assert "PASS token-metadata" in result.stdout
@@ -299,7 +299,7 @@ def test_postdeploy_requires_live_to_match_intended_image(tmp_path: Path) -> Non
 
     assert result.returncode == 1
     assert "FAIL live-image phase=postdeploy" in result.stdout
-    assert "PASS candidate-report" in result.stdout
+    assert "PASS retired-candidate-absent" in result.stdout
 
 
 def test_predeploy_records_different_live_baseline_without_blocking(tmp_path: Path) -> None:
@@ -313,14 +313,14 @@ def test_predeploy_records_different_live_baseline_without_blocking(tmp_path: Pa
     assert "SUMMARY PASS failures=0" in result.stdout
 
 
-def test_predeploy_requires_candidate_to_resolve_to_intended_image(tmp_path: Path) -> None:
+def test_predeploy_fails_if_retired_candidate_exists(tmp_path: Path) -> None:
     result, _, _, _ = run_preflight(
         tmp_path,
-        extra_env={"FAKE_BAD_CANDIDATE_IMAGE": "true"},
+        extra_env={"FAKE_CANDIDATE_PRESENT": "true"},
     )
 
     assert result.returncode == 1
-    assert "FAIL candidate-image" in result.stdout
+    assert "FAIL retired-candidate-absent" in result.stdout
 
 
 def test_help_documents_read_only_local_and_record_modes() -> None:

@@ -26,6 +26,8 @@ class GatewaySettings(BaseSettings):
     log_level: str = "INFO"
     order_writes_enabled: bool = False
     upstream_timeout_seconds: float = 3.0
+    protected_queue_timeout_seconds: float = 7.0
+    background_queue_timeout_seconds: float = 1.0
     protected_capacity: int = 8
     background_capacity: int = 8
     option_chain_cache_ttl_seconds: float = 4.0
@@ -60,11 +62,15 @@ class GatewaySettings(BaseSettings):
             raise ValueError("gateway port must be between 1 and 65535")
         return value
 
-    @field_validator("upstream_timeout_seconds")
+    @field_validator(
+        "upstream_timeout_seconds",
+        "protected_queue_timeout_seconds",
+        "background_queue_timeout_seconds",
+    )
     @classmethod
     def timeout_must_be_positive(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("gateway upstream timeout must be positive")
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("gateway timeout must be finite and positive")
         return value
 
     @field_validator("protected_capacity", "background_capacity")

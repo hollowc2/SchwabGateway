@@ -16,9 +16,9 @@ Do not start deployment without a private, sanitized rollback record containing:
 
 - host, repository, Git SHA/ref, Compose project/files/service, and timestamp;
 - previous production configured image and exact resolved image ID/digest;
-- candidate container, exact image ID/digest, state, port, and alias;
 - legacy container, configured image, exact image ID/digest, and state;
-- production/candidate/legacy container identities and health states;
+- production/legacy container identities and health states plus proof that the retired
+  candidate identity is absent and port 8012 unused;
 - key-file and token-file metadata only, never contents or hashes of secrets/tokens;
 - Prometheus config path, owner/group/mode/inode/SHA-256, current target and health;
 - a unique Prometheus backup path and SHA-256 if monitoring will change; and
@@ -93,8 +93,8 @@ docker start butterfly_schwab_gateway_live
 printf 'PASS start-preserved-legacy\n'
 ```
 
-Do not rebuild, recreate, rename, or remove the legacy container. Do not alter the
-candidate unless its baseline/approved rollback procedure specifically requires it.
+Do not rebuild, recreate, rename, or remove the legacy container. Never create or restore
+a candidate gateway.
 
 Restore Prometheus to the exact legacy target saved in the rollback record. The historic
 target was `butterfly_schwab_gateway_live:8011`, but use the record rather than assuming
@@ -163,8 +163,8 @@ For either restore path, validate in this order and stop at the first failure:
 6. The bounded unauthenticated `401` contract and approved authenticated synthetic
    market-data contract succeed without logging keys or response bodies.
 7. Prometheus reports the exact restored target `up`.
-8. Exactly one production identity is active; candidate and legacy/standalone states
-   match the selected rollback path and recorded plan.
+8. Exactly one production identity is active, no candidate exists, port 8012 is unused,
+   and the legacy/standalone states match the selected rollback path and recorded plan.
 
 Run each assertion as its own `CHECK` / `PASS` pair. The last `CHECK` without `PASS` is
 the rollback failure point. Do not deliberately crash the restored service unless a new
@@ -173,7 +173,7 @@ approval explicitly authorizes that test.
 ## Completion record
 
 Record the trigger, failed validation gate, rollback path, restored Git/image identity,
-container and Prometheus results, token readiness, candidate/legacy states, start/end UTC
+container and Prometheus results, token readiness, legacy state, candidate absence, start/end UTC
 times, and any remaining risk. Preserve the failed and restored images, all containers,
 the monitoring backup, and the sanitized preflight record until Corey closes the
 stability window. Any cleanup requires separate approval.

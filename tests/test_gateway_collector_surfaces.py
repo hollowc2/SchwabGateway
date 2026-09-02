@@ -13,6 +13,7 @@ from schwab_gateway_sdk.client import (
     GatewayAuthorizationError,
     GatewayCapacityError,
     GatewayMarketDataClient,
+    GatewayQueueTimeoutError,
     GatewayResponseError,
     GatewayTimeoutError,
     GatewayUnavailableError,
@@ -919,6 +920,41 @@ async def test_client_maps_every_status_to_a_bounded_error(
                 await client.get_movers("$SPX")
             else:
                 await client.get_session_history("AAPL", dt.date(2026, 8, 12))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
+async def test_client_classifies_queue_timeout_separately(surface: str) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={
+                "schema_version": "1.0",
+                "error": {
+                    "code": "gateway_queue_timeout",
+                    "message": "gateway worker queue wait timed out",
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="http://gateway.invalid",
+        transport=httpx.MockTransport(handler),
+    ) as http:
+        client = GatewayMarketDataClient("http://gateway.invalid", "key", client=http)
+        with pytest.raises(GatewayQueueTimeoutError):
+            if surface == "spot":
+                await client.get_spot("$SPX")
+            elif surface == "chain":
+                await client.get_chain_metadata("SPX", EXPIRATION)
+            elif surface == "history":
+                await client.get_history("AAPL")
+            elif surface == "movers":
+                await client.get_movers("$SPX")
+            else:
+                await client.get_session_history("AAPL", dt.date(2026, 8, 12))
+
+    assert issubclass(GatewayQueueTimeoutError, GatewayUnavailableError)
 
 
 @pytest.mark.asyncio

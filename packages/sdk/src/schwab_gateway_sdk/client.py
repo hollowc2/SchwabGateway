@@ -40,12 +40,27 @@ class GatewayUnavailableError(GatewayClientError):
     pass
 
 
+class GatewayQueueTimeoutError(GatewayUnavailableError):
+    """The server shed a request whose bounded dispatch wait expired."""
+
+
 class GatewayCapacityError(GatewayClientError):
     pass
 
 
 class GatewayResponseError(GatewayClientError):
     pass
+
+
+def _error_code(response: httpx.Response) -> str | None:
+    """Read only the bounded error discriminator; malformed bodies fail closed."""
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+    except ValueError:
+        return None
+    return code if isinstance(code, str) else None
 
 
 class GatewayMarketDataClient:
@@ -56,7 +71,7 @@ class GatewayMarketDataClient:
         base_url: str,
         api_key: str,
         *,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = 12.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not api_key:
@@ -89,6 +104,8 @@ class GatewayMarketDataClient:
             raise GatewayAuthorizationError("gateway capability denied")
         if response.status_code == 429:
             raise GatewayCapacityError("gateway request capacity is unavailable")
+        if response.status_code == 503 and _error_code(response) == "gateway_queue_timeout":
+            raise GatewayQueueTimeoutError("gateway worker queue wait timed out")
         if response.status_code == 504:
             raise GatewayTimeoutError("gateway quote upstream timed out")
         if response.status_code in {502, 503}:
@@ -121,6 +138,8 @@ class GatewayMarketDataClient:
             raise GatewayAuthorizationError("gateway capability denied")
         if response.status_code == 429:
             raise GatewayCapacityError("gateway request capacity is unavailable")
+        if response.status_code == 503 and _error_code(response) == "gateway_queue_timeout":
+            raise GatewayQueueTimeoutError("gateway worker queue wait timed out")
         if response.status_code == 504:
             raise GatewayTimeoutError("gateway market data upstream timed out")
         if response.status_code in {502, 503}:

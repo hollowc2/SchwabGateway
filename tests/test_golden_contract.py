@@ -51,6 +51,7 @@ def test_success_fixtures_are_exactly_accepted_by_v1_models(golden: dict) -> Non
         "invalid_session_history_date_missing",
         "gateway_not_ready",
         "gateway_capacity_exceeded",
+        "gateway_queue_timeout",
         "quote_upstream_timeout",
         "quote_upstream_unavailable",
         "quote_upstream_malformed",

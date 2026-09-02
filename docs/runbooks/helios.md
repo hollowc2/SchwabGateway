@@ -12,32 +12,27 @@ token directory and do not move, replace, copy, or display `tokens.json`.
 
 ## Deployment topology
 
-The expected pre-cutover topology, confirmed read-only on 2026-08-22, is:
+The required topology is:
 
 | Role | Compose project and files | Container | Endpoint / alias | Expected state |
 |---|---|---|---|---|
 | Production | `schwab_gateway`; `compose.yml` + `compose.production.yml` | `schwab_gateway_live` | `127.0.0.1:8011`; `schwab-gateway` | healthy and scraped by Prometheus |
-| Candidate | `schwab_gateway_candidate`; `compose.yml` + `compose.candidate.yml` | `schwab_gateway_candidate` | `127.0.0.1:8012`; `schwab-gateway-candidate` | separate validation instance |
 | Emergency legacy | `butterfly_gateway_foundation` | `butterfly_schwab_gateway_live` | legacy internal target | stopped but preserved |
 
-The candidate is not production and is never promoted by renaming its container or
-changing its project. Promotion means selecting the exact candidate-tested image ID or
-repository digest in the production overlay and recreating only the production `live`
-service. Do not point Prometheus at the candidate. Keep the legacy container and all
-three image baselines intact throughout the stability window.
-
-The candidate and production processes may share Schwab token storage. Do not copy or
-reset the token as part of deployment, and do not add another gateway instance. If the
-candidate must be recreated or stopped, name that action in the approval request.
+There is exactly one live gateway. `schwab_gateway_candidate` must be absent, port 8012
+must remain unused, and `compose.candidate.yml` must not be invoked. Validate the release
+offline, build one immutable image, and recreate only the production `live` service after
+approval. Keep the stopped legacy rollback container and both production image baselines
+intact through the stability window. Never copy or reset the token or add another writer.
 
 The 2026-08-22 audit also found the Helios checkout detached at a release tag with the
-production and candidate overlays untracked; the server's production overlay also still
+production overlays untracked; the server's production overlay also still
 selects a mutable version tag. Treat a dirty checkout, a mutable production image, or a
 checkout not at the intended exact release as a failed gate even when the files happen to
 render correctly. A detached checkout at the intended exact tag is acceptable. Do not
 delete or overwrite the server files. First compare them with the committed release,
 then obtain approval for the exact fetch/checkout/staging action and rerun preflight.
-Staging code must not recreate or restart either gateway.
+Staging code must not recreate or restart the gateway.
 
 ## Immutable release contract
 
@@ -57,12 +52,12 @@ requires `SCHWAB_GATEWAY_PRODUCTION_IMAGE`. Set that variable to one of:
 A release tag alone, including a version tag, is not an immutable deployment identity.
 Record the human-readable release tag and Git SHA for traceability, but deploy and verify
 the image ID/digest. Never run `docker compose build`, use `--build`, pull a reusable tag,
-or retag/rebuild the candidate during the cutover.
+or create a candidate during the cutover.
 
 ## Read-only preflight and rollback record
 
 Run from the intended local release checkout. Replace the example image value with the
-exact candidate-tested ID/digest; it is not a secret:
+exact locally built and reviewed ID/digest; it is not a secret:
 
 ```bash
 sg_record="/tmp/schwab-gateway-preflight-$(date -u +%Y%m%dT%H%M%SZ).txt"
@@ -73,9 +68,9 @@ SCHWAB_GATEWAY_PRODUCTION_IMAGE='sha256:<exact-image-id>' \
 The script defaults to `billy@helios`, `/opt/schwab-gateway`, `compose.yml` plus
 `compose.production.yml`, the production container, and the production health,
 readiness, network, secret-metadata, disk, and Prometheus expectations. In `predeploy`
-phase it records the current live baseline while requiring the intended immutable image
-to resolve locally and the healthy candidate to run that same image ID. In `postdeploy`
-phase it instead requires production to run the intended image. It prints only
+phase it records the current live baseline, requires the intended immutable image to
+resolve locally, and requires the retired candidate identity to be absent. In
+`postdeploy` phase it instead requires production to run the intended image. It prints only
 step-labelled `CHECK`, `PASS`, or `FAIL` results, followed by a sanitized rollback
 record. Exit `0` is required. Exit `1` means a failed/transport gate; exit `2` means bad
 arguments. The record is local and mode `0600`; attach it to the private change record,
@@ -105,9 +100,8 @@ production_configured_image=
 production_image_id_or_digest=
 production_state_and_health=
 production_port_and_network_alias=
-candidate_container=schwab_gateway_candidate
-candidate_image_id_or_digest=
-candidate_state_and_health=
+retired_candidate_container=schwab_gateway_candidate
+retired_candidate_absent=true
 legacy_container=butterfly_schwab_gateway_live
 legacy_configured_image=
 legacy_image_id_or_digest=
@@ -126,19 +120,20 @@ exact_legacy_fallback_command=
 ```
 
 Record metadata only for key and token files. Do not hash or display the token or any
-secret. Before approval, verify the intended image exists locally on Helios and that its
-resolved ID exactly equals the candidate-tested ID recorded for promotion.
+secret. Before approval, verify the intended image exists locally on Helios and record
+its exact resolved image ID.
 
 ## Mandatory approval stop
 
 **STOP. Do not continue below until Corey explicitly approves the named host, production
-service, intended Git release, exact image ID/digest, production recreate, any candidate
-action, any Prometheus change, validation plan, and both rollback paths.**
+service, intended Git release, exact image ID/digest, production recreate, any Prometheus
+change, validation plan, and both rollback paths.**
 
 The approval request must summarize:
 
 - preflight result and record location;
-- current production, candidate, and legacy states and immutable image identities;
+- current production and legacy states, immutable image identities, and proof that the
+  retired candidate identity is absent;
 - intended Git SHA/release and exact image ID/digest;
 - whether Schwab authorization or token readiness needs operator action;
 - expected impact and confirmation that order writes remain disabled;
@@ -175,7 +170,7 @@ SCHWAB_GATEWAY_PRODUCTION_IMAGE="$sg_production_image" \
 printf 'PASS activate-production\n'
 ```
 
-Do not use `down`, remove containers/images/volumes, or recreate the candidate. If the
+Do not use `down`, remove containers/images/volumes, or create a candidate. If the
 activation command fails or any required validation fails, follow
 [the rollback runbook](rollback.md) before debugging further unless Corey directs
 otherwise.
@@ -193,8 +188,8 @@ gateway—to trigger rollback.
 3. Confirm UID/GID, read-only root, all capabilities dropped,
    `no-new-privileges`, `unless-stopped`, order writes disabled, and only
    `127.0.0.1:8011` published.
-4. Confirm membership in `monitoring_net` with alias `schwab-gateway`; confirm the
-   candidate remains on `8012` with only `schwab-gateway-candidate`.
+4. Confirm membership in `monitoring_net` with alias `schwab-gateway`; confirm no
+   `schwab_gateway_candidate` exists and nothing is bound to port 8012.
 5. Review bounded startup logs for errors without printing environment or credentials.
 6. Require `GET http://127.0.0.1:8011/health` to return `200`, then `/ready` to return
    `200` with token state `ready`, then `/metrics` to return `200`.
@@ -204,8 +199,8 @@ gateway—to trigger rollback.
    response body.
 8. Require the Prometheus targets API to report job `schwab_gateway`, scrape URL
    `http://schwab-gateway:8011/metrics`, and health `up`.
-9. Confirm there is exactly one production container, the candidate state matches its
-   baseline, and the legacy container/image remain preserved.
+9. Confirm there is exactly one production gateway process and exactly one SPX, NDX, and
+   XSP ButterflyGuy process; the stopped legacy container/image remains preserved.
 10. Only if the approval explicitly includes an intentional crash-recovery test, perform
     it and repeat steps 1–9. A deliberate stop/restart is another live change.
 
@@ -306,6 +301,6 @@ check fails, restore the recorded backup in place using the rollback runbook.
 
 After successful validation, record the deployed Git SHA, configured immutable image
 reference, resolved image ID, validation results, and any Prometheus backup. Keep the
-previous production image, candidate image/container, legacy image/container, and
+previous production image, legacy image/container, and
 monitoring backup until Corey closes the stability window. Removal or cleanup requires a
 separate explicit approval.

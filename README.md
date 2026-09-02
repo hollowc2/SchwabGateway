@@ -36,9 +36,11 @@ manifest. See `docs/order-book-research.md`.
 - **Fails closed.** Freshness-gated order-book and option-chain reads return errors
   during feed outages rather than serving stale or truncated data. The gateway never
   silently truncates a chain.
-- **Bounded.** A single token lock serializes all Schwab reads; admission caps
-  in-flight requests per class and returns `429` (capacity) or `504` (upstream
-  timeout) under pressure.
+- **Bounded and protected-first.** One strict-priority FIFO scheduler feeds the single
+  Schwab worker. Protected and background capacity are independent; background work is
+  delayed or shed before it can consume ButterflyGuy capacity. `429` means class
+  capacity is full, `503 gateway_queue_timeout` means dispatch wait expired, and `504
+  upstream_timeout` means a dispatched operation exceeded its three-second budget.
 - **Venue-specific depth.** `NASDAQ_BOOK` / `NYSE_BOOK` are Level II books for one
   venue, not consolidated market depth.
 - **Chain cache is paper-only.** Successful full chains are cached for a fixed 4
@@ -54,6 +56,7 @@ manifest. See `docs/order-book-research.md`.
 uv sync
 uv run pytest
 uv run ruff check .
+uv run schwab-gateway-scheduler-proof
 uv build
 uv build --package schwab-gateway-sdk
 uv build --package schwab-token-store

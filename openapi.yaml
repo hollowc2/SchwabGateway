@@ -1,8 +1,12 @@
 openapi: 3.1.0
 info:
   title: SchwabGateway
-  version: 0.3.0
-  description: Internal market-data-only Schwab gateway; wire schema version 1.0.
+  version: 0.4.0
+  description: >-
+    Internal market-data-only Schwab gateway; wire schema version 1.0. Protected and
+    background reads use independent bounded queues feeding one strict-priority Schwab
+    execution slot. A 504 means dispatched execution timed out; queue expiry is a 503
+    with code gateway_queue_timeout.
 servers:
   - url: http://schwab-gateway:8011
 paths:
@@ -52,7 +56,6 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
-        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -71,8 +74,6 @@ paths:
         "400": {$ref: "#/components/responses/Error"}
         "401": {$ref: "#/components/responses/Error"}
         "403": {$ref: "#/components/responses/Error"}
-        "429": {$ref: "#/components/responses/Error"}
-        "503": {$ref: "#/components/responses/Error"}
         "429": {$ref: "#/components/responses/Error"}
         "502": {$ref: "#/components/responses/Error"}
         "503": {$ref: "#/components/responses/Error"}
@@ -636,5 +637,17 @@ components:
           additionalProperties: false
           required: [code, message]
           properties:
-            code: {type: string}
+            code:
+              type: string
+              enum:
+                - authentication_required
+                - capability_denied
+                - invalid_request
+                - gateway_not_ready
+                - gateway_capacity_exceeded
+                - gateway_queue_timeout
+                - upstream_timeout
+                - upstream_unavailable
+                - upstream_malformed
+                - order_book_unavailable
             message: {type: string}

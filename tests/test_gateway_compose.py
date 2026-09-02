@@ -81,18 +81,15 @@ def test_base_compose_does_not_require_the_production_image_override() -> None:
     assert rendered["services"]["demo"]["profiles"] == ["demo"]
 
 
-def test_candidate_layer_retargets_only_candidate_identity_and_ingress() -> None:
-    live = rendered_compose("compose.candidate.yml")["services"]["live"]
+def test_candidate_overlay_is_retired_and_cannot_define_an_8012_service() -> None:
+    candidate_path = ROOT / "compose.candidate.yml"
+    candidate = yaml.safe_load(candidate_path.read_text())
 
-    assert live["container_name"] == "schwab_gateway_candidate"
-    assert live["build"]["context"] == str(ROOT)
-    assert live["environment"]["SCHWAB_GATEWAY_PORT"] == "8012"
-    assert live["environment"]["SCHWAB_GATEWAY_ORDER_WRITES_ENABLED"] == "false"
-    assert published_port(live) == ("127.0.0.1", 8012, "8012")
-    assert live["networks"]["monitoring_net"]["aliases"] == [
-        "schwab-gateway-candidate"
-    ]
-    assert "http://127.0.0.1:8012/ready" in live["healthcheck"]["test"][-1]
+    assert "services" not in candidate
+    assert candidate["x-schwab-gateway-retired-candidate"] == {
+        "reason": "single-live-gateway-only"
+    }
+    assert "8012" not in candidate_path.read_text()
 
 
 def test_production_layer_requires_an_explicit_image() -> None:
@@ -159,6 +156,9 @@ def test_only_minimal_secret_inputs_are_admitted() -> None:
         "SCHWAB_GATEWAY_PORT",
         "SCHWAB_GATEWAY_INTERNAL_KEYS_PATH",
         "SCHWAB_GATEWAY_ORDER_WRITES_ENABLED",
+        "SCHWAB_GATEWAY_UPSTREAM_TIMEOUT_SECONDS",
+        "SCHWAB_GATEWAY_PROTECTED_QUEUE_TIMEOUT_SECONDS",
+        "SCHWAB_GATEWAY_BACKGROUND_QUEUE_TIMEOUT_SECONDS",
         "SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS",
         "SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_MAX_ENTRIES",
         "SCHWAB_GATEWAY_OPTION_CHAIN_MAX_INFLIGHT",

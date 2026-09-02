@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import math
 import re
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Literal, Protocol, cast
 
 from aiohttp import web
@@ -45,6 +45,12 @@ from schwab_gateway.auth import (
 )
 from schwab_gateway.logging import get_logger
 from schwab_gateway.order_book_store import OrderBookSnapshotStore, OrderBookVenue
+from schwab_gateway.scheduler import (
+    ExecutionScheduler,
+    SchedulerCapacityError,
+    SchedulerQueueTimeoutError,
+    SchedulerUpstreamTimeoutError,
+)
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
@@ -107,11 +113,6 @@ gateway_admission = Counter(
     "Bounded gateway admission decisions",
     ["priority_class", "outcome"],
 )
-gateway_active_admitted = Gauge(
-    "gateway_active_admitted_requests",
-    "Currently admitted HTTP market-data requests",
-    ["priority_class"],
-)
 gateway_event_loop_lag = Gauge(
     "gateway_event_loop_lag_seconds",
     "Delay beyond the expected event-loop observation interval",
@@ -130,12 +131,12 @@ SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
     "gateway_session_history_upstream", SessionHistoryUpstream
 )
 UPSTREAM_TIMEOUT_KEY = web.AppKey("gateway_upstream_timeout", float)
+PROTECTED_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_protected_queue_timeout", float)
+BACKGROUND_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_background_queue_timeout", float)
 TOKEN_READINESS_PROVIDER_KEY = web.AppKey(
     "gateway_token_readiness_provider", "TokenReadinessProvider"
 )
-ADMISSION_CONTROLLER_KEY = web.AppKey(
-    "gateway_admission_controller", AdmissionController
-)
+EXECUTION_SCHEDULER_KEY = web.AppKey("gateway_execution_scheduler", ExecutionScheduler)
 ORDER_BOOK_STORE_KEY = web.AppKey("gateway_order_book_store", OrderBookSnapshotStore)
 ORDER_BOOK_STREAM_ADMISSION_KEY = web.AppKey(
     "gateway_order_book_stream_admission", AdmissionController
@@ -432,20 +433,6 @@ async def metrics(_request: web.Request) -> web.Response:
     return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
 
 
-@asynccontextmanager
-async def _admit_and_track(
-    controller: AdmissionController,
-    priority: PriorityClass,
-) -> AsyncIterator[None]:
-    async with controller.admit(priority):
-        active = gateway_active_admitted.labels(priority_class=priority.value)
-        active.inc()
-        try:
-            yield
-        finally:
-            active.dec()
-
-
 async def _observe_event_loop_lag() -> None:
     loop = asyncio.get_running_loop()
     expected = loop.time() + EVENT_LOOP_LAG_INTERVAL_SECONDS
@@ -480,45 +467,33 @@ async def quotes(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    state, _reason = _token_readiness(request.app)
-    if state is not TokenManagerState.READY:
-        return _error("gateway_not_ready", "gateway is not ready", 503)
+    async def build_response() -> web.Response:
+        result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
+        by_symbol = {quote.symbol: quote for quote in result}
+        if set(by_symbol) != set(symbols):
+            raise UpstreamMalformedError("upstream returned a partial symbol set")
+        ordered = tuple(by_symbol[symbol] for symbol in symbols)
+        return _json(QuoteResponseV1(quotes=ordered))
 
-    principal = request[PRINCIPAL_KEY]
-    priority = principal.priority_class
-    try:
-        async with _admit_and_track(request.app[ADMISSION_CONTROLLER_KEY], priority):
-            gateway_admission.labels(
-                priority_class=priority.value,
-                outcome="admitted",
-            ).inc()
-            try:
-                async with asyncio.timeout(request.app[UPSTREAM_TIMEOUT_KEY]):
-                    result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
-                by_symbol = {quote.symbol: quote for quote in result}
-                if set(by_symbol) != set(symbols):
-                    raise UpstreamMalformedError("upstream returned a partial symbol set")
-                ordered = tuple(by_symbol[symbol] for symbol in symbols)
-                return _json(QuoteResponseV1(quotes=ordered))
-            except TimeoutError:
-                return _error("upstream_timeout", "quote upstream timed out", 504)
-            except UpstreamUnavailableError:
-                return _error("upstream_unavailable", "quote upstream is unavailable", 503)
-            except (UpstreamMalformedError, ValueError):
-                return _error("upstream_malformed", "quote upstream returned invalid data", 502)
-    except AdmissionCapacityError:
-        gateway_admission.labels(
-            priority_class=priority.value,
-            outcome="rejected",
-        ).inc()
-        return _error(
-            "gateway_capacity_exceeded",
-            "gateway request capacity is unavailable",
-            429,
-        )
+    return await _serve_upstream(
+        request,
+        "quotes",
+        build_response,
+        timeout_message="quote upstream timed out",
+        unavailable_message="quote upstream is unavailable",
+        malformed_message="quote upstream returned invalid data",
+    )
 
 
-async def _serve_upstream(request: web.Request, build_response) -> web.Response:
+async def _serve_upstream(
+    request: web.Request,
+    operation_name: str,
+    build_response,
+    *,
+    timeout_message: str = "market data upstream timed out",
+    unavailable_message: str = "market data upstream is unavailable",
+    malformed_message: str = "market data upstream returned invalid data",
+) -> web.Response:
     """Readiness, admission, timeout, and upstream classification for a market-data read.
 
     Callers must have already checked capability and validated their parameters, so this
@@ -531,26 +506,23 @@ async def _serve_upstream(request: web.Request, build_response) -> web.Response:
 
     principal = request[PRINCIPAL_KEY]
     priority = principal.priority_class
+    admitted = False
     try:
-        async with _admit_and_track(request.app[ADMISSION_CONTROLLER_KEY], priority):
-            gateway_admission.labels(
-                priority_class=priority.value,
-                outcome="admitted",
-            ).inc()
-            try:
-                async with asyncio.timeout(request.app[UPSTREAM_TIMEOUT_KEY]):
-                    return await build_response()
-            except TimeoutError:
-                return _error("upstream_timeout", "market data upstream timed out", 504)
-            except UpstreamUnavailableError:
-                return _error(
-                    "upstream_unavailable", "market data upstream is unavailable", 503
-                )
-            except (UpstreamMalformedError, ValueError):
-                return _error(
-                    "upstream_malformed", "market data upstream returned invalid data", 502
-                )
-    except AdmissionCapacityError:
+        queue_timeout = request.app[
+            PROTECTED_QUEUE_TIMEOUT_KEY
+            if priority is PriorityClass.PROTECTED
+            else BACKGROUND_QUEUE_TIMEOUT_KEY
+        ]
+        result = await request.app[EXECUTION_SCHEDULER_KEY].execute(
+            priority,
+            operation_name,
+            build_response,
+            queue_timeout_seconds=queue_timeout,
+            execution_timeout_seconds=request.app[UPSTREAM_TIMEOUT_KEY],
+        )
+        admitted = True
+        return result
+    except SchedulerCapacityError:
         gateway_admission.labels(
             priority_class=priority.value,
             outcome="rejected",
@@ -560,6 +532,28 @@ async def _serve_upstream(request: web.Request, build_response) -> web.Response:
             "gateway request capacity is unavailable",
             429,
         )
+    except SchedulerQueueTimeoutError:
+        admitted = True
+        return _error(
+            "gateway_queue_timeout",
+            "gateway worker queue wait timed out",
+            503,
+        )
+    except SchedulerUpstreamTimeoutError:
+        admitted = True
+        return _error("upstream_timeout", timeout_message, 504)
+    except UpstreamUnavailableError:
+        admitted = True
+        return _error("upstream_unavailable", unavailable_message, 503)
+    except (UpstreamMalformedError, ValueError):
+        admitted = True
+        return _error("upstream_malformed", malformed_message, 502)
+    finally:
+        if admitted:
+            gateway_admission.labels(
+                priority_class=priority.value,
+                outcome="admitted",
+            ).inc()
 
 
 async def spot(request: web.Request) -> web.Response:
@@ -577,7 +571,7 @@ async def spot(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned a different symbol")
         return _json(SpotResponseV1(spot=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "spot", build_response)
 
 
 async def chain_metadata(request: web.Request) -> web.Response:
@@ -596,7 +590,7 @@ async def chain_metadata(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned a different chain")
         return _json(ChainMetadataResponseV1(chain=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "chain_metadata", build_response)
 
 
 async def option_chain(request: web.Request) -> web.Response:
@@ -617,7 +611,7 @@ async def option_chain(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned a different option chain")
         return _json(OptionChainResponseV1(option_chain=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "option_chain", build_response)
 
 
 async def history(request: web.Request) -> web.Response:
@@ -639,7 +633,7 @@ async def history(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned a different history series")
         return _json(HistoryResponseV1(history=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "history", build_response)
 
 
 async def movers(request: web.Request) -> web.Response:
@@ -658,7 +652,7 @@ async def movers(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned different movers")
         return _json(MoversResponseV1(movers=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "movers", build_response)
 
 
 async def session_history(request: web.Request) -> web.Response:
@@ -680,7 +674,7 @@ async def session_history(request: web.Request) -> web.Response:
             raise UpstreamMalformedError("upstream returned a different session history")
         return _json(SessionHistoryResponseV1(session_history=result))
 
-    return await _serve_upstream(request, build_response)
+    return await _serve_upstream(request, "session_history", build_response)
 
 
 async def recent_order_book(request: web.Request) -> web.Response:
@@ -802,6 +796,8 @@ def create_app(
     authenticator: InternalKeyAuthenticator,
     *,
     upstream_timeout_seconds: float = 3.0,
+    protected_queue_timeout_seconds: float = 7.0,
+    background_queue_timeout_seconds: float = 1.0,
     token_readiness_provider: TokenReadinessProvider | None = None,
     admission_policy: AdmissionPolicy | None = None,
     spot_upstream: SpotUpstream | None = None,
@@ -814,8 +810,16 @@ def create_app(
     order_book_stream_policy: AdmissionPolicy | None = None,
     order_book_max_age_seconds: float = 15.0,
 ) -> web.Application:
-    if upstream_timeout_seconds <= 0:
+    if not math.isfinite(upstream_timeout_seconds) or upstream_timeout_seconds <= 0:
         raise ValueError("upstream timeout must be positive")
+    if any(
+        not math.isfinite(value) or value <= 0
+        for value in (
+            protected_queue_timeout_seconds,
+            background_queue_timeout_seconds,
+        )
+    ):
+        raise ValueError("queue timeouts must be positive")
     if order_book_max_age_seconds <= 0:
         raise ValueError("order-book maximum age must be positive")
     app = web.Application(middlewares=[audit_middleware, authentication_middleware])
@@ -832,10 +836,12 @@ def create_app(
     )
     app[AUTHENTICATOR_KEY] = authenticator
     app[UPSTREAM_TIMEOUT_KEY] = upstream_timeout_seconds
+    app[PROTECTED_QUEUE_TIMEOUT_KEY] = protected_queue_timeout_seconds
+    app[BACKGROUND_QUEUE_TIMEOUT_KEY] = background_queue_timeout_seconds
     app[TOKEN_READINESS_PROVIDER_KEY] = (
         token_readiness_provider or _UnavailableTokenReadinessProvider()
     )
-    app[ADMISSION_CONTROLLER_KEY] = AdmissionController(
+    app[EXECUTION_SCHEDULER_KEY] = ExecutionScheduler(
         admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()

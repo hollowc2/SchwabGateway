@@ -20,6 +20,7 @@ from schwab_gateway.load_test import (
     build_schedule,
     run_load_test,
 )
+from schwab_gateway.scheduler_proof import run_synthetic_scheduler_proof
 
 EXPIRATION = dt.date(2026, 9, 18)
 
@@ -255,3 +256,26 @@ async def test_run_load_test_records_every_sdk_failure_class(tmp_path: Path) -> 
 
 def test_gateway_response_error_is_a_schema_failure_class() -> None:
     assert issubclass(GatewayResponseError, Exception)
+
+
+@pytest.mark.asyncio
+async def test_credential_free_scheduler_load_proof() -> None:
+    proof = await run_synthetic_scheduler_proof()
+
+    assert proof.maximum_upstream_concurrency == 1
+    assert proof.mixed_dispatch_order == (
+        "background-slow",
+        "SPX",
+        "NDX",
+        "XSP",
+        "background-1",
+        "background-2",
+        "background-3",
+    )
+    assert proof.three_wide_protected_completed is True
+    assert proof.protected_precedence_proven is True
+    assert proof.background_capacity_shed is True
+    assert proof.execution_timeout_drained is True
+    assert proof.final_allocated == 0
+    assert proof.final_queued == 0
+    assert proof.final_lifecycle_tasks == 0

@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.4.0 - Unreleased
+
+- Add a bounded strict-priority scheduler for the single Schwab execution slot, with
+  protected FIFO dispatch ahead of queued background work.
+- Separate protected/background queue-wait budgets from the three-second upstream
+  execution timeout and classify queue expiry as `503 gateway_queue_timeout`.
+- Retain the worker slot after caller cancellation or execution timeout until the real
+  synchronous worker finishes, and add scheduler lifecycle metrics and an offline proof.
+- Raise the SDK's default whole-request timeout to 12 seconds so three serialized
+  protected reads can use the server's seven-second queue budget plus execution budget.
+
+## 0.3.0 - 2026-08-29
 
 - Add authenticated, bounded recent order-book HTTP and WebSocket surfaces.
 - Add venue-specific NASDAQ and NYSE order-book capture with immutable raw evidence,

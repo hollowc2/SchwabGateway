@@ -23,6 +23,7 @@ from schwab_gateway_sdk.client import (
     GatewayAuthorizationError,
     GatewayCapacityError,
     GatewayMarketDataClient,
+    GatewayQueueTimeoutError,
     GatewayResponseError,
     GatewayTimeoutError,
     GatewayUnavailableError,
@@ -58,7 +59,7 @@ class LoadTestConfig:
     collector_interval_seconds: float = 60.0
     monitor_interval_seconds: float = 2.0
     max_concurrency: int = 6
-    timeout_seconds: float = 5.0
+    timeout_seconds: float = 12.0
     monitor_windows: tuple[MonitorWindow, ...] = ()
     entry_bursts: tuple[EntryBurst, ...] = ()
     api_key_environment: str = "SCHWAB_GATEWAY_API_KEY"
@@ -158,6 +159,7 @@ def _failure(exc: Exception) -> tuple[int | None, str, str]:
         (GatewayAuthenticationError, 401, "authentication"),
         (GatewayAuthorizationError, 403, "authorization"),
         (GatewayCapacityError, 429, "capacity"),
+        (GatewayQueueTimeoutError, 503, "queue_timeout"),
         (GatewayTimeoutError, 504, "timeout"),
         (GatewayUnavailableError, 503, "unavailable"),
         (GatewayResponseError, None, "contract_or_http_response"),
@@ -392,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--monitor-window", action="append", type=_monitor, default=[])
     parser.add_argument("--entry-burst", action="append", type=_burst, default=[])
     parser.add_argument("--max-concurrency", type=int, default=6)
-    parser.add_argument("--timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--timeout-seconds", type=float, default=12.0)
     parser.add_argument("--api-key-environment", default="SCHWAB_GATEWAY_API_KEY")
     return parser
 

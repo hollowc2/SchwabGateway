@@ -40,8 +40,6 @@ gateway_release_tag=
 gateway_image_id=
 gateway_container=
 gateway_restart_count_start=
-candidate_image_id=
-candidate_restart_count_start=
 butterfly_git_sha=
 butterfly_image_id=
 load_driver_git_sha=
@@ -61,13 +59,13 @@ rollback_xsp_image=
 
 Use exact image IDs or repository digests, never mutable tags. Preserve the starting
 restart counters; do not recreate a healthy container merely to reset a counter. The
-current candidate has historical restarts, so success means its counter does not
-increase during the approved observation window.
+single live gateway's restart counter must not increase, no candidate may exist, and
+port 8012 must remain unused during the approved observation window.
 
 ## Dedicated load-test credentials
 
 Use a new `market_data:read` key with application ID
-`schwab-gateway-full-session-background` for the synthetic candidate test. Keep the
+`schwab-gateway-full-session-background` for the controlled production background test. Keep the
 existing protected ButterflyGuy key separate for the later PAPER-consumer stage.
 
 Prepare, but do not activate, a replacement digest document and one-time plaintext file
@@ -90,9 +88,8 @@ committed, copied into evidence, passed on a command line, or printed.
 
 Replacing the mounted digest document and recreating a gateway so it loads the new key
 is a live configuration change. Stop and obtain explicit approval naming the file,
-gateway instance, exact image, recreate command, validation, and rollback. Prefer adding
-the key to the isolated candidate first. Do not rotate or remove existing keys as part
-of a load test.
+gateway instance, exact image, recreate command, validation, and rollback. Do not create
+an isolated candidate. Do not rotate or remove existing keys as part of a load test.
 
 ## Required code gates
 
@@ -115,7 +112,7 @@ Collect a sanitized baseline immediately before the session:
 - hostname, session date, exact Git/image identities, container start times, health,
   restart counts, OOM state, and bounded logs;
 - `/health`, `/ready`, and `/metrics` for the selected gateway;
-- production and candidate loopback ports and network aliases;
+- the production loopback port/network alias and proof that port 8012 is unused;
 - token state and refresh-result counters without token contents;
 - disk, memory, swap, CPU, and process resident memory;
 - request/admission/cache/in-flight/lock/event-loop/upstream/subscriber metrics;
@@ -143,13 +140,14 @@ Run the load-driver unit/integration tests and a short demo/fake-provider exerci
 manifest hashes, non-overwrite behavior, cancellation, bounded concurrency, and secret
 redaction without using Schwab credentials.
 
-### Stage 1: candidate smoke
+### Stage 1: controlled production background smoke
 
-Use the background key against the loopback-only candidate for 15 minutes. Run the three
-60-second collectors, one short monitor window, and small entry bursts. Require all
-acceptance gates before continuing.
+After explicit approval, use the background key against production port 8011 for 15
+minutes. Run the three 60-second collectors, one short monitor window, and small entry
+bursts. Background shedding is acceptable only when explicitly injected and recorded;
+protected traffic must remain unaffected. Require all acceptance gates before continuing.
 
-### Stage 2: candidate stepped load
+### Stage 2: controlled production stepped load
 
 Run, in order:
 
@@ -159,21 +157,22 @@ Run, in order:
 4. overlapping SPX/NDX/XSP 30-minute monitor windows; and
 5. a 15-minute cool-down with collectors only.
 
-This stage tests the background admission pool. A separate, explicitly approved short
+This stage tests the background scheduler pool. A separate, explicitly approved short
 test may use a protected-scoped test key to prove pool isolation; never saturate the
 protected pool while a real consumer depends on it.
 
-### Stage 3: full-session synthetic profile
+### Stage 3: full-session production background profile
 
 Start before the regular session and end after the close, using the exact session's
 0-DTE expiration. The driver command is:
 
 ```bash
+SCHWAB_GATEWAY_API_KEY='<injected-without-shell-history>' \
 uv run schwab-gateway-load-test \
-  --base-url http://127.0.0.1:8012 \
-  --api-key-file /absolute/path/to/schwab-gateway-full-session-background.key \
+  --base-url http://127.0.0.1:8011 \
   --expiration YYYY-MM-DD \
   --duration-seconds 24600 \
+  --timeout-seconds 12 \
   --output-root /absolute/path/to/nonexistent-evidence-root \
   --monitor-window SPX:1800:1800 \
   --monitor-window NDX:7200:1800 \
@@ -206,12 +205,12 @@ contract; live-money use requires a separately reviewed force-fresh policy.
 The session passes only when all mandatory gates pass:
 
 - health and readiness remain good; no readiness flap lasts two scrapes;
-- gateway, candidate, and PAPER restart-count deltas are zero; no OOM or unexpected exit;
+- gateway and PAPER restart-count deltas are zero; no OOM or unexpected exit;
 - no token missing/corrupt/expired/revoked/refresh/persistence/lock-timeout result;
 - no malformed contract or unexpected schema/quality failure;
 - no HTTP `502` or `503` during the regular-session test window;
-- HTTP `429` and `504` totals are zero for the intended profile; any injected saturation
-  test is reported separately and must prove bounded recovery;
+- protected queue-timeout, capacity-rejection, and upstream-timeout totals are zero;
+  injected background shedding is reported separately and must prove bounded recovery;
 - option-chain p95 latency is below 1.5 seconds and p99 below 2.0 seconds;
 - all other read p95 latencies are below 1.0 second;
 - event-loop lag p99 is below 100 milliseconds;
@@ -252,9 +251,9 @@ latency, unbounded memory/event-loop lag, malformed data, consumer divergence, u
 position/order activity, or any order-write indication. Stop only the load driver first;
 preserve its partial evidence and manifest.
 
-Candidate smoke/synthetic stages normally require no service rollback because the load
-driver is the only new process. If an approved key-file or candidate deployment change
-was made, use its exact recorded restore command. For a PAPER-consumer stage, restore
+Background smoke/synthetic stages normally require no service rollback because the load
+driver is the only new process. If an approved key-file change was made, use its exact
+recorded restore command. For a PAPER-consumer stage, restore
 only the affected service's retained direct-mode image after repeating the database and
 authenticated broker flatness gates. Never debug by repeatedly recreating a failed live
 service in place.

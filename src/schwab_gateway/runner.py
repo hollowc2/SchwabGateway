@@ -89,6 +89,8 @@ def build_demo_app(settings: GatewaySettings) -> web.Application:
         DemoQuoteUpstream(),
         authenticator,
         upstream_timeout_seconds=settings.upstream_timeout_seconds,
+        protected_queue_timeout_seconds=settings.protected_queue_timeout_seconds,
+        background_queue_timeout_seconds=settings.background_queue_timeout_seconds,
         token_readiness_provider=StaticTokenReadinessProvider(TokenManagerState.READY),
         admission_policy=AdmissionPolicy(
             protected_capacity=settings.protected_capacity,
@@ -141,6 +143,8 @@ def build_live_app(
         DirectSchwabQuoteUpstream(provider),
         authenticator,
         upstream_timeout_seconds=settings.upstream_timeout_seconds,
+        protected_queue_timeout_seconds=settings.protected_queue_timeout_seconds,
+        background_queue_timeout_seconds=settings.background_queue_timeout_seconds,
         token_readiness_provider=manager,
         admission_policy=AdmissionPolicy(
             protected_capacity=settings.protected_capacity,
