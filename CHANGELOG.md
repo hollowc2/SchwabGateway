@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 - 2026-09-03
+
+- Raise the Compose `SCHWAB_GATEWAY_BACKGROUND_QUEUE_TIMEOUT_SECONDS` fallback from
+  one to five seconds so it tracks the code default; without this the container still
+  received the old one-second budget regardless of the 0.4.1 change.
+
 ## 0.4.1 - 2026-09-03
 
 - Record HTTP peer disconnects under their own `499` metric status with the authenticated
