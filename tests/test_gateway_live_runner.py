@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,9 +32,13 @@ from schwab_gateway.api import (
     TOKEN_READINESS_PROVIDER_KEY,
     UPSTREAM_KEY,
     event_loop_lag_context,
+    execution_scheduler_context,
 )
 from schwab_gateway.config import GatewaySettings
-from schwab_gateway.live_provider import TokenReadinessRecovery
+from schwab_gateway.live_provider import (
+    TokenReadinessRecovery,
+    UpstreamWarmupReadiness,
+)
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
     DirectSchwabHistoryUpstream,
@@ -142,6 +147,40 @@ def test_demo_mode_needs_no_confirmations() -> None:
     assert args.serve_live is False
 
 
+def test_runner_enables_transport_handler_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+    settings = SimpleNamespace(
+        internal_keys_path=Path("/unused"),
+        log_level="INFO",
+        bind_host="127.0.0.1",
+        port=8010,
+    )
+    app = object()
+    monkeypatch.setattr(runner, "GatewaySettings", lambda: settings)
+    monkeypatch.setattr(runner, "build_demo_app", lambda _settings: app)
+    monkeypatch.setattr(runner, "setup_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner.web,
+        "run_app",
+        lambda value, **kwargs: calls.append((value, kwargs)),
+    )
+
+    runner.main(["--demo"])
+
+    assert calls == [
+        (
+            app,
+            {
+                "host": "127.0.0.1",
+                "port": 8010,
+                "handler_cancellation": True,
+            },
+        )
+    ]
+
+
 # --- Demo mode is unchanged ----------------------------------------------------------
 
 
@@ -191,23 +230,22 @@ def test_live_app_reports_real_manager_readiness(tmp_path: Path) -> None:
     )
 
     provider = app[TOKEN_READINESS_PROVIDER_KEY]
-    assert isinstance(provider, AtomicTokenManager)
-    assert provider.health().state is TokenManagerState.READY
+    assert isinstance(provider, UpstreamWarmupReadiness)
 
 
-def test_live_app_primes_readiness_before_serving(tmp_path: Path) -> None:
-    """Without the startup load the gateway would never become ready.
-
-    Every route and ``/ready`` gate on ``TokenManagerState.READY``, and the manager only
-    reaches READY inside a transaction. If the app were returned un-primed, no request
-    could be admitted to produce the transaction that would make it ready.
+def test_live_app_gates_readiness_on_a_warmup_round_trip(tmp_path: Path) -> None:
+    """``manager.load()`` reaches READY without touching Schwab, so a freshly built app
+    must report not-ready until one real upstream read has succeeded -- otherwise a cold
+    worker serves the first in-flight protected reads and drops them.
     """
     app = runner.build_live_app(
         _settings(tmp_path),
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    assert app[TOKEN_READINESS_PROVIDER_KEY].health().state is TokenManagerState.READY
+    provider = app[TOKEN_READINESS_PROVIDER_KEY]
+    assert provider.is_warm is False
+    assert provider.health().state is TokenManagerState.REFRESHING
 
 
 def test_live_app_refuses_to_build_when_the_token_is_unusable(tmp_path: Path) -> None:
@@ -244,8 +282,9 @@ def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    # event-loop lag sampler + readiness recovery
-    assert len(app.cleanup_ctx) == 2
+    # scheduler drain + event-loop lag sampler + upstream warmup + readiness recovery
+    assert len(app.cleanup_ctx) == 4
+    assert execution_scheduler_context in app.cleanup_ctx
     assert event_loop_lag_context in app.cleanup_ctx
 
 
@@ -259,8 +298,8 @@ def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    # event-loop lag sampler + readiness recovery + order-book feed
-    assert len(app.cleanup_ctx) == 3
+    # scheduler drain + lag sampler + upstream warmup + readiness recovery + feed
+    assert len(app.cleanup_ctx) == 5
 
 
 def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path) -> None:
@@ -275,10 +314,10 @@ def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path
         )
 
 
-def test_demo_app_registers_no_readiness_recovery(tmp_path: Path) -> None:
-    """The demo readiness is a static fake; there is nothing to recover."""
+def test_demo_app_registers_only_scheduler_cleanup(tmp_path: Path) -> None:
+    """The demo has no recovery loop, but still owns a scheduled fake worker."""
     app = runner.build_demo_app(_settings(tmp_path))
-    assert list(app.cleanup_ctx) == []
+    assert list(app.cleanup_ctx) == [execution_scheduler_context]
 
 
 # --- Readiness recovery --------------------------------------------------------------
@@ -349,6 +388,116 @@ def test_recovery_interval_must_be_positive(tmp_path: Path) -> None:
     manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
     with pytest.raises(ValueError):
         TokenReadinessRecovery(manager, interval_seconds=0)
+
+
+# --- Upstream warmup readiness ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_warmup_gate_reports_not_ready_until_a_read_succeeds(
+    tmp_path: Path,
+) -> None:
+    manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
+    manager.load()
+    calls = 0
+
+    async def warmup() -> None:
+        nonlocal calls
+        calls += 1
+
+    gate = UpstreamWarmupReadiness(manager, warmup)
+
+    assert gate.is_warm is False
+    assert gate.health().state is TokenManagerState.REFRESHING
+
+    assert await gate.attempt_once() is True
+    assert gate.is_warm is True
+    assert calls == 1
+    # Once warm the gate delegates to the real manager and stops calling the warmup.
+    assert gate.health().state is manager.health().state
+    assert await gate.attempt_once() is True
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_warmup_gate_stays_not_ready_while_the_read_keeps_failing() -> None:
+    manager = SimpleNamespace(health=lambda: None)
+
+    async def warmup() -> None:
+        raise RuntimeError("schwab is unavailable")
+
+    gate = UpstreamWarmupReadiness(manager, warmup)  # type: ignore[arg-type]
+
+    assert await gate.attempt_once() is False
+    assert gate.is_warm is False
+    assert gate.health().state is TokenManagerState.REFRESHING
+
+
+@pytest.mark.asyncio
+async def test_warmup_gate_run_until_warm_stops_on_first_success() -> None:
+    outcomes = iter([False, False, True])
+
+    async def warmup() -> None:
+        if not next(outcomes):
+            raise RuntimeError("not yet")
+
+    gate = UpstreamWarmupReadiness(
+        SimpleNamespace(health=lambda: "delegated"),  # type: ignore[arg-type]
+        warmup,
+        retry_seconds=0.001,
+    )
+    await gate.run_until_warm()
+    assert gate.is_warm is True
+    assert gate.health() == "delegated"
+
+
+@pytest.mark.asyncio
+async def test_warmup_ctx_blocks_startup_until_warm_then_yields() -> None:
+    manager = SimpleNamespace(health=lambda: "delegated")
+
+    async def warmup() -> None:
+        return None
+
+    gate = UpstreamWarmupReadiness(manager, warmup)  # type: ignore[arg-type]
+    ctx = runner._upstream_warmup_ctx(gate)(None)  # type: ignore[arg-type]
+
+    await ctx.__anext__()
+    assert gate.is_warm is True
+    with pytest.raises(StopAsyncIteration):
+        await ctx.__anext__()
+
+
+@pytest.mark.asyncio
+async def test_warmup_ctx_starts_serving_not_ready_when_warmup_fails() -> None:
+    manager = SimpleNamespace(health=lambda: "delegated")
+    attempts = 0
+
+    async def warmup() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("schwab down")
+
+    gate = UpstreamWarmupReadiness(manager, warmup, retry_seconds=0.01)  # type: ignore[arg-type]
+    ctx = runner._upstream_warmup_ctx(gate, startup_timeout_seconds=0.05)(None)  # type: ignore[arg-type]
+
+    await ctx.__anext__()
+    # Startup completed (yielded) even though the gate never warmed.
+    assert gate.is_warm is False
+    with pytest.raises(StopAsyncIteration):
+        await ctx.__anext__()
+    assert attempts >= 1
+
+
+def test_warmup_retry_interval_must_be_positive() -> None:
+    async def warmup() -> None:
+        return None
+
+    with pytest.raises(ValueError):
+        UpstreamWarmupReadiness(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            warmup,
+            retry_seconds=0,
+        )
 
 
 def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:

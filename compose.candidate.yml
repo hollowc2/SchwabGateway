@@ -1,23 +1,4 @@
-services:
-  live:
-    container_name: schwab_gateway_candidate
-    environment:
-      SCHWAB_GATEWAY_PORT: 8012
-    ports: !override
-      - "127.0.0.1:8012:8012"
-    networks:
-      monitoring_net:
-        aliases: !override
-          - schwab-gateway-candidate
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8012/ready', timeout=2).read()
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+# Retired compatibility marker. The candidate topology no longer exists and this file
+# intentionally contains no service override. Do not use it in Compose commands.
+x-schwab-gateway-retired-candidate:
+  reason: single-live-gateway-only

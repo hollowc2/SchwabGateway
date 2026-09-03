@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from schwab_gateway.admission import AdmissionPolicy
+from schwab_gateway.auth import PriorityClass
 from schwab_gateway.config import GatewayCredentialProbeSettings
 from schwab_gateway.live_provider import (
     GatewayUpstreamSettings,
@@ -24,6 +26,7 @@ from schwab_gateway.live_provider import (
     extract_spot_price_and_timestamp,
     upstream_operation_latency,
 )
+from schwab_gateway.scheduler import ExecutionScheduler, SchedulerUpstreamTimeoutError
 from schwab_gateway.token_adapter import (
     LockedSchwabClientAdapter,
     SchwabClientOperationError,
@@ -358,6 +361,63 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
         provider._execute("spot", blocking_operation), timeout=0.5
     ) == "complete"
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_timeout_retains_physical_provider_worker_until_thread_exits() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    class BlockingAdapter:
+        def execute(self, operation):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            return operation(None)
+
+    def blocking_operation(_client):
+        entered.set()
+        release.wait(timeout=5)
+        return "complete"
+
+    provider = LockedSchwabMarketDataProvider(BlockingAdapter())
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=2, background_capacity=1)
+    )
+    timed_out = asyncio.create_task(
+        scheduler.execute(
+            PriorityClass.PROTECTED,
+            "spot",
+            lambda: provider._execute("spot", blocking_operation),
+            queue_timeout_seconds=1,
+            execution_timeout_seconds=0.01,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    with pytest.raises(SchedulerUpstreamTimeoutError):
+        await timed_out
+
+    following = asyncio.create_task(
+        scheduler.execute(
+            PriorityClass.PROTECTED,
+            "spot",
+            lambda: provider._execute("spot", blocking_operation),
+            queue_timeout_seconds=1,
+            execution_timeout_seconds=1,
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert calls == 1
+    assert scheduler.snapshot().worker_active is True
+    release.set()
+
+    assert await following == "complete"
+    await scheduler.wait_idle()
+    assert calls == 2
+    assert scheduler.snapshot().total == 0
+    assert scheduler.snapshot().task_count == 0
 
 
 # --- Chain ---------------------------------------------------------------------------

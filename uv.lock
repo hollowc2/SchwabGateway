@@ -1169,7 +1169,7 @@ wheels = [
 
 [[package]]
 name = "schwab-gateway"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1214,7 +1214,7 @@ dev = [
 
 [[package]]
 name = "schwab-gateway-sdk"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/sdk" }
 dependencies = [
     { name = "httpx" },

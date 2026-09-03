@@ -1,6 +1,6 @@
 [project]
 name = "schwab-gateway"
-version = "0.3.0"
+version = "0.4.0"
 description = "Internal read-only Schwab market-data gateway"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,6 +22,7 @@ schwab-gateway-capture-order-books = "schwab_gateway.capture_order_books:main"
 schwab-gateway-derive-order-books = "schwab_gateway.derive_order_books:main"
 schwab-gateway-catalog-order-books = "schwab_gateway.catalog_order_books:main"
 schwab-gateway-load-test = "schwab_gateway.load_test:main"
+schwab-gateway-scheduler-proof = "schwab_gateway.scheduler_proof:main"
 
 [build-system]
 requires = ["hatchling"]

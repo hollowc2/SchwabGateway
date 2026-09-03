@@ -45,11 +45,6 @@ jobs:
             -f compose.yml \
             -f compose.production.yml \
             --profile live config --quiet
-          docker compose \
-            -p schwab_gateway_candidate \
-            -f compose.yml \
-            -f compose.candidate.yml \
-            --profile live config --quiet
       - run: docker build --tag schwab-gateway:ci .
       - name: Reject ButterflyGuy coupling and secret paths
         run: |

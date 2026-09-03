@@ -22,6 +22,9 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.bind_host == "127.0.0.1"
     assert value.port == 8010
     assert value.order_writes_enabled is False
+    assert value.upstream_timeout_seconds == 3.0
+    assert value.protected_queue_timeout_seconds == 7.0
+    assert value.background_queue_timeout_seconds == 5.0
     assert value.protected_capacity == 8
     assert value.background_capacity == 8
     assert value.option_chain_cache_ttl_seconds == 4.0
@@ -53,6 +56,20 @@ def test_gateway_rejects_public_bind_and_order_writes() -> None:
 )
 def test_gateway_rejects_nonpositive_or_unbounded_capacity(field: str, value: int) -> None:
     with pytest.raises(ValidationError, match="capacity must be between 1 and 256"):
+        settings(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "upstream_timeout_seconds",
+        "protected_queue_timeout_seconds",
+        "background_queue_timeout_seconds",
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_gateway_rejects_invalid_timeouts(field: str, value: float) -> None:
+    with pytest.raises(ValidationError, match="timeout must be finite and positive"):
         settings(**{field: value})
 
 

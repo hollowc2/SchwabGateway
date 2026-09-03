@@ -11,6 +11,7 @@ from typing import Any
 from schwab.contrib.util import StreamJsonDecoder
 from schwab_token_store import AtomicTokenManager
 
+from schwab_gateway.auth import PriorityClass
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.logging import get_logger
 from schwab_gateway.order_book import (
@@ -21,6 +22,7 @@ from schwab_gateway.order_book import (
 )
 from schwab_gateway.order_book_capture import bootstrap_stream_under_token_lock
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
+from schwab_gateway.scheduler import ExecutionScheduler
 
 UTC = dt.timezone.utc
 log = get_logger(__name__)
@@ -55,6 +57,8 @@ class OrderBookLiveFeed:
         *,
         venue: OrderBookVenue,
         symbols: tuple[str, ...],
+        scheduler: ExecutionScheduler,
+        queue_timeout_seconds: float,
         stream_client_factory: Callable[[Any], Any] | None = None,
         login_timeout_seconds: float = 8.0,
     ) -> None:
@@ -68,6 +72,8 @@ class OrderBookLiveFeed:
         self._store = store
         self._venue = venue
         self._symbols = symbols
+        self._scheduler = scheduler
+        self._queue_timeout_seconds = queue_timeout_seconds
         self._stream_client_factory = stream_client_factory
         self._login_timeout_seconds = login_timeout_seconds
 
@@ -84,12 +90,18 @@ class OrderBookLiveFeed:
             stream: Any = None
             self._store.mark_feed_state(self._venue, "connecting")
             try:
-                stream = await bootstrap_stream_under_token_lock(
-                    self._manager,
-                    self._upstream_settings,
-                    self._client_factory,
-                    stream_client_factory,
-                    login_timeout_seconds=self._login_timeout_seconds,
+                stream = await self._scheduler.execute(
+                    PriorityClass.BACKGROUND,
+                    "order_book_stream_login",
+                    lambda: bootstrap_stream_under_token_lock(
+                        self._manager,
+                        self._upstream_settings,
+                        self._client_factory,
+                        stream_client_factory,
+                        login_timeout_seconds=self._login_timeout_seconds,
+                    ),
+                    queue_timeout_seconds=self._queue_timeout_seconds,
+                    execution_timeout_seconds=self._login_timeout_seconds,
                 )
                 connection_id += 1
                 decoder = _LiveBookDecoder(BOOK_SERVICE_BY_VENUE[self._venue])
