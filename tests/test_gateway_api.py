@@ -17,7 +17,7 @@ from schwab_token_store import (
     TokenManagerState,
 )
 
-from schwab_gateway.api import create_app
+from schwab_gateway.api import create_app, gateway_requests
 from schwab_gateway.auth import (
     InternalKeyAuthenticator,
     InternalPrincipal,
@@ -269,6 +269,52 @@ async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
     )
     assert all(path != "/v1/orders" for _method, path in route_shapes)
     assert all(method != "POST" for method, _path in route_shapes)
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
+    class SlowUpstream:
+        async def get_quotes(self, _symbols):
+            await asyncio.sleep(1.0)
+            return ()
+
+    server = TestServer(
+        create_app(
+            SlowUpstream(),
+            authenticator(),
+            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+        )
+    )
+    await server.start_server()
+
+    def _count(status: str) -> float:
+        return (
+            gateway_requests.labels(operation="quotes_v1", status=status)._value.get()
+        )
+
+    before_499 = _count("499")
+    before_500 = _count("500")
+    try:
+        async with httpx.AsyncClient(timeout=0.1) as http:
+            with pytest.raises(httpx.TimeoutException):
+                await http.get(
+                    str(server.make_url("/v1/quotes?symbols=AAPL")),
+                    headers={"X-Internal-API-Key": "valid-key"},
+                )
+        await asyncio.sleep(0.05)
+    finally:
+        await server.close()
+
+    assert _count("499") == before_499 + 1
+    assert _count("500") == before_500
+    request_logs = [
+        line
+        for line in capfd.readouterr().out.splitlines()
+        if "gateway_request " in line and "quotes_v1" in line
+    ]
+    assert request_logs
+    assert all("status=499" in line for line in request_logs)
+    assert all("caller=butterfly-guy" in line for line in request_logs)
 
 
 @pytest.mark.asyncio

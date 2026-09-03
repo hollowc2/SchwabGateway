@@ -29,7 +29,7 @@ import asyncio
 import datetime as dt
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from schwab_token_store import (
     AtomicTokenManager,
     TokenManagerError,
+    TokenManagerHealth,
     TokenManagerState,
 )
 
@@ -51,6 +52,8 @@ log = get_logger(__name__)
 
 DEFAULT_QUOTE_BATCH_SIZE = 150
 DEFAULT_READINESS_RECOVERY_SECONDS = 30.0
+DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS = 6.0
+DEFAULT_WARMUP_RETRY_SECONDS = 3.0
 EASTERN = ZoneInfo("America/New_York")
 # Schwab's standard full extended-hours window: pre-market open through after-hours
 # close. Wide enough to capture both the regular and extended segments of one calendar
@@ -435,6 +438,71 @@ class LockedSchwabMarketDataProvider:
                 return candles
 
         return await self._execute("session_history", operation)
+
+
+class UpstreamWarmupReadiness:
+    """Gate readiness on one successful Schwab round-trip after a (re)start.
+
+    ``manager.load()`` reaches ``READY`` from the token document alone, without ever
+    contacting Schwab. A freshly restarted worker therefore admits and dispatches
+    requests against a client that has never completed a real call, and the first
+    call on that cold client can fail transiently -- the redeploy blip that surfaces
+    as cancelled or ``503`` protected reads.
+
+    This wraps the manager's readiness: it reports ``REFRESHING`` (not ready) until one
+    warmup read succeeds, then delegates to the manager unchanged. A warmup that keeps
+    failing leaves the gateway not-ready and retrying rather than serving a cold worker.
+    """
+
+    def __init__(
+        self,
+        manager: AtomicTokenManager,
+        warmup: Callable[[], Awaitable[object]],
+        *,
+        retry_seconds: float = DEFAULT_WARMUP_RETRY_SECONDS,
+    ) -> None:
+        if retry_seconds <= 0:
+            raise ValueError("warmup retry interval must be positive")
+        self._manager = manager
+        self._warmup = warmup
+        self._retry_seconds = retry_seconds
+        self._warm = False
+
+    @property
+    def is_warm(self) -> bool:
+        return self._warm
+
+    def health(self) -> TokenManagerHealth:
+        if self._warm:
+            return self._manager.health()
+        return TokenManagerHealth(
+            state=TokenManagerState.REFRESHING,
+            reason="gateway_upstream_warming_up",
+            updated_at=dt.datetime.now(dt.timezone.utc),
+        )
+
+    async def attempt_once(self) -> bool:
+        """Return True once the upstream client has completed one real read."""
+        if self._warm:
+            return True
+        try:
+            await self._warmup()
+        except Exception:
+            log.warning("gateway_upstream_warmup_failed")
+            return False
+        self._warm = True
+        log.info("gateway_upstream_warmed")
+        return True
+
+    async def run_until_warm(self) -> None:
+        """Retry the warmup read on a fixed interval until one succeeds, then stop.
+
+        ``asyncio.CancelledError`` propagates so shutdown can cancel this task; every
+        other failure is already absorbed by ``attempt_once``.
+        """
+        while not self._warm:
+            if not await self.attempt_once():
+                await asyncio.sleep(self._retry_seconds)
 
 
 class TokenReadinessRecovery:

@@ -367,18 +367,22 @@ async def audit_middleware(request: web.Request, handler) -> web.StreamResponse:
     started = time.perf_counter()
     status = 500
     operation = request.match_info.route.name or "unknown"
-    caller = "anonymous"
     try:
         response = await handler(request)
         status = response.status
-        principal = request.get(PRINCIPAL_KEY)
-        if principal is not None:
-            caller = principal.client_id
         return response
     except web.HTTPException as exc:
         status = exc.status
         raise
+    except asyncio.CancelledError:
+        # The client disconnected before the handler produced a response. This is
+        # not a server error; record it under its own status so it neither inflates
+        # the 5xx rate nor hides which caller went away.
+        status = 499
+        raise
     finally:
+        principal = request.get(PRINCIPAL_KEY)
+        caller = principal.client_id if principal is not None else "anonymous"
         elapsed = time.perf_counter() - started
         gateway_requests.labels(operation=operation, status=str(status)).inc()
         gateway_latency.labels(operation=operation).observe(elapsed)

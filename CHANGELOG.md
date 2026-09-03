@@ -14,6 +14,13 @@
   work so it cannot acquire the token transaction ahead of queued protected reads.
 - Raise the SDK's default whole-request timeout to 12 seconds so three serialized
   protected reads can use the server's seven-second queue budget plus execution budget.
+- Record HTTP peer disconnects under their own `499` metric status with the authenticated
+  caller label instead of logging them as `500`/`anonymous` server errors.
+- Raise the default background queue-wait budget from one to five seconds so bursty
+  background fan-outs queue behind the single worker instead of shedding as `503`.
+- Gate live readiness on one successful Schwab round-trip at startup, so a redeploy
+  serves `503` not-ready until the client is warm instead of dropping the first
+  in-flight protected reads on a cold worker. A failing warmup keeps retrying.
 
 ## 0.3.0 - 2026-08-29
 

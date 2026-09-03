@@ -27,7 +27,7 @@ class GatewaySettings(BaseSettings):
     order_writes_enabled: bool = False
     upstream_timeout_seconds: float = 3.0
     protected_queue_timeout_seconds: float = 7.0
-    background_queue_timeout_seconds: float = 1.0
+    background_queue_timeout_seconds: float = 5.0
     protected_capacity: int = 8
     background_capacity: int = 8
     option_chain_cache_ttl_seconds: float = 4.0

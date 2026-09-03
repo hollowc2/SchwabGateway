@@ -24,7 +24,7 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.order_writes_enabled is False
     assert value.upstream_timeout_seconds == 3.0
     assert value.protected_queue_timeout_seconds == 7.0
-    assert value.background_queue_timeout_seconds == 1.0
+    assert value.background_queue_timeout_seconds == 5.0
     assert value.protected_capacity == 8
     assert value.background_capacity == 8
     assert value.option_chain_cache_ttl_seconds == 4.0

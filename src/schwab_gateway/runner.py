@@ -27,9 +27,11 @@ from schwab_gateway.api import (
 from schwab_gateway.auth import InternalKeyAuthenticator
 from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import (
+    DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS,
     GatewayUpstreamSettings,
     LockedSchwabMarketDataProvider,
     TokenReadinessRecovery,
+    UpstreamWarmupReadiness,
 )
 from schwab_gateway.logging import get_logger, setup_logging
 from schwab_gateway.order_book_live import OrderBookLiveFeed
@@ -122,6 +124,10 @@ def build_live_app(
     manager only reaches READY inside a transaction. Without priming it, no request could
     ever be admitted to produce the transaction that would make it ready, and the gateway
     would answer 503 forever while looking healthy at the process level.
+
+    That token load never contacts Schwab, so readiness is additionally gated on one real
+    upstream round-trip (``_upstream_warmup_ctx``): a redeploy serves not-ready until the
+    client is warm instead of dropping the first in-flight protected reads.
     """
     authenticator = InternalKeyAuthenticator.from_file(settings.internal_keys_path)
     manager = AtomicTokenManager(AtomicFileTokenStore(upstream_settings.token_path))
@@ -140,13 +146,21 @@ def build_live_app(
     # One token read, no Schwab request. Fails closed.
     manager.load()
 
+    # ``manager.load()`` reaches READY without contacting Schwab, so gate readiness on
+    # one real round-trip: a redeploy then serves not-ready until the client is warm
+    # instead of dropping the first in-flight protected reads on a cold worker.
+    warmup_readiness = UpstreamWarmupReadiness(
+        manager,
+        lambda: provider.get_spot_price("$SPX"),
+    )
+
     app = create_app(
         DirectSchwabQuoteUpstream(provider),
         authenticator,
         upstream_timeout_seconds=settings.upstream_timeout_seconds,
         protected_queue_timeout_seconds=settings.protected_queue_timeout_seconds,
         background_queue_timeout_seconds=settings.background_queue_timeout_seconds,
-        token_readiness_provider=manager,
+        token_readiness_provider=warmup_readiness,
         admission_policy=AdmissionPolicy(
             protected_capacity=settings.protected_capacity,
             background_capacity=settings.background_capacity,
@@ -170,6 +184,7 @@ def build_live_app(
         order_book_max_age_seconds=settings.order_book_max_snapshot_age_seconds,
     )
     app.cleanup_ctx.append(event_loop_lag_context)
+    app.cleanup_ctx.append(_upstream_warmup_ctx(warmup_readiness))
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
     if settings.order_book_stream_enabled:
         symbols = tuple(
@@ -205,6 +220,36 @@ def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> Any:
 
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
         task = asyncio.create_task(recovery.run_forever())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    return ctx
+
+
+def _upstream_warmup_ctx(
+    warmup: UpstreamWarmupReadiness,
+    *,
+    startup_timeout_seconds: float = DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS,
+) -> Any:
+    """Prime the Schwab client before serving; keep retrying if the first try fails.
+
+    Registered only in live mode. A bounded blocking attempt lets a healthy deploy come
+    up already warm; if Schwab is briefly unavailable the process still starts, reports
+    not-ready, and a background task flips it ready on the first successful read.
+    """
+
+    async def ctx(_app: web.Application) -> AsyncIterator[None]:
+        with suppress(TimeoutError):
+            await asyncio.wait_for(
+                warmup.attempt_once(), timeout=startup_timeout_seconds
+            )
+        if not warmup.is_warm:
+            log.warning("gateway_upstream_warmup_startup_incomplete")
+        task = asyncio.create_task(warmup.run_until_warm())
         try:
             yield
         finally:
