@@ -54,6 +54,22 @@ Record the human-readable release tag and Git SHA for traceability, but deploy a
 the image ID/digest. Never run `docker compose build`, use `--build`, pull a reusable tag,
 or create a candidate during the cutover.
 
+Build the image in a dedicated release worktree, not in `/opt/schwab-gateway` itself
+(that checkout is stale and must never be built from or activated from):
+
+```bash
+sg_release_sha='<short-sha-of-approved-release>'
+cd /opt/schwab-gateway
+git fetch --tags
+git worktree add "/opt/schwab-gateway-releases/${sg_release_sha}" "$sg_release_sha"
+# git worktree add does not create the .env symlink -- it must be recreated by hand
+# for every new release worktree, or the build/compose render cannot find secrets:
+ln -s /opt/schwab-gateway/.env "/opt/schwab-gateway-releases/${sg_release_sha}/.env"
+cd "/opt/schwab-gateway-releases/${sg_release_sha}"
+docker build --provenance=false --sbom=false \
+  -t "schwab-gateway:<pyproject-version>-${sg_release_sha}" .
+```
+
 ## Read-only preflight and rollback record
 
 Run from the intended local release checkout. Replace the example image value with the
@@ -149,7 +165,12 @@ recorded. Run each assertion as a separate command so the failing gate is unambi
 
 ```bash
 ssh -F /dev/null -o BatchMode=yes billy@helios
-cd /opt/schwab-gateway
+# /opt/schwab-gateway is a stale checkout, not a release worktree -- running the
+# activation command from it can silently recreate the container on whatever image
+# that checkout's own compose files resolve to. Always cd into the approved
+# release's own worktree instead:
+sg_release_sha='<approved-release-short-sha>'
+cd "/opt/schwab-gateway-releases/${sg_release_sha}"
 sg_production_image='sha256:<approved-exact-image-id>'
 
 printf 'CHECK immutable-image-exists\n'
