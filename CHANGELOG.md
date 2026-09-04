@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Raise the `/v1/history` `frequency=daily` `days_back` ceiling from 20 to 250 (a full
+  trading year), so charts like AfterHoursLab's event-page "Daily context" can show a
+  real trend instead of ~1 month. The live provider now requests a trailing year
+  (`period_type=YEAR`) from Schwab instead of one month so there is enough data to trim
+  down to the requested window.
+
 ## 0.4.2 - 2026-09-03
 
 - Raise the Compose `SCHWAB_GATEWAY_BACKGROUND_QUEUE_TIMEOUT_SECONDS` fallback from

@@ -72,9 +72,12 @@ HISTORY_FREQUENCIES = ("daily", "minute")
 # is 20, not the direct wrapper's 10, because it matches the equity scanner's actual
 # consumer: ButterflyGuy's fetch_avg_volumes/prior_session_pct_change compute a 20-day
 # rolling average, so a caller that omits days_back gets a window that already satisfies
-# that lookback instead of needing to know to override it.
+# that lookback instead of needing to know to override it. The daily maximum is 250, a
+# full trading year, matching the trailing year the live provider now requests from
+# Schwab (see ``LiveDataProvider.get_daily_bars``) -- callers like AfterHoursLab's
+# event-page "Daily context" chart can ask for a real year of trend instead of ~1 month.
 HISTORY_DAYS_BACK_BOUNDS: dict[str, tuple[int, int, int]] = {
-    "daily": (1, 20, 20),
+    "daily": (1, 250, 20),
     "minute": (1, 5, 1),
 }
 MOVER_INDEXES = frozenset(

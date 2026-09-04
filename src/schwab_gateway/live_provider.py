@@ -316,21 +316,20 @@ class LockedSchwabMarketDataProvider:
     async def get_daily_bars(self, symbol: str, days_back: int = 10) -> list[dict[str, Any]]:
         """Fetch daily OHLCV bars.
 
-        Mirrors ``SchwabClientWrapper.get_daily_bars``: a fixed ``period_type=MONTH,
-        period=1`` request, the same shape Schwab has always been asked for here. This
-        adapter's client is constructed with ``enforce_enums=True`` (unlike the direct
-        wrapper's ``enforce_enums=False``), so a real ``Period`` enum member is passed
-        rather than a raw int. ``days_back`` does not change the Schwab request -- it
-        bounds the response after normalization, the same way it does not change the
-        direct wrapper's request either.
+        Requests a full trailing year (``period_type=YEAR, period=1``) so the response
+        comfortably covers the gateway's daily ``days_back`` ceiling of 250 sessions;
+        trimming to the caller's actual ``days_back`` happens in normalization
+        (``normalize_schwab_history``), not here. This adapter's client is constructed
+        with ``enforce_enums=True`` (unlike the direct wrapper's ``enforce_enums=False``),
+        so a real ``Period`` enum member is passed rather than a raw int.
         """
 
         def operation(client: Any) -> list[dict[str, Any]]:
             with _closing_session(client):
                 response = client.get_price_history(
                     symbol,
-                    period_type=client.PriceHistory.PeriodType.MONTH,
-                    period=client.PriceHistory.Period.ONE_MONTH,
+                    period_type=client.PriceHistory.PeriodType.YEAR,
+                    period=client.PriceHistory.Period.ONE_YEAR,
                     frequency_type=client.PriceHistory.FrequencyType.DAILY,
                 )
                 response.raise_for_status()

@@ -76,10 +76,12 @@ class _FakeQuote:
 class _FakePeriodType(Enum):
     DAY = "day"
     MONTH = "month"
+    YEAR = "year"
 
 
 class _FakePeriod(Enum):
     ONE_MONTH = 1
+    ONE_YEAR = 2
 
 
 class _FakeFrequencyType(Enum):
@@ -457,8 +459,8 @@ async def test_daily_bars_request_shape_and_transaction_bounds() -> None:
     assert client.price_history_calls == [
         {
             "symbol": "AAPL",
-            "period_type": _FakePeriodType.MONTH,
-            "period": _FakePeriod.ONE_MONTH,
+            "period_type": _FakePeriodType.YEAR,
+            "period": _FakePeriod.ONE_YEAR,
             "frequency_type": _FakeFrequencyType.DAILY,
         }
     ]
