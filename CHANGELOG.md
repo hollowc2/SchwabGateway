@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 - 2026-09-04
 
 - Raise the `/v1/history` `frequency=daily` `days_back` ceiling from 20 to 250 (a full
   trading year), so charts like AfterHoursLab's event-page "Daily context" can show a
