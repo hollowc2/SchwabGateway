@@ -130,6 +130,19 @@ class ExecutionScheduler:
     Capacity includes both the running operation and queued operations. A caller that
     disconnects from running work releases only its HTTP wait: the internal operation
     task and physical slot remain owned until the operation really completes.
+
+    All operation types (spot, quotes, option-chain, history, session) share this one
+    physical slot: `_dispatch_locked` will not start a second job while `_worker_active`
+    is set, regardless of priority class. `_allocated`/`_limits` bound how many callers
+    of each priority class may be admitted (running + queued), not how many run
+    concurrently. This is a deliberate simplification from the single upstream token
+    lock (schwab-py issues one HTTP call per locked transaction) rather than an
+    oversight, but it means a burst of unrelated operations can push end-to-end latency
+    for a latency-sensitive read like option-chain well past its own upstream execution
+    time — see the 2026-09 option-chain latency investigation. Before adding a second
+    execution slot or a per-operation pool, check `schwab_gateway_scheduler_queue_wait_seconds`
+    by `operation`: if queueing concentrates in a few operation types, a dedicated slot
+    for those is a smaller change than relaxing the single-slot model everywhere.
     """
 
     def __init__(self, policy: AdmissionPolicy) -> None:

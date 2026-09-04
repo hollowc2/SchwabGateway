@@ -91,7 +91,7 @@ def test_gateway_validates_live_order_book_configuration() -> None:
     ("field", "value", "message"),
     [
         ("option_chain_cache_ttl_seconds", 0, "TTL"),
-        ("option_chain_cache_ttl_seconds", 4.1, "TTL"),
+        ("option_chain_cache_ttl_seconds", 8.1, "TTL"),
         ("option_chain_cache_ttl_seconds", float("nan"), "TTL"),
         ("option_chain_cache_max_entries", 0, "capacity"),
         ("option_chain_cache_max_entries", 17, "capacity"),

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.4 - 2026-09-04
+
+Follow-up to a read-only latency investigation done against the frozen `0.4.3`
+build (ButterflyGuy repo's
+`docs/runbooks/schwab-gateway-option-chain-latency-investigation.md`), which
+traced `/v1/option-chain` cache-miss fetches taking 4.2-6.2s against a 4s cache
+TTL.
+
+- Raise the option-chain cache TTL ceiling (`MAX_OPTION_CHAIN_CACHE_TTL_SECONDS`,
+  enforced in both `upstream.py` and `config.py`) from 4s to 8s. The gateway's
+  own metrics show zero `operation="option_chain"` samples on the live
+  container as of this release (restarted with no accumulated history), so 8s
+  is sized from the investigation's small 4.2-6.2s sample with headroom, not
+  from a full-session p99 -- re-tune
+  `SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS` once
+  `schwab_gateway_scheduler_upstream_execution_seconds` /
+  `_queue_wait_seconds` for `operation="option_chain"` have a real trading-day
+  sample. Deploying the new TTL value is a separate follow-up from this
+  release.
+- Stop re-parsing the cached option chain through
+  `OptionChainV1.model_validate_json` on every cache hit; cache the already-
+  parsed model and only re-run the freshness/staleness recomputation that
+  actually depends on wall-clock time. Cache-hit latency should no longer
+  include a full JSON re-parse of the largest chains.
+- Add `SchwabGatewayOptionChainEndToEndLatencyHigh` to `infra/alerts.yml`,
+  approximating true end-to-end option-chain latency (queue wait + execution,
+  not just execution) since the existing `upstream_timeout_seconds` budget
+  starts at scheduler dispatch and cannot see time spent queued behind other
+  operation types.
+- Document, rather than change, two known tradeoffs the investigation
+  confirmed are real but are not the dominant latency source: the scheduler's
+  single physical execution slot is shared across all operation types by
+  design (`scheduler.py`, unchanged since 0.4.0), and each locked Schwab
+  client transaction constructs a fresh client/session because schwab-py
+  captures the transaction-scoped token callbacks at construction time
+  (`token_adapter.py`). Both are called out in code comments with what would
+  need to change to relax them, should queue-wait metrics justify it later.
+
 ## 0.4.3 - 2026-09-04
 
 - Raise the `/v1/history` `frequency=daily` `days_back` ceiling from 20 to 250 (a full

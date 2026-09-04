@@ -47,7 +47,18 @@ class SchwabClientOperationError(SchwabTokenAdapterError):
 
 
 class LockedSchwabClientAdapter:
-    """Construct and use one injected client inside a token-manager transaction."""
+    """Construct and use one injected client inside a token-manager transaction.
+
+    A new client (and `requests.Session`) is built on every call because
+    `token_read_func`/`token_write_func` are transaction-scoped closures handed to us
+    by `AtomicTokenManager.run_access_transaction` for the duration of the held lock —
+    schwab-py's client captures them at construction time, so a client built outside a
+    transaction would close over stale callbacks. Reusing a session would need the
+    token manager to expose a stable read/write pair usable across transactions, which
+    is a bigger change than this per-call TCP+TLS cost (tens-to-~100ms) justifies on
+    its own; it is not the dominant contributor to option-chain latency (see the
+    2026-09 latency investigation) and is accepted as-is for now.
+    """
 
     def __init__(
         self,

@@ -83,8 +83,8 @@ class GatewaySettings(BaseSettings):
     @field_validator("option_chain_cache_ttl_seconds")
     @classmethod
     def option_chain_cache_ttl_must_be_bounded(cls, value: float) -> float:
-        if not math.isfinite(value) or not 0 < value <= 4:
-            raise ValueError("option-chain cache TTL must be greater than 0 and at most 4s")
+        if not math.isfinite(value) or not 0 < value <= 8:
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 8s")
         return value
 
     @field_validator("option_chain_cache_max_entries", "option_chain_max_inflight")

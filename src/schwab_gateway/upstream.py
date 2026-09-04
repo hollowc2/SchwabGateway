@@ -39,7 +39,14 @@ REGULAR_SESSION_START = dt.time(9, 30)
 REGULAR_SESSION_END = dt.time(16, 0)
 EARLY_CLOSE_SESSION_END = dt.time(13, 0)
 DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
-MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
+# End-to-end cache-miss latency for option-chain fetches is dominated by scheduler
+# queue wait, not the Schwab call itself (see docs/runbooks for the investigation
+# that traced 4.2-6.2s first-fetch latency to queueing behind other operation
+# types on the gateway's single execution slot). 8s gives a TTL ceiling with
+# headroom above that observed range; re-tune once
+# schwab_gateway_scheduler_upstream_execution_seconds / _queue_wait_seconds for
+# operation="option_chain" have accumulated a real sample.
+MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 8.0
 DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_BYTES = 64 * 1024 * 1024
@@ -82,7 +89,8 @@ option_chain_crossed_market_normalizations = Counter(
 class _CachedOptionChain:
     created_at: float
     expires_at: float
-    payload: bytes
+    chain: OptionChainV1
+    payload_bytes: int
 
 
 def _observed_holiday(date: dt.date) -> dt.date:
@@ -1124,7 +1132,7 @@ class DirectSchwabOptionChainUpstream:
             not math.isfinite(cache_ttl_seconds)
             or not 0 < cache_ttl_seconds <= MAX_OPTION_CHAIN_CACHE_TTL_SECONDS
         ):
-            raise ValueError("option-chain cache TTL must be greater than 0 and at most 4s")
+            raise ValueError("option-chain cache TTL must be greater than 0 and at most 8s")
         if not 1 <= cache_max_entries <= MAX_OPTION_CHAIN_CACHE_ENTRIES:
             raise ValueError("option-chain cache capacity must be between 1 and 16")
         if not 1 <= cache_max_bytes <= MAX_OPTION_CHAIN_CACHE_BYTES:
@@ -1155,7 +1163,7 @@ class DirectSchwabOptionChainUpstream:
             option_chain_cache_age_seconds.observe(max(0.0, now - cached.created_at))
             self._cache.move_to_end(key)
             return _reevaluate_option_chain_freshness(
-                OptionChainV1.model_validate_json(cached.payload),
+                cached.chain,
                 evaluated_at=self._utcnow(),
                 stale_after_seconds=self._stale_after_seconds,
             )
@@ -1200,17 +1208,18 @@ class DirectSchwabOptionChainUpstream:
         except ValueError as exc:
             raise UpstreamMalformedError("Schwab option chain response was invalid") from exc
         now = self._monotonic_clock()
-        payload_bytes = chain.model_dump_json().encode()
-        if len(payload_bytes) <= self._cache_max_bytes:
+        payload_size = len(chain.model_dump_json().encode())
+        if payload_size <= self._cache_max_bytes:
             previous = self._cache.pop(key, None)
             if previous is not None:
-                self._cache_bytes -= len(previous.payload)
+                self._cache_bytes -= previous.payload_bytes
             self._cache[key] = _CachedOptionChain(
                 created_at=now,
                 expires_at=now + self._cache_ttl_seconds,
-                payload=payload_bytes,
+                chain=chain,
+                payload_bytes=payload_size,
             )
-            self._cache_bytes += len(payload_bytes)
+            self._cache_bytes += payload_size
             self._evict_to_bounds()
             self._update_cache_gauges()
         return chain
@@ -1219,7 +1228,7 @@ class DirectSchwabOptionChainUpstream:
         expired = [key for key, value in self._cache.items() if value.expires_at <= now]
         for key in expired:
             value = self._cache.pop(key)
-            self._cache_bytes -= len(value.payload)
+            self._cache_bytes -= value.payload_bytes
             option_chain_cache_events.labels(outcome="eviction").inc()
         self._update_cache_gauges()
 
@@ -1229,7 +1238,7 @@ class DirectSchwabOptionChainUpstream:
             or self._cache_bytes > self._cache_max_bytes
         ):
             _, value = self._cache.popitem(last=False)
-            self._cache_bytes -= len(value.payload)
+            self._cache_bytes -= value.payload_bytes
             option_chain_cache_events.labels(outcome="eviction").inc()
 
     def _update_cache_gauges(self) -> None:

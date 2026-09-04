@@ -1,6 +1,6 @@
 [project]
 name = "schwab-gateway-sdk"
-version = "0.4.2"
+version = "0.4.4"
 description = "Versioned models and async client for SchwabGateway"
 requires-python = ">=3.12"
 dependencies = [

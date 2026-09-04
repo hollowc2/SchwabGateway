@@ -47,3 +47,36 @@ groups:
             schwab_gateway_live has remained scrapeable without a ready
             token state for 2 minutes. Direct trading remains authoritative unless
             a separately approved gateway access-mode rollout changes that boundary.
+
+      - alert: SchwabGatewayOptionChainEndToEndLatencyHigh
+        # The scheduler's own upstream_execution histogram only covers time from
+        # dispatch, not from HTTP-request-received -- a request that queues for
+        # seconds behind other operation types on the single execution slot (see
+        # scheduler.py's docstring) can still look fine on that metric alone. This
+        # approximates true end-to-end latency as average queue wait + average
+        # execution time per option-chain request, which is what actually determines
+        # whether callers see fresh-enough data against the cache TTL. Recommended
+        # threshold from the 2026-09 latency investigation (4.2-6.2s observed,
+        # 4s TTL at the time) -- re-tune once a full trading session of
+        # operation="option_chain" samples has accumulated.
+        expr: >-
+          (
+            sum(rate(schwab_gateway_scheduler_queue_wait_seconds_sum{operation="option_chain"}[10m]))
+            +
+            sum(rate(schwab_gateway_scheduler_upstream_execution_seconds_sum{operation="option_chain"}[10m]))
+          )
+          /
+          sum(rate(schwab_gateway_scheduler_upstream_execution_seconds_count{operation="option_chain"}[10m]))
+          > 6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Option-chain requests are averaging over 6s end-to-end
+          description: >-
+            Average queue wait plus execution time for option-chain requests has
+            exceeded 6s for 10 minutes -- consistent with the scheduler queueing
+            behavior traced in docs/runbooks (ButterflyGuy repo,
+            schwab-gateway-option-chain-latency-investigation.md). Check
+            schwab_gateway_scheduler_queue_wait_seconds by operation to see what is
+            crowding the single execution slot.
