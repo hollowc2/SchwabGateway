@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SchwabGateway
-  version: 0.4.2
+  version: 0.4.4
   description: >-
     Internal market-data-only Schwab gateway; wire schema version 1.0. Protected and
     background reads use independent bounded queues feeding one strict-priority Schwab
