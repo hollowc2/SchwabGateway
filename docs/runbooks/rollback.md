@@ -43,9 +43,16 @@ Use the exact previous image ID/digest from the record, not its mutable tag:
 ```bash
 ssh -F /dev/null -o BatchMode=yes billy@helios
 # /opt/schwab-gateway is a stale checkout, not a release worktree -- run rollback
-# from the previous release's own worktree instead:
+# from the previous release's own worktree instead. Releases deployed before this
+# procedure (or worktrees since pruned) may not have one; recreate it from the SHA:
 sg_previous_release_sha='<previous-release-short-sha>'
-cd "/opt/schwab-gateway-releases/${sg_previous_release_sha}"
+sg_previous_worktree="/opt/schwab-gateway-releases/${sg_previous_release_sha}"
+if [ ! -d "$sg_previous_worktree" ]; then
+  git -C /opt/schwab-gateway fetch --tags
+  git -C /opt/schwab-gateway worktree add "$sg_previous_worktree" "$sg_previous_release_sha"
+  ln -s /opt/schwab-gateway/.env "${sg_previous_worktree}/.env"
+fi
+cd "$sg_previous_worktree"
 sg_previous_image='sha256:<recorded-previous-image-id>'
 
 printf 'CHECK rollback-image-exists\n'
