@@ -76,6 +76,23 @@ def test_live_container_is_unprivileged_read_only_and_internal() -> None:
     assert live["environment"]["SCHWAB_GATEWAY_ORDER_WRITES_ENABLED"] == "false"
 
 
+def test_healthchecks_avoid_the_slow_urllib_import() -> None:
+    services = compose()["services"]
+
+    for service_name, port in (("demo", 8010), ("live", 8011)):
+        healthcheck = services[service_name]["healthcheck"]
+        command = healthcheck["test"]
+
+        assert command[:3] == ["CMD", "python", "-c"]
+        assert "urllib.request" not in command[3]
+        assert "socket.socket()" in command[3]
+        assert f"('127.0.0.1', {port})" in command[3]
+        assert "b' 200 ' in status" in command[3]
+        assert healthcheck["interval"] == "30s"
+        assert healthcheck["timeout"] == "10s"
+        assert healthcheck["retries"] == 3
+
+
 def test_base_compose_does_not_require_the_production_image_override() -> None:
     rendered = rendered_compose()
     assert rendered["services"]["demo"]["profiles"] == ["demo"]
