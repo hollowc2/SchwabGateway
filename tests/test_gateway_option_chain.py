@@ -31,6 +31,7 @@ from schwab_gateway.upstream import (
     UpstreamUnavailableError,
     normalize_schwab_option_chain,
     option_chain_crossed_market_normalizations,
+    option_chain_negative_intrinsic_value_normalizations,
     option_chain_negative_time_value_normalizations,
 )
 
@@ -161,7 +162,6 @@ def test_normalizer_maps_schwab_optional_analytics_sentinels_to_null() -> None:
         "theta",
         "vega",
         "rho",
-        "intrinsicValue",
         "timeValue",
         "theoreticalOptionValue",
     )
@@ -189,11 +189,92 @@ def test_normalizer_maps_schwab_optional_analytics_sentinels_to_null() -> None:
             "theta",
             "vega",
             "rho",
-            "intrinsic_value",
             "time_value",
             "theoretical_option_value",
         )
     } == {None}
+
+
+@pytest.mark.parametrize("negative_intrinsic_value", [-1e-12, -1.08, -999.0, -14576.492])
+def test_normalizer_clamps_finite_negative_intrinsic_value_to_zero(
+    negative_intrinsic_value: float,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "intrinsicValue"
+    ] = negative_intrinsic_value
+    before = option_chain_negative_intrinsic_value_normalizations._value.get()
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    contract = chain.contracts[0]
+    assert contract.intrinsic_value == 0.0
+    assert (contract.bid, contract.ask, contract.mark) == (1.1, 1.3, 1.2)
+    assert option_chain_negative_intrinsic_value_normalizations._value.get() == before + 1
+
+
+@pytest.mark.parametrize("intrinsic_value", [0.0, 2.5])
+def test_normalizer_preserves_zero_and_positive_intrinsic_value(
+    intrinsic_value: float,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "intrinsicValue"
+    ] = intrinsic_value
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].intrinsic_value == intrinsic_value
+
+
+@pytest.mark.parametrize(
+    "intrinsic_value",
+    ["not-a-number", True, float("nan"), float("inf"), float("-inf")],
+)
+def test_normalizer_rejects_malformed_or_nonfinite_intrinsic_value(
+    intrinsic_value: object,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "intrinsicValue"
+    ] = intrinsic_value
+
+    with pytest.raises(ValueError, match="intrinsicValue"):
+        normalize_schwab_option_chain(
+            "SPX",
+            payload,
+            EXPIRATION,
+            received_at=RECEIVED_AT,
+            stale_after_seconds=90,
+        )
+
+
+def test_intrinsic_normalization_does_not_mask_an_unsafe_market() -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0].update(
+        {"intrinsicValue": -1000.0, "bid": -0.01}
+    )
+
+    with pytest.raises(ValidationError, match="prices"):
+        normalize_schwab_option_chain(
+            "SPX",
+            payload,
+            EXPIRATION,
+            received_at=RECEIVED_AT,
+            stale_after_seconds=90,
+        )
 
 
 @pytest.mark.parametrize("negative_time_value", [-265.57, -833.552, -14.6])
@@ -446,6 +527,9 @@ def test_model_accepts_the_5000_contract_boundary_and_rejects_one_more() -> None
         ("ask", -0.01, "prices"),
         ("mark", float("nan"), "prices"),
         ("delta", float("inf"), "numeric fields"),
+        ("intrinsic_value", float("nan"), "intrinsic value"),
+        ("intrinsic_value", float("inf"), "intrinsic value"),
+        ("intrinsic_value", -0.01, "intrinsic value"),
         ("time_value", float("nan"), "time value"),
         ("time_value", float("inf"), "time value"),
         ("time_value", -0.01, "time value"),

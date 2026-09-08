@@ -209,7 +209,6 @@ class OptionContractV1(GatewayModel):
         "theta",
         "vega",
         "rho",
-        "intrinsic_value",
         "multiplier",
         "theoretical_option_value",
     )
@@ -217,6 +216,17 @@ class OptionContractV1(GatewayModel):
     def numeric_fields_must_be_finite(cls, value: float | None) -> float | None:
         if value is not None and not math.isfinite(value):
             raise ValueError("option contract numeric fields must be finite")
+        return value
+
+    @field_validator("intrinsic_value")
+    @classmethod
+    def intrinsic_value_must_be_finite_and_nonnegative(
+        cls, value: float | None
+    ) -> float | None:
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise ValueError(
+                "option contract intrinsic value must be finite and nonnegative"
+            )
         return value
 
     @field_validator("time_value")

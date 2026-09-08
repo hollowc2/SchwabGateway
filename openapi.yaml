@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SchwabGateway
-  version: 0.4.5
+  version: 0.4.6
   description: >-
     Internal market-data-only Schwab gateway; wire schema version 1.0. Protected and
     background reads use independent bounded queues feeding one strict-priority Schwab
@@ -434,7 +434,7 @@ components:
         bid_size: {type: [integer, "null"], minimum: 0}
         ask_size: {type: [integer, "null"], minimum: 0}
         rho: {type: [number, "null"]}
-        intrinsic_value: {type: [number, "null"]}
+        intrinsic_value: {type: [number, "null"], minimum: 0}
         time_value: {type: [number, "null"], minimum: 0}
         in_the_money: {type: [boolean, "null"]}
         days_to_expiration: {type: [integer, "null"], minimum: 0}
