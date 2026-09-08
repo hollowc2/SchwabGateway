@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.5 - 2026-09-07
+
+- Replace the Compose health checks' heavyweight `urllib.request` import with a
+  minimal socket-based HTTP readiness probe. On the two-core Helios host, the
+  old import took 7.4-10.2 seconds while Docker allowed only three seconds,
+  creating a persistent false-unhealthy state and repeated probe churn.
+- Run the readiness probe every 30 seconds with a 10-second process budget and
+  three retries; the endpoint's own socket timeout remains two seconds.
+- Add regression coverage for the probe implementation and timing contract.
+
 ## 0.4.4 - 2026-09-04
 
 Follow-up to a read-only latency investigation done against the frozen `0.4.3`

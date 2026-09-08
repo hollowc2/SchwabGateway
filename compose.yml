@@ -33,10 +33,19 @@ services:
     cap_drop: [ALL]
     ports: ["127.0.0.1:8010:8010"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=2).read()"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import socket; s=socket.socket(); s.settimeout(2);
+          s.connect(('127.0.0.1', 8010));
+          s.sendall(b'GET /ready HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+          status=s.recv(128).split(b'\r\n', 1)[0]; s.close();
+          raise SystemExit(0 if b' 200 ' in status else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   live:
     profiles: [live]
@@ -78,11 +87,20 @@ services:
       monitoring_net:
         aliases: [schwab-gateway]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/ready', timeout=2).read()"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import socket; s=socket.socket(); s.settimeout(2);
+          s.connect(('127.0.0.1', 8011));
+          s.sendall(b'GET /ready HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+          status=s.recv(128).split(b'\r\n', 1)[0]; s.close();
+          raise SystemExit(0 if b' 200 ' in status else 1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
 networks:
   monitoring_net:
