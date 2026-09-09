@@ -48,6 +48,49 @@ groups:
             token state for 2 minutes. Direct trading remains authoritative unless
             a separately approved gateway access-mode rollout changes that boundary.
 
+      - alert: SchwabGatewayProtectedRequestFailure
+        # Protected reads are on the trading decision path. A single 503/504 is an
+        # acceptance-gate failure even when a short incident is diluted below the
+        # rolling latency-average alert farther below.
+        expr: >-
+          sum(increase(gateway_client_requests_total{
+            job="schwab_gateway",
+            operation=~"spot_v1|option_chain_v1|history_v1",
+            status=~"503|504"
+          }[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Schwab gateway returned a protected-path failure
+          description: >-
+            At least one protected market-data request returned 503 or 504 in the
+            last 5 minutes. Check scheduler queue-wait and upstream-timeout counters
+            before promoting or increasing PAPER consumer load.
+
+      - alert: SchwabGatewayProtectedSchedulerFailure
+        # Keep scheduler failures independently observable from HTTP status mapping so
+        # a future API change cannot silently weaken the operational SLO.
+        expr: >-
+          sum(increase(schwab_gateway_scheduler_queue_wait_timeouts_total{
+            job="schwab_gateway", priority_class="protected"
+          }[5m]))
+          +
+          sum(increase(schwab_gateway_scheduler_upstream_timeouts_total{
+            job="schwab_gateway", priority_class="protected"
+          }[5m]))
+          +
+          sum(increase(schwab_gateway_scheduler_capacity_rejections_total{
+            job="schwab_gateway", priority_class="protected"
+          }[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Schwab gateway protected scheduler failed
+          description: >-
+            Protected work exceeded its queue or upstream execution budget, or its
+            bounded pool rejected a request, in the last 5 minutes. Inspect operation
+            labels and consumer cadence; do not relax bounds without a new load proof.
+
       - alert: SchwabGatewayOptionChainEndToEndLatencyHigh
         # The scheduler's own upstream_execution histogram only covers time from
         # dispatch, not from HTTP-request-received -- a request that queues for

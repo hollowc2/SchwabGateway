@@ -163,6 +163,20 @@ class ExecutionScheduler:
         scheduler_worker_active.set(0)
         for priority in PriorityClass:
             self._update_class_metrics(priority)
+        # Seed failure counters before the first event so Prometheus ``increase()``
+        # alerts can detect the first protected failure after process start.
+        scheduler_capacity_rejections.labels(
+            priority_class=PriorityClass.PROTECTED.value
+        ).inc(0)
+        for operation in ("spot", "option_chain", "history"):
+            scheduler_queue_timeouts.labels(
+                priority_class=PriorityClass.PROTECTED.value,
+                operation=operation,
+            ).inc(0)
+            scheduler_upstream_timeouts.labels(
+                priority_class=PriorityClass.PROTECTED.value,
+                operation=operation,
+            ).inc(0)
 
     async def execute(
         self,

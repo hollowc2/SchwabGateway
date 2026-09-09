@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.7 - 2026-09-09
+
+- Alert immediately when protected market-data requests return `503`/`504` or
+  the protected scheduler records a queue/upstream timeout. These short failure
+  clusters were invisible to the existing ten-minute average-latency alert.
+
 ## 0.4.5 - 2026-09-07
 
 - Replace the Compose health checks' heavyweight `urllib.request` import with a
