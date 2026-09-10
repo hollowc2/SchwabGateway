@@ -79,6 +79,10 @@ option_chain_negative_time_value_normalizations = Counter(
     "gateway_option_chain_negative_time_value_normalizations_total",
     "Schwab option contracts whose negative timeValue was normalized to null",
 )
+option_chain_negative_intrinsic_value_normalizations = Counter(
+    "gateway_option_chain_negative_intrinsic_value_normalizations_total",
+    "Schwab option contracts whose finite negative intrinsicValue was normalized to zero",
+)
 option_chain_crossed_market_normalizations = Counter(
     "gateway_option_chain_crossed_market_normalizations_total",
     "Schwab option contracts whose finite nonnegative bid/ask pair was conservatively ordered",
@@ -292,6 +296,28 @@ def _optional_analytic_number(payload: dict[str, Any], name: str) -> float | Non
     """Normalize Schwab's -999 missing-value sentinel for optional analytics."""
     value = _number(payload, name)
     return None if value == -999.0 else value
+
+
+def _optional_intrinsic_value(payload: dict[str, Any]) -> float | None:
+    """Normalize Schwab's signed-moneyness ``intrinsicValue`` to intrinsic value.
+
+    Schwab currently emits a finite negative value for out-of-the-money contracts,
+    equal to signed moneyness rather than the nonnegative option intrinsic value.
+    Zero is the only mathematically valid normalization. Missing values retain the
+    wire contract's nullable meaning; malformed and non-finite values fail closed.
+    """
+    raw_value = payload.get("intrinsicValue")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise ValueError("option-chain intrinsicValue was not numeric")
+    value = float(raw_value)
+    if not math.isfinite(value):
+        raise ValueError("option-chain intrinsicValue was not finite")
+    if value < 0:
+        option_chain_negative_intrinsic_value_normalizations.inc()
+        return 0.0
+    return value
 
 
 def _optional_time_value(payload: dict[str, Any]) -> float | None:
@@ -572,9 +598,7 @@ def normalize_schwab_option_chain(
                             bid_size=_integer(option, "bidSize"),
                             ask_size=_integer(option, "askSize"),
                             rho=_optional_analytic_number(option, "rho"),
-                            intrinsic_value=_optional_analytic_number(
-                                option, "intrinsicValue"
-                            ),
+                            intrinsic_value=_optional_intrinsic_value(option),
                             time_value=_optional_time_value(option),
                             in_the_money=option.get("inTheMoney"),
                             days_to_expiration=_integer(option, "daysToExpiration"),
