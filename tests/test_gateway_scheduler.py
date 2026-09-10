@@ -15,8 +15,11 @@ from schwab_gateway.scheduler import (
     SchedulerUpstreamTimeoutError,
     gateway_active_admitted,
     scheduler_allocated,
+    scheduler_capacity_rejections,
     scheduler_execution,
     scheduler_queue_depth,
+    scheduler_queue_timeouts,
+    scheduler_upstream_timeouts,
 )
 
 
@@ -496,3 +499,24 @@ def test_scheduler_initializes_zero_metric_series_for_both_classes() -> None:
             if sample.name == metric._name  # noqa: SLF001 - Prometheus exposes no public name
         }
         assert values == {"protected": 0, "background": 0}
+
+    protected_capacity = {
+        sample.labels["priority_class"]: sample.value
+        for family in scheduler_capacity_rejections.collect()
+        for sample in family.samples
+        if sample.name == f"{scheduler_capacity_rejections._name}_total"  # noqa: SLF001
+    }
+    assert "protected" in protected_capacity
+
+    for metric in (scheduler_queue_timeouts, scheduler_upstream_timeouts):
+        seeded = {
+            (sample.labels["priority_class"], sample.labels["operation"])
+            for family in metric.collect()
+            for sample in family.samples
+            if sample.name == f"{metric._name}_total"  # noqa: SLF001
+        }
+        assert {
+            ("protected", "spot"),
+            ("protected", "option_chain"),
+            ("protected", "history"),
+        } <= seeded

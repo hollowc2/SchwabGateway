@@ -857,6 +857,11 @@ def create_app(
     app[EXECUTION_SCHEDULER_KEY] = ExecutionScheduler(
         admission_policy or AdmissionPolicy(protected_capacity=8, background_capacity=8)
     )
+    # Prometheus ``increase()`` needs a zero sample before the first failure. Seed the
+    # protected status series so the first 503/504 after process start is alertable.
+    for operation in ("spot_v1", "option_chain_v1", "history_v1"):
+        for status in ("503", "504"):
+            gateway_requests.labels(operation=operation, status=status).inc(0)
     app.cleanup_ctx.append(execution_scheduler_context)
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
     app[ORDER_BOOK_STREAM_ADMISSION_KEY] = AdmissionController(

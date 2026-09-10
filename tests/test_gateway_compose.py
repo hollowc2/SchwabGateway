@@ -192,9 +192,24 @@ def test_only_minimal_secret_inputs_are_admitted() -> None:
 
 
 def test_alert_rules_keep_gateway_metric_names() -> None:
-    alerts = Path("infra/alerts.yml").read_text()
+    alerts_path = Path("infra/alerts.yml")
+    alerts = alerts_path.read_text()
+    parsed = yaml.safe_load(alerts)
+    rules = {
+        rule["alert"]: rule
+        for group in parsed["groups"]
+        for rule in group["rules"]
+    }
+
     assert "schwab_gateway_token_state" in alerts
     assert 'job="schwab_gateway"' in alerts
+    request_failure = rules["SchwabGatewayProtectedRequestFailure"]
+    scheduler_timeout = rules["SchwabGatewayProtectedSchedulerFailure"]
+    assert 'status=~"503|504"' in request_failure["expr"]
+    assert 'priority_class="protected"' in scheduler_timeout["expr"]
+    assert "queue_wait_timeouts_total" in scheduler_timeout["expr"]
+    assert "upstream_timeouts_total" in scheduler_timeout["expr"]
+    assert "capacity_rejections_total" in scheduler_timeout["expr"]
 
 
 def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:
