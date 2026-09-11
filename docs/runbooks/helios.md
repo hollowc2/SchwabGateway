@@ -58,12 +58,14 @@ Build the image in a dedicated release worktree, not in `/opt/schwab-gateway` it
 (that checkout is stale and must never be built from or activated from):
 
 ```bash
+ssh -F /dev/null -o BatchMode=yes billy@helios
 sg_release_sha='<short-sha-of-approved-release>'
 cd /opt/schwab-gateway
 git fetch --tags
 git worktree add "/opt/schwab-gateway-releases/${sg_release_sha}" "$sg_release_sha"
 # git worktree add does not create the .env symlink -- it must be recreated by hand
-# for every new release worktree, or the build/compose render cannot find secrets:
+# for every new release worktree. `docker build` here does not read .env, but the
+# compose render during activation does, so create it now while the worktree is set up:
 ln -s /opt/schwab-gateway/.env "/opt/schwab-gateway-releases/${sg_release_sha}/.env"
 cd "/opt/schwab-gateway-releases/${sg_release_sha}"
 docker build --provenance=false --sbom=false \
@@ -92,7 +94,13 @@ record. Exit `0` is required. Exit `1` means a failed/transport gate; exit `2` m
 arguments. The record is local and mode `0600`; attach it to the private change record,
 not Git.
 
-Use `--host`, `--repo`, repeated `--compose-file`, or the other documented flags only
+The script's `--repo` default (`/opt/schwab-gateway`) is the stale checkout, so its
+`compose-files`, `compose-validity`, `compose-service`, and `compose-image` checks would
+validate compose content that activation will not use. Always pass
+`--repo=/opt/schwab-gateway-releases/<approved-release-short-sha>` so preflight validates
+the same worktree the activation step `cd`s into.
+
+Use `--host`, repeated `--compose-file`, or the other documented flags only
 when the approved target intentionally differs from the production defaults. A green
 preflight is evidence, not deployment approval. Resolve every failure and rerun from the
 beginning.
@@ -104,7 +112,7 @@ exact baseline fields:
 observed_at_utc=
 operator=
 host=billy@helios
-repo=/opt/schwab-gateway
+repo=/opt/schwab-gateway-releases/<approved-release-short-sha>
 repo_git_sha=
 repo_git_ref=
 repo_worktree_state=
