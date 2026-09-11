@@ -430,6 +430,48 @@ def test_mixed_age_chain_keeps_rows_and_counts_without_aggregate_stale() -> None
     assert "stale" not in chain.data_quality_flags
 
 
+@pytest.mark.asyncio
+async def test_quiet_contract_remains_fresh_with_bounded_live_policy() -> None:
+    """A valid quiet leg must not disappear at the former 90-second boundary."""
+    payload = _payload()
+    quiet_millis = int((RECEIVED_AT - dt.timedelta(seconds=120)).timestamp() * 1000)
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "quoteTimeInLong"
+    ] = quiet_millis
+    clock = _Clock()
+    upstream = DirectSchwabOptionChainUpstream(
+        _Provider(payload),
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    chain = await upstream.get_option_chain("XSP", EXPIRATION)
+
+    assert chain.contracts[0].age_seconds == 120
+    assert chain.contracts[0].stale is False
+    assert "stale" not in chain.contracts[0].data_quality_flags
+
+
+def test_quiet_contract_policy_remains_fail_closed_after_five_minutes() -> None:
+    payload = _payload()
+    stale_millis = int((RECEIVED_AT - dt.timedelta(seconds=301)).timestamp() * 1000)
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "quoteTimeInLong"
+    ] = stale_millis
+
+    chain = normalize_schwab_option_chain(
+        "XSP",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=300,
+    )
+
+    assert chain.contracts[0].age_seconds == 301
+    assert chain.contracts[0].stale is True
+    assert "stale" in chain.contracts[0].data_quality_flags
+
+
 @pytest.mark.parametrize(
     "payload",
     [

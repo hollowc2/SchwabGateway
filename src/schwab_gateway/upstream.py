@@ -47,6 +47,10 @@ DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 # schwab_gateway_scheduler_upstream_execution_seconds / _queue_wait_seconds for
 # operation="option_chain" have accumulated a real sample.
 MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 8.0
+# Schwab's per-contract event time advances only when that strike's quote changes.
+# Keep a bounded fail-closed cutoff, but allow quiet valid 0-DTE legs to survive the
+# former 90-second boundary while a fresh chain observation continues to deliver them.
+DEFAULT_OPTION_CONTRACT_STALE_AFTER_SECONDS = 300.0
 DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_BYTES = 64 * 1024 * 1024
@@ -1144,7 +1148,7 @@ class DirectSchwabOptionChainUpstream:
         self,
         provider: OptionChainProvider,
         *,
-        stale_after_seconds: float = 90.0,
+        stale_after_seconds: float = DEFAULT_OPTION_CONTRACT_STALE_AFTER_SECONDS,
         cache_ttl_seconds: float = DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS,
         cache_max_entries: int = DEFAULT_OPTION_CHAIN_CACHE_MAX_ENTRIES,
         cache_max_bytes: int = MAX_OPTION_CHAIN_CACHE_BYTES,
