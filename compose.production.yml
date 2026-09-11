@@ -6,3 +6,8 @@ services:
     build: !reset null
     image: "${SCHWAB_GATEWAY_PRODUCTION_IMAGE:?set immutable image ID or repository digest}"
     pull_policy: never
+    environment:
+      # PAPER full-session evidence at 4s showed a 50.8% hit rate and avoidable
+      # protected queue/upstream timeouts. Production pins the reviewed 8s ceiling;
+      # real-money consumers still require a separate force-fresh policy.
+      SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS: "8"

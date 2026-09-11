@@ -26,6 +26,7 @@ from schwab_gateway.auth import (
     hash_api_key,
 )
 from schwab_gateway.upstream import (
+    OPTION_CHAIN_CACHE_AGE_BUCKETS,
     DirectSchwabOptionChainUpstream,
     UpstreamMalformedError,
     UpstreamUnavailableError,
@@ -39,6 +40,10 @@ UTC = dt.timezone.utc
 EXPIRATION = dt.date(2026, 8, 24)
 RECEIVED_AT = dt.datetime(2026, 8, 24, 17, 0, 1, tzinfo=UTC)
 EVENT_MILLIS = int((RECEIVED_AT - dt.timedelta(seconds=1)).timestamp() * 1000)
+
+
+def test_cache_age_histogram_covers_the_deployable_ttl_ceiling() -> None:
+    assert OPTION_CHAIN_CACHE_AGE_BUCKETS[-5:] == (4, 5, 6, 7, 8)
 
 
 def _contract(symbol: str, **overrides: object) -> dict[str, object]:

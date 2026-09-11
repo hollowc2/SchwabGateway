@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.9 - 2026-09-11
+
+- Pin the production PAPER option-chain cache TTL to the reviewed eight-second ceiling
+  after the September 10 full-session sample recorded a 50.8% cache-hit rate, protected
+  queue/upstream timeouts, and an option-chain p99 above the two-second acceptance gate
+  at four seconds.
+- Extend cache-age histogram buckets through eight seconds so the production TTL remains
+  measurable after deployment. The cache remains PAPER-only; real-money use still
+  requires an explicitly reviewed force-fresh policy.
+
+## 0.4.8 - 2026-09-11
+
+- Retain quiet but valid option contracts for up to five minutes while continuing to
+  fail closed beyond that bounded freshness policy.
+
 ## 0.4.7 - 2026-09-09
 
 - Alert immediately when protected market-data requests return `503`/`504` or

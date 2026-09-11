@@ -148,6 +148,7 @@ def test_production_layer_disables_builds_and_registry_fallback() -> None:
     assert live["pull_policy"] == "never"
     assert live["container_name"] == "schwab_gateway_live"
     assert live["environment"]["SCHWAB_GATEWAY_ORDER_WRITES_ENABLED"] == "false"
+    assert live["environment"]["SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS"] == "8"
     assert published_port(live) == ("127.0.0.1", 8011, "8011")
     assert live["networks"]["monitoring_net"]["aliases"] == ["schwab-gateway"]
 

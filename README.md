@@ -45,9 +45,10 @@ manifest. See `docs/order-book-research.md`.
   established socket runs independently after the token transaction has completed.
 - **Venue-specific depth.** `NASDAQ_BOOK` / `NYSE_BOOK` are Level II books for one
   venue, not consolidated market depth.
-- **Chain cache is paper-only.** Successful full chains are cached for a fixed 4
-  seconds per `(symbol, expiration)`. Any real-money workflow must use an explicitly
-  reviewed force-fresh policy instead.
+- **Chain cache is paper-only.** Successful full chains are cached for a bounded,
+  configurable interval per `(symbol, expiration)`: four seconds by default and eight
+  seconds in the reviewed production PAPER profile. Any real-money workflow must use an
+  explicitly reviewed force-fresh policy instead.
 - Before promoting multiple paper strategies, stage one consumer at a time and prove
   a full session under real collector/position-monitor load; the contract tests do
   not establish multi-consumer capacity.

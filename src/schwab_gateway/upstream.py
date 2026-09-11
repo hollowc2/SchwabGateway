@@ -47,6 +47,10 @@ DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 # schwab_gateway_scheduler_upstream_execution_seconds / _queue_wait_seconds for
 # operation="option_chain" have accumulated a real sample.
 MAX_OPTION_CHAIN_CACHE_TTL_SECONDS = 8.0
+# Keep cache-age telemetry aligned with the deployable TTL ceiling so an 8-second
+# production setting remains observable instead of collapsing all ages above 4s into
+# the histogram's +Inf bucket.
+OPTION_CHAIN_CACHE_AGE_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8)
 # Schwab's per-contract event time advances only when that strike's quote changes.
 # Keep a bounded fail-closed cutoff, but allow quiet valid 0-DTE legs to survive the
 # former 90-second boundary while a fresh chain observation continues to deliver them.
@@ -65,7 +69,7 @@ option_chain_cache_events = Counter(
 option_chain_cache_age_seconds = Histogram(
     "gateway_option_chain_cache_age_seconds",
     "Age of a normalized option chain when served from the bounded cache",
-    buckets=(0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3, 4),
+    buckets=OPTION_CHAIN_CACHE_AGE_BUCKETS,
 )
 option_chain_cache_entries = Gauge(
     "gateway_option_chain_cache_entries",

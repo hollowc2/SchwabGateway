@@ -197,8 +197,9 @@ ButterflyGuy image and recreate each PAPER service one at a time. SPX, then NDX,
 must each clear `gateway_market_data_warming` after fresh spot, option-chain, and minute
 history reads. Observe one complete session with account/order operations still direct.
 
-Do not enable a real-money XSP workflow. The four-second option-chain cache is a PAPER
-contract; live-money use requires a separately reviewed force-fresh policy.
+Do not enable a real-money XSP workflow. The production profile's eight-second
+option-chain cache is a PAPER contract; live-money use requires a separately reviewed
+force-fresh policy.
 
 ## Acceptance gates
 
