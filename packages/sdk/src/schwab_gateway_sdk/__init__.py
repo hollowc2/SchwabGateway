@@ -1,6 +1,16 @@
 """Transport-neutral client contracts for the internal Schwab gateway."""
 
-from schwab_gateway_sdk.client import GatewayMarketDataClient
+from schwab_gateway_sdk.client import (
+    GatewayAuthenticationError,
+    GatewayAuthorizationError,
+    GatewayCapacityError,
+    GatewayClientError,
+    GatewayMarketDataClient,
+    GatewayQueueTimeoutError,
+    GatewayResponseError,
+    GatewayTimeoutError,
+    GatewayUnavailableError,
+)
 from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
     ChainMetadataV1,
@@ -25,9 +35,17 @@ __all__ = [
     "ChainMetadataResponseV1",
     "ChainMetadataV1",
     "GatewayErrorV1",
+    "GatewayAuthenticationError",
+    "GatewayAuthorizationError",
+    "GatewayCapacityError",
+    "GatewayClientError",
     "GatewayHealthV1",
     "GatewayMarketDataClient",
+    "GatewayQueueTimeoutError",
     "GatewayReadinessV1",
+    "GatewayResponseError",
+    "GatewayTimeoutError",
+    "GatewayUnavailableError",
     "OptionChainResponseV1",
     "OptionChainV1",
     "OptionContractV1",

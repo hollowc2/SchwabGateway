@@ -29,6 +29,9 @@ For offline research, the repo also ships a standalone equity order-book recorde
 that captures one `NASDAQ_BOOK` or `NYSE_BOOK` stream with a hashed evidence
 manifest. See `docs/order-book-research.md`.
 
+The standalone SDK supports both recent HTTP reads and a typed, fail-closed WebSocket
+consumer. See `docs/sdk-order-books.md` for the current API and example.
+
 ## Safety boundaries
 
 - **Read-only.** No account, position, transaction, or order-entry routes exist.

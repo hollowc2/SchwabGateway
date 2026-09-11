@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+import json
+import re
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import Literal
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from pydantic import ValidationError
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosedError, InvalidStatus, WebSocketException
 
 from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
@@ -14,10 +21,16 @@ from schwab_gateway_sdk.models import (
     MoversResponseV1,
     OptionChainResponseV1,
     OrderBookRecentResponseV1,
+    OrderBookSnapshotV1,
+    OrderBookStreamEnvelopeV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
 )
+
+OrderBookVenue = Literal["NASDAQ", "NYSE"]
+_ORDER_BOOK_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
+_MAX_ORDER_BOOK_SYMBOLS = 25
 
 
 class GatewayClientError(RuntimeError):
@@ -63,6 +76,38 @@ def _error_code(response: httpx.Response) -> str | None:
     return code if isinstance(code, str) else None
 
 
+def _normalize_order_book_venue(venue: str) -> OrderBookVenue:
+    normalized = venue.strip().upper()
+    if normalized not in {"NASDAQ", "NYSE"}:
+        raise ValueError("venue must be 'NASDAQ' or 'NYSE'")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_order_book_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
+    normalized = tuple(symbol.strip().upper() for symbol in symbols)
+    if not normalized or any(not symbol for symbol in normalized):
+        raise ValueError("at least one non-empty order-book symbol is required")
+    if len(normalized) > _MAX_ORDER_BOOK_SYMBOLS:
+        raise ValueError(
+            f"at most {_MAX_ORDER_BOOK_SYMBOLS} order-book symbols are allowed"
+        )
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("order-book symbols must be unique")
+    if any(not _ORDER_BOOK_SYMBOL_PATTERN.fullmatch(symbol) for symbol in normalized):
+        raise ValueError("one or more order-book symbols are invalid")
+    return normalized
+
+
+def _websocket_error_code(exc: InvalidStatus) -> str | None:
+    try:
+        payload = json.loads(exc.response.body)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+    except (TypeError, UnicodeDecodeError, ValueError):
+        return None
+    return code if isinstance(code, str) else None
+
+
 class GatewayMarketDataClient:
     """Typed client for gateway market-data endpoints only."""
 
@@ -76,12 +121,15 @@ class GatewayMarketDataClient:
     ) -> None:
         if not api_key:
             raise ValueError("gateway API key is required")
+        self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
+            base_url=self._base_url,
             timeout=httpx.Timeout(timeout_seconds),
         )
+        self._order_book_connections: set[ClientConnection] = set()
 
     async def get_quotes(self, symbols: Sequence[str]) -> QuoteResponseV1:
         requested = tuple(symbols)
@@ -252,7 +300,117 @@ class GatewayMarketDataClient:
             OrderBookRecentResponseV1,
         )
 
+    def _order_book_stream_url(
+        self, symbols: tuple[str, ...], venue: OrderBookVenue
+    ) -> str:
+        parsed = urlsplit(self._base_url)
+        websocket_scheme = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}.get(
+            parsed.scheme.lower()
+        )
+        if websocket_scheme is None or not parsed.netloc:
+            raise ValueError("gateway base URL must use http, https, ws, or wss")
+        query = urlencode({"symbols": ",".join(symbols), "venue": venue})
+        return urlunsplit(
+            (websocket_scheme, parsed.netloc, "/v1/order-book/stream", query, "")
+        )
+
+    @staticmethod
+    def _raise_websocket_status(exc: InvalidStatus) -> None:
+        status = exc.response.status_code
+        if status == 401:
+            raise GatewayAuthenticationError("gateway authentication failed") from exc
+        if status == 403:
+            raise GatewayAuthorizationError("gateway capability denied") from exc
+        if status == 429:
+            raise GatewayCapacityError(
+                "gateway request capacity is unavailable"
+            ) from exc
+        if status == 503 and _websocket_error_code(exc) == "gateway_queue_timeout":
+            raise GatewayQueueTimeoutError("gateway worker queue wait timed out") from exc
+        if status == 504:
+            raise GatewayTimeoutError("gateway order-book stream timed out") from exc
+        if status in {502, 503}:
+            raise GatewayUnavailableError(
+                "gateway order-book stream is unavailable"
+            ) from exc
+        raise GatewayResponseError(
+            f"gateway WebSocket upgrade failed with status {status}"
+        ) from exc
+
+    @asynccontextmanager
+    async def stream_order_books(
+        self,
+        symbols: Sequence[str],
+        *,
+        venue: str,
+    ) -> AsyncIterator[AsyncIterator[OrderBookSnapshotV1]]:
+        """Open one authenticated, non-reconnecting venue order-book stream.
+
+        The context manager owns exactly one WebSocket. Leaving the context closes it,
+        including after partial iteration or cancellation. Every message is validated
+        before its snapshot is yielded.
+        """
+        requested = _normalize_order_book_symbols(symbols)
+        normalized_venue = _normalize_order_book_venue(venue)
+        url = self._order_book_stream_url(requested, normalized_venue)
+        try:
+            connection = await connect(
+                url,
+                additional_headers={"X-Internal-API-Key": self._api_key},
+                open_timeout=self._timeout_seconds,
+                close_timeout=self._timeout_seconds,
+                ping_interval=30,
+            )
+        except InvalidStatus as exc:
+            self._raise_websocket_status(exc)
+        except TimeoutError as exc:
+            raise GatewayTimeoutError("gateway order-book stream timed out") from exc
+        except (OSError, WebSocketException) as exc:
+            raise GatewayUnavailableError("gateway order-book stream failed") from exc
+
+        self._order_book_connections.add(connection)
+
+        async def snapshots() -> AsyncIterator[OrderBookSnapshotV1]:
+            try:
+                async for payload in connection:
+                    if not isinstance(payload, str):
+                        raise GatewayResponseError(
+                            "gateway returned a non-text order-book stream payload"
+                        )
+                    try:
+                        envelope = OrderBookStreamEnvelopeV1.model_validate_json(payload)
+                    except (ValueError, ValidationError) as exc:
+                        raise GatewayResponseError(
+                            "gateway returned an invalid order-book stream contract"
+                        ) from exc
+                    snapshot = envelope.snapshot
+                    if snapshot.venue != normalized_venue:
+                        raise GatewayResponseError(
+                            "gateway streamed a mismatched order-book venue"
+                        )
+                    if snapshot.symbol not in requested:
+                        raise GatewayResponseError(
+                            "gateway streamed an unrequested order-book symbol"
+                        )
+                    yield snapshot
+            except ConnectionClosedError as exc:
+                raise GatewayUnavailableError(
+                    "gateway order-book stream closed unexpectedly"
+                ) from exc
+            except (OSError, WebSocketException) as exc:
+                raise GatewayUnavailableError("gateway order-book stream failed") from exc
+
+        try:
+            yield snapshots()
+        finally:
+            self._order_book_connections.discard(connection)
+            await connection.close()
+
     async def close(self) -> None:
+        connections = tuple(self._order_book_connections)
+        self._order_book_connections.clear()
+        for connection in connections:
+            await connection.close()
         if self._owns_client:
             await self._client.aclose()
 

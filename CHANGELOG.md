@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - 2026-09-11
+
+- Add a typed, fail-closed SDK WebSocket consumer for authenticated venue-specific
+  order-book snapshots, with normalized subscriptions, per-message contract validation,
+  existing SDK error classification, and deterministic connection cleanup.
+- Make `websockets` an explicit SDK runtime dependency and document both recent HTTP
+  reads and bounded, non-reconnecting live stream consumption.
+
 ## 0.4.9 - 2026-09-11
 
 - Pin the production PAPER option-chain cache TTL to the reviewed eight-second ceiling
