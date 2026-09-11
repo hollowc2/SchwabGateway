@@ -1,6 +1,6 @@
 [project]
 name = "schwab-gateway"
-version = "0.4.7"
+version = "0.4.8"
 description = "Internal read-only Schwab market-data gateway"
 requires-python = ">=3.12"
 dependencies = [
