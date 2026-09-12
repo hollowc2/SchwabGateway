@@ -67,6 +67,7 @@ uv sync
 uv run pytest
 uv run ruff check .
 uv run schwab-gateway-scheduler-proof
+uv run schwab-gateway-recommend-option-chain-ttl --help
 uv build
 uv build --package schwab-gateway-sdk
 uv build --package schwab-token-store
@@ -89,6 +90,9 @@ SCHWAB_GATEWAY_DEMO_KEYS_PATH=/tmp/schwab-gateway-demo-keys.json \
 
 Production deployment and rollback are covered by `docs/runbooks/helios.md` and
 `docs/runbooks/rollback.md`.
+
+The full-session acceptance workload, scheduler evidence, and post-session option-chain
+TTL analysis are gateway-owned procedures in `docs/runbooks/full-session-load-test.md`.
 
 The gateway distribution, `openapi.yaml`, and the SDK are released together and share
 a version whenever the HTTP or SDK surface changes. The wire `schema_version` moves

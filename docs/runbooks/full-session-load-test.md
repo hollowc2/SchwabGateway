@@ -231,6 +231,25 @@ The session passes only when all mandatory gates pass:
 Threshold changes require a written reason before the run. Never loosen a threshold
 after seeing a failure and call the same evidence a pass.
 
+## Post-session TTL analysis
+
+After preserving the session evidence, derive a recommendation from the gateway's own
+scheduler histograms:
+
+```bash
+uv run schwab-gateway-recommend-option-chain-ttl \
+  --gateway-url http://127.0.0.1:8011 \
+  --current-ttl-seconds 8 \
+  --headroom-seconds 1
+```
+
+The analyzer aggregates all label sets for `operation="option_chain"` and adds the
+queue-wait and execution percentile buckets as a conservative latency estimate. It
+refuses to recommend a value when either histogram has no samples or the requested
+percentile falls in the `+Inf` bucket. A recommendation is evidence for review only: it
+does not edit configuration, restart the gateway, or authorize a TTL change. The
+real-money prohibition remains in force regardless of the result.
+
 ## Evidence and integrity
 
 Keep the driver's raw request-event NDJSON immutable. It must contain only operation,
