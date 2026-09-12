@@ -29,6 +29,10 @@ For offline research, the repo also ships a standalone equity order-book recorde
 that captures one `NASDAQ_BOOK` or `NYSE_BOOK` stream with a hashed evidence
 manifest. See `docs/order-book-research.md`.
 
+The companion generic equity-data tools capture bounded `CHART_EQUITY` plus Level I
+streams and export one date's regular/extended one-minute candles through the gateway
+SDK. Both write non-overwriting hashed evidence. See `docs/equity-data-research.md`.
+
 The standalone SDK supports both recent HTTP reads and a typed, fail-closed WebSocket
 consumer. See `docs/sdk-order-books.md` for the current API and example.
 
