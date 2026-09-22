@@ -6,9 +6,8 @@
 
 An internal, read-only HTTP service for bounded Charles Schwab market-data reads.
 The repository also builds two standalone Python packages: `schwab_gateway_sdk`
-(client) and `schwab_token_store` (token storage).
-
-The v1 wire contract is defined in `openapi.yaml`.
+(client) and `schwab_token_store` (token storage). The v1 wire contract is
+defined in [`openapi.yaml`](openapi.yaml).
 
 ## Endpoints
 
@@ -25,16 +24,16 @@ The v1 wire contract is defined in `openapi.yaml`.
 | `GET /v1/order-book/recent` | Authenticated recent venue order-book snapshots |
 | `GET /v1/order-book/stream` | Authenticated read-only WebSocket order-book stream |
 
-For offline research, the repo also ships a standalone equity order-book recorder
-that captures one `NASDAQ_BOOK` or `NYSE_BOOK` stream with a hashed evidence
-manifest. See `docs/order-book-research.md`.
+Related tooling, documented separately:
 
-The companion generic equity-data tools capture bounded `CHART_EQUITY` plus Level I
-streams and export one date's regular/extended one-minute candles through the gateway
-SDK. Both write non-overwriting hashed evidence. See `docs/equity-data-research.md`.
-
-The standalone SDK supports both recent HTTP reads and a typed, fail-closed WebSocket
-consumer. See `docs/sdk-order-books.md` for the current API and example.
+- **Order-book research** — standalone recorder that captures one `NASDAQ_BOOK` or
+  `NYSE_BOOK` stream with a hashed evidence manifest.
+  See [`docs/order-book-research.md`](docs/order-book-research.md).
+- **Equity-data research** — captures bounded `CHART_EQUITY` plus Level I streams and
+  exports one date's regular/extended one-minute candles through the gateway SDK.
+  See [`docs/equity-data-research.md`](docs/equity-data-research.md).
+- **SDK order books** — typed, fail-closed WebSocket consumer alongside recent HTTP
+  reads. See [`docs/sdk-order-books.md`](docs/sdk-order-books.md).
 
 ## Safety boundaries
 
@@ -45,8 +44,8 @@ consumer. See `docs/sdk-order-books.md` for the current API and example.
   silently truncates a chain.
 - **Bounded and protected-first.** One strict-priority FIFO scheduler feeds the single
   Schwab worker. Protected and background capacity are independent; background work is
-  delayed or shed before it can consume ButterflyGuy capacity. `429` means class
-  capacity is full, `503 gateway_queue_timeout` means dispatch wait expired, and `504
+  delayed or shed before it can consume protected capacity. `429` means class capacity
+  is full, `503 gateway_queue_timeout` means dispatch wait expired, and `504
   upstream_timeout` means a dispatched operation exceeded its three-second budget.
   Optional order-book stream login is background work in this same scheduler; only its
   established socket runs independently after the token transaction has completed.
@@ -56,9 +55,9 @@ consumer. See `docs/sdk-order-books.md` for the current API and example.
   configurable interval per `(symbol, expiration)`: four seconds by default and eight
   seconds in the reviewed production PAPER profile. Any real-money workflow must use an
   explicitly reviewed force-fresh policy instead.
-- Before promoting multiple paper strategies, stage one consumer at a time and prove
-  a full session under real collector/position-monitor load; the contract tests do
-  not establish multi-consumer capacity.
+- Before promoting multiple paper strategies, stage one consumer at a time and prove a
+  full session under real collector/position-monitor load; the contract tests do not
+  establish multi-consumer capacity.
 
 ## Development
 
@@ -88,13 +87,15 @@ SCHWAB_GATEWAY_DEMO_KEYS_PATH=/tmp/schwab-gateway-demo-keys.json \
 
 ## Deployment & versioning
 
-Production deployment and rollback are covered by `docs/runbooks/helios.md` and
-`docs/runbooks/rollback.md`.
+Production deployment and rollback are covered by
+[`docs/runbooks/helios.md`](docs/runbooks/helios.md) and
+[`docs/runbooks/rollback.md`](docs/runbooks/rollback.md).
 
-The full-session acceptance workload, scheduler evidence, and post-session option-chain
-TTL analysis are gateway-owned procedures in `docs/runbooks/full-session-load-test.md`.
+The full-session acceptance workload, scheduler evidence, and post-session
+option-chain TTL analysis are gateway-owned procedures in
+[`docs/runbooks/full-session-load-test.md`](docs/runbooks/full-session-load-test.md).
 
 The gateway distribution, `openapi.yaml`, and the SDK are released together and share
 a version whenever the HTTP or SDK surface changes. The wire `schema_version` moves
-only on an incompatible JSON contract. `schwab_token_store` is versioned
-independently because it can be installed on its own.
+only on an incompatible JSON contract. `schwab_token_store` is versioned independently
+because it can be installed on its own.
