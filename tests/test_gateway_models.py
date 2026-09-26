@@ -439,6 +439,43 @@ def test_session_history_marks_exchange_holiday_and_returns_no_session_bars() ->
     assert "no_bars_returned" in result.data_quality_flags
 
 
+@pytest.mark.parametrize("date", [dt.date(2021, 12, 31), dt.date(2027, 12, 31)])
+def test_friday_before_saturday_new_year_is_a_regular_session(date: dt.date) -> None:
+    # NYSE does not observe a Saturday New Year's Day on the preceding Friday.
+    received_at = dt.datetime.combine(
+        date + dt.timedelta(days=3), dt.time(12), tzinfo=dt.timezone.utc
+    )
+    bar = _candle(dt.datetime.combine(date, dt.time(10), tzinfo=EASTERN), 1.0)
+
+    result = normalize_schwab_session_history(
+        "AAPL", date, "regular", [bar], received_at=received_at, stale_after_seconds=86400
+    )
+
+    assert [candle.close for candle in result.candles] == [1.0]
+    assert "market_holiday" not in result.data_quality_flags
+
+
+@pytest.mark.parametrize(
+    "date",
+    [
+        dt.date(2026, 1, 1),  # Thursday
+        dt.date(2023, 1, 2),  # Sunday New Year's Day observed on Monday
+    ],
+)
+def test_new_years_day_holiday_is_still_observed(date: dt.date) -> None:
+    received_at = dt.datetime.combine(
+        date + dt.timedelta(days=1), dt.time(12), tzinfo=dt.timezone.utc
+    )
+    bar = _candle(dt.datetime.combine(date, dt.time(10), tzinfo=EASTERN), 1.0)
+
+    result = normalize_schwab_session_history(
+        "AAPL", date, "regular", [bar], received_at=received_at, stale_after_seconds=86400
+    )
+
+    assert result.candles == ()
+    assert "market_holiday" in result.data_quality_flags
+
+
 def test_session_history_drops_malformed_candles_and_flags_them() -> None:
     received_at = dt.datetime(2026, 8, 13, 12, 0, tzinfo=dt.timezone.utc)
     good = _candle(dt.datetime(2026, 8, 12, 14, 0, tzinfo=dt.timezone.utc), 1.0)  # 10:00 ET

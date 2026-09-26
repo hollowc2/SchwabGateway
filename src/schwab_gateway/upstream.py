@@ -149,7 +149,6 @@ def _easter_sunday(year: int) -> dt.date:
 
 def _market_holidays(year: int) -> frozenset[dt.date]:
     holidays = {
-        _observed_holiday(dt.date(year, 1, 1)),
         _observed_holiday(dt.date(year, 7, 4)),
         _observed_holiday(dt.date(year, 12, 25)),
         _nth_weekday(year, 1, 0, 3),
@@ -159,11 +158,14 @@ def _market_holidays(year: int) -> frozenset[dt.date]:
         _nth_weekday(year, 11, 3, 4),
         _easter_sunday(year) - dt.timedelta(days=2),
     }
+    new_year = dt.date(year, 1, 1)
+    # NYSE does not observe New Year's Day on the preceding Friday when January 1 falls
+    # on a Saturday (e.g. 2021-12-31 and 2027-12-31 are regular sessions); a Sunday
+    # January 1 still moves to Monday January 2.
+    if new_year.weekday() != 5:
+        holidays.add(_observed_holiday(new_year))
     if year >= 2022:
         holidays.add(_observed_holiday(dt.date(year, 6, 19)))
-    observed_next_new_year = _observed_holiday(dt.date(year + 1, 1, 1))
-    if observed_next_new_year.year == year:
-        holidays.add(observed_next_new_year)
     return frozenset(holidays)
 
 
@@ -1183,27 +1185,55 @@ class DirectSchwabOptionChainUpstream:
         self._cache: OrderedDict[tuple[str, dt.date], _CachedOptionChain] = OrderedDict()
         self._inflight: dict[tuple[str, dt.date], asyncio.Task[OptionChainV1]] = {}
 
-    async def get_option_chain(
+    def cached_option_chain(
         self, symbol: str, expiration: dt.date
-    ) -> OptionChainV1:
+    ) -> OptionChainV1 | None:
+        """Return an unexpired cached chain with recomputed freshness, or ``None``.
+
+        Synchronous on purpose: the API calls this before scheduler admission so a hit
+        never queues behind the single Schwab execution slot.
+        """
         key = (symbol, expiration)
         now = self._monotonic_clock()
         self._prune_expired(now)
         cached = self._cache.get(key)
-        if cached is not None:
-            option_chain_cache_events.labels(outcome="hit").inc()
-            option_chain_cache_age_seconds.observe(max(0.0, now - cached.created_at))
-            self._cache.move_to_end(key)
-            return _reevaluate_option_chain_freshness(
-                cached.chain,
-                evaluated_at=self._utcnow(),
-                stale_after_seconds=self._stale_after_seconds,
-            )
+        if cached is None:
+            return None
+        option_chain_cache_events.labels(outcome="hit").inc()
+        option_chain_cache_age_seconds.observe(max(0.0, now - cached.created_at))
+        self._cache.move_to_end(key)
+        return _reevaluate_option_chain_freshness(
+            cached.chain,
+            evaluated_at=self._utcnow(),
+            stale_after_seconds=self._stale_after_seconds,
+        )
 
-        fetch = self._inflight.get(key)
-        if fetch is not None:
-            option_chain_cache_events.labels(outcome="coalesced").inc()
-            return await asyncio.shield(fetch)
+    def join_inflight_option_chain(
+        self, symbol: str, expiration: dt.date
+    ) -> asyncio.Future[OptionChainV1] | None:
+        """Return a shielded wait on an already-running fetch for this key, or ``None``.
+
+        Like ``cached_option_chain``, this is safe to use outside the scheduler: joining
+        never starts a Schwab call, and cancelling the returned wait leaves the fetch
+        running for its owner.
+        """
+        fetch = self._inflight.get((symbol, expiration))
+        if fetch is None:
+            return None
+        option_chain_cache_events.labels(outcome="coalesced").inc()
+        return asyncio.shield(fetch)
+
+    async def get_option_chain(
+        self, symbol: str, expiration: dt.date
+    ) -> OptionChainV1:
+        key = (symbol, expiration)
+        cached = self.cached_option_chain(symbol, expiration)
+        if cached is not None:
+            return cached
+
+        joined = self.join_inflight_option_chain(symbol, expiration)
+        if joined is not None:
+            return await joined
 
         if len(self._inflight) >= self._max_inflight:
             option_chain_cache_events.labels(outcome="inflight_rejected").inc()

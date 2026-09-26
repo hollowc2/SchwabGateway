@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Serve `/v1/option-chain` cache hits, and duplicate requests for a chain whose fetch
+  is already running, before scheduler admission. Neither issues a Schwab call, so they
+  no longer queue behind the single execution slot (the source of the ~1.5s cache hits
+  in the 2026-09 latency investigation). Readiness still gates this path; a joined fetch
+  is bounded by one upstream budget and maps to the existing 502/503/504 errors.
+  Scheduler option-chain metrics now describe cache misses only; hits and joins remain
+  visible in `gateway_option_chain_cache_events_total`.
+- Serialize responses after the scheduler releases the execution slot, using Pydantic's
+  native JSON encoder (about 2.5x faster than `model_dump` + `json.dumps` on large
+  chains). Response bodies carry the same JSON values, now compactly encoded.
+- Stop treating December 31 as a market holiday when January 1 falls on a Saturday
+  (next affected date: 2027-12-31), which NYSE does not observe.
+
 ## 0.5.0 - 2026-09-11
 
 - Add a typed, fail-closed SDK WebSocket consumer for authenticated venue-specific

@@ -12,6 +12,7 @@ from typing import Literal, Protocol, cast
 
 from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from pydantic import BaseModel
 from schwab_gateway_sdk.models import (
     ChainMetadataResponseV1,
     GatewayHealthV1,
@@ -237,7 +238,11 @@ READINESS_UNAVAILABLE_REASON = "token_readiness_unavailable"
 
 
 def _json(model, *, status: int = 200) -> web.Response:
-    return web.json_response(model.model_dump(mode="json"), status=status)
+    # Pydantic's native encoder is ~2.5x faster than model_dump + json.dumps on a large
+    # option chain, and emits the same JSON document.
+    return web.Response(
+        text=model.model_dump_json(), status=status, content_type="application/json"
+    )
 
 
 def _error(code: str, message: str, status: int) -> web.Response:
@@ -480,13 +485,13 @@ async def quotes(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
         by_symbol = {quote.symbol: quote for quote in result}
         if set(by_symbol) != set(symbols):
             raise UpstreamMalformedError("upstream returned a partial symbol set")
         ordered = tuple(by_symbol[symbol] for symbol in symbols)
-        return _json(QuoteResponseV1(quotes=ordered))
+        return QuoteResponseV1(quotes=ordered)
 
     return await _serve_upstream(
         request,
@@ -512,6 +517,10 @@ async def _serve_upstream(
     Callers must have already checked capability and validated their parameters, so this
     preserves the quote handler's fixed order: capability, validation, readiness,
     admission, upstream.
+
+    ``build_response`` returns the response model; it is serialized only after the
+    scheduler releases the single Schwab execution slot, so encoding a large payload
+    neither holds that slot nor counts against the upstream execution budget.
     """
     state, _reason = _token_readiness(request.app)
     if state is not TokenManagerState.READY:
@@ -534,7 +543,7 @@ async def _serve_upstream(
             execution_timeout_seconds=request.app[UPSTREAM_TIMEOUT_KEY],
         )
         admitted = True
-        return result
+        return _json(result)
     except SchedulerCapacityError:
         gateway_admission.labels(
             priority_class=priority.value,
@@ -578,11 +587,11 @@ async def spot(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[SPOT_UPSTREAM_KEY].get_spot(symbol)
         if result.symbol != symbol:
             raise UpstreamMalformedError("upstream returned a different symbol")
-        return _json(SpotResponseV1(spot=result))
+        return SpotResponseV1(spot=result)
 
     return await _serve_upstream(request, "spot", build_response)
 
@@ -597,11 +606,11 @@ async def chain_metadata(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[CHAIN_UPSTREAM_KEY].get_chain_metadata(symbol, expiration)
         if result.symbol != symbol or result.expiration != expiration:
             raise UpstreamMalformedError("upstream returned a different chain")
-        return _json(ChainMetadataResponseV1(chain=result))
+        return ChainMetadataResponseV1(chain=result)
 
     return await _serve_upstream(request, "chain_metadata", build_response)
 
@@ -616,15 +625,66 @@ async def option_chain(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
-        result = await request.app[OPTION_CHAIN_UPSTREAM_KEY].get_option_chain(
-            symbol, expiration
-        )
-        if result.symbol != symbol or result.expiration != expiration:
-            raise UpstreamMalformedError("upstream returned a different option chain")
-        return _json(OptionChainResponseV1(option_chain=result))
+    upstream = request.app[OPTION_CHAIN_UPSTREAM_KEY]
+    served = await _serve_option_chain_without_worker(request, upstream, symbol, expiration)
+    if served is not None:
+        return served
+
+    async def build_response() -> BaseModel:
+        result = await upstream.get_option_chain(symbol, expiration)
+        return _option_chain_response(result, symbol, expiration)
 
     return await _serve_upstream(request, "option_chain", build_response)
+
+
+def _option_chain_response(
+    result, symbol: str, expiration: dt.date
+) -> OptionChainResponseV1:
+    if result.symbol != symbol or result.expiration != expiration:
+        raise UpstreamMalformedError("upstream returned a different option chain")
+    return OptionChainResponseV1(option_chain=result)
+
+
+async def _serve_option_chain_without_worker(
+    request: web.Request,
+    upstream: OptionChainUpstream,
+    symbol: str,
+    expiration: dt.date,
+) -> web.Response | None:
+    """Answer a cache hit or an in-flight duplicate without a scheduler slot.
+
+    Neither issues a Schwab call, so queueing them behind the single execution slot only
+    added latency: the 2026-09 investigation measured ~1.5s cache hits caused purely by
+    queue wait. Readiness still gates this path so a not-ready gateway fails closed even
+    with a warm cache. Returns ``None`` when the read needs a real upstream fetch.
+    """
+    read_cached = getattr(upstream, "cached_option_chain", None)
+    join_inflight = getattr(upstream, "join_inflight_option_chain", None)
+    if not callable(read_cached) or not callable(join_inflight):
+        return None
+    state, _reason = _token_readiness(request.app)
+    if state is not TokenManagerState.READY:
+        return _error("gateway_not_ready", "gateway is not ready", 503)
+    try:
+        result = read_cached(symbol, expiration)
+        if result is None:
+            pending = join_inflight(symbol, expiration)
+            if pending is None:
+                return None
+            # The joined fetch was already dispatched under its owner's budget; bound
+            # this wait by one full upstream budget rather than queueing for a slot.
+            async with asyncio.timeout(request.app[UPSTREAM_TIMEOUT_KEY]):
+                result = await pending
+        response = _option_chain_response(result, symbol, expiration)
+    except TimeoutError:
+        return _error("upstream_timeout", "market data upstream timed out", 504)
+    except UpstreamUnavailableError:
+        return _error("upstream_unavailable", "market data upstream is unavailable", 503)
+    except (UpstreamMalformedError, ValueError):
+        return _error(
+            "upstream_malformed", "market data upstream returned invalid data", 502
+        )
+    return _json(response)
 
 
 async def history(request: web.Request) -> web.Response:
@@ -638,13 +698,13 @@ async def history(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[HISTORY_UPSTREAM_KEY].get_history(
             symbol, frequency, days_back
         )
         if result.symbol != symbol or result.frequency != frequency:
             raise UpstreamMalformedError("upstream returned a different history series")
-        return _json(HistoryResponseV1(history=result))
+        return HistoryResponseV1(history=result)
 
     return await _serve_upstream(request, "history", build_response)
 
@@ -659,11 +719,11 @@ async def movers(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[MOVERS_UPSTREAM_KEY].get_movers(index, direction)
         if result.index != index or result.direction != direction:
             raise UpstreamMalformedError("upstream returned different movers")
-        return _json(MoversResponseV1(movers=result))
+        return MoversResponseV1(movers=result)
 
     return await _serve_upstream(request, "movers", build_response)
 
@@ -679,13 +739,13 @@ async def session_history(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
-    async def build_response() -> web.Response:
+    async def build_response() -> BaseModel:
         result = await request.app[SESSION_HISTORY_UPSTREAM_KEY].get_session_history(
             symbol, date, session
         )
         if result.symbol != symbol or result.date != date or result.session != session:
             raise UpstreamMalformedError("upstream returned a different session history")
-        return _json(SessionHistoryResponseV1(session_history=result))
+        return SessionHistoryResponseV1(session_history=result)
 
     return await _serve_upstream(request, "session_history", build_response)
 
@@ -763,7 +823,7 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
                 for symbol in symbols:
                     for snapshot in store.recent(symbol, venue, limit=1):
                         envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot)
-                        await socket.send_json(envelope.model_dump(mode="json"))
+                        await socket.send_str(envelope.model_dump_json())
                 while not socket.closed:
                     snapshot_task = asyncio.create_task(subscription.queue.get())
                     receive_task = asyncio.create_task(socket.receive())
@@ -787,7 +847,7 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
                         envelope = OrderBookStreamEnvelopeV1(
                             snapshot=snapshot_task.result()
                         )
-                        await socket.send_json(envelope.model_dump(mode="json"))
+                        await socket.send_str(envelope.model_dump_json())
             finally:
                 store.unsubscribe(subscription)
                 await socket.close()
