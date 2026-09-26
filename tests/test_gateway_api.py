@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
 
 import httpx
 import pytest
@@ -17,7 +18,13 @@ from schwab_token_store import (
     TokenManagerState,
 )
 
-from schwab_gateway.api import create_app, gateway_requests
+from schwab_gateway import api
+from schwab_gateway.api import (
+    create_app,
+    gateway_event_loop_lag_distribution,
+    gateway_quote_partial_responses,
+    gateway_requests,
+)
 from schwab_gateway.auth import (
     InternalKeyAuthenticator,
     InternalPrincipal,
@@ -346,3 +353,90 @@ async def test_gateway_surfaces_upstream_timeout() -> None:
         await client.close()
     finally:
         await server.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_quote_set_fails_closed_and_names_missing_symbols(capfd) -> None:
+    class OmittingUpstream(FakeQuoteUpstream):
+        async def get_quotes(self, symbols):
+            quotes = await super().get_quotes(symbols)
+            return tuple(quote for quote in quotes if quote.symbol != "ZZZQ")
+
+    server = TestServer(
+        create_app(
+            OmittingUpstream(),
+            authenticator(),
+            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+        )
+    )
+    await server.start_server()
+    before = gateway_quote_partial_responses._value.get()
+    try:
+        async with httpx.AsyncClient() as http:
+            response = await http.get(
+                str(server.make_url("/v1/quotes?symbols=AAPL,ZZZQ,MSFT")),
+                headers={"X-Internal-API-Key": "valid-key"},
+            )
+    finally:
+        await server.close()
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "upstream_malformed"
+    assert gateway_quote_partial_responses._value.get() == before + 1
+    partial_logs = [
+        line
+        for line in capfd.readouterr().out.splitlines()
+        if "gateway_quote_partial_symbol_set" in line
+    ]
+    assert len(partial_logs) == 1
+    assert "missing_count=1" in partial_logs[0]
+    assert "missing_symbols=['ZZZQ']" in partial_logs[0]
+    assert "requested_count=3" in partial_logs[0]
+
+
+def test_partial_quote_log_bounds_the_symbol_list(capfd) -> None:
+    requested = tuple(f"S{index}" for index in range(25))
+
+    api._log_partial_quote_response(requested, {})
+
+    line = next(
+        line
+        for line in capfd.readouterr().out.splitlines()
+        if "gateway_quote_partial_symbol_set" in line
+    )
+    assert "missing_count=25" in line
+    assert "'S9'" in line
+    assert "'S10'" not in line
+
+
+def _lag_samples() -> dict[str, float]:
+    return {
+        sample.name + str(sample.labels.get("le", "")): sample.value
+        for family in gateway_event_loop_lag_distribution.collect()
+        for sample in family.samples
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_loop_lag_sampler_records_every_sample_in_a_histogram(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(api, "EVENT_LOOP_LAG_INTERVAL_SECONDS", 0.01)
+    name = "gateway_event_loop_lag_distribution_seconds"
+    before = _lag_samples()
+    task = asyncio.create_task(api._observe_event_loop_lag())
+    try:
+        await asyncio.sleep(0.03)
+        time.sleep(0.06)  # deliberately block the loop past the 50 ms bucket
+        await asyncio.sleep(0.03)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    after = _lag_samples()
+
+    assert after[f"{name}_count"] - before[f"{name}_count"] >= 3
+    # At least one sample landed above 50 ms, i.e. outside the 0.05 cumulative bucket.
+    new_total = after[f"{name}_count"] - before[f"{name}_count"]
+    new_fast = after[f"{name}_bucket0.05"] - before[f"{name}_bucket0.05"]
+    assert new_total - new_fast >= 1

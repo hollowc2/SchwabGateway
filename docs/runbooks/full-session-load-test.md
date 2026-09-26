@@ -214,7 +214,9 @@ The session passes only when all mandatory gates pass:
   injected background shedding is reported separately and must prove bounded recovery;
 - option-chain p95 latency is below 1.5 seconds and p99 below 2.0 seconds;
 - all other read p95 latencies are below 1.0 second;
-- event-loop lag p99 is below 100 milliseconds;
+- event-loop lag p99 is below 100 milliseconds, measured from
+  `histogram_quantile(0.99, rate(gateway_event_loop_lag_distribution_seconds_bucket[<session>]))`
+  (the `gateway_event_loop_lag_seconds` gauge holds only the latest sample);
 - token-lock wait p99 is below 500 milliseconds and hold p99 below the configured
   upstream timeout;
 - option-chain in-flight work never exceeds its configured bound;
