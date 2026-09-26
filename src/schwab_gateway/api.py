@@ -121,7 +121,20 @@ gateway_event_loop_lag = Gauge(
     "gateway_event_loop_lag_seconds",
     "Delay beyond the expected event-loop observation interval",
 )
+# The gauge only holds the latest sample, so a scrape can miss a spike and no percentile
+# can be computed from it. The histogram records every sample, which is what the
+# full-session gate "event-loop lag p99 below 100 ms" needs; 0.1 is a bucket boundary.
+gateway_event_loop_lag_distribution = Histogram(
+    "gateway_event_loop_lag_distribution_seconds",
+    "Every event-loop lag sample, for percentile and spike-count queries",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
 EVENT_LOOP_LAG_INTERVAL_SECONDS = 1.0
+MAX_LOGGED_MISSING_QUOTE_SYMBOLS = 10
+gateway_quote_partial_responses = Counter(
+    "gateway_quote_partial_responses_total",
+    "Quote reads failed because Schwab omitted one or more requested symbols",
+)
 
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
@@ -451,7 +464,9 @@ async def _observe_event_loop_lag() -> None:
     while True:
         await asyncio.sleep(EVENT_LOOP_LAG_INTERVAL_SECONDS)
         now = loop.time()
-        gateway_event_loop_lag.set(max(0.0, now - expected))
+        lag = max(0.0, now - expected)
+        gateway_event_loop_lag.set(lag)
+        gateway_event_loop_lag_distribution.observe(lag)
         expected = now + EVENT_LOOP_LAG_INTERVAL_SECONDS
 
 
@@ -489,6 +504,7 @@ async def quotes(request: web.Request) -> web.Response:
         result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
         by_symbol = {quote.symbol: quote for quote in result}
         if set(by_symbol) != set(symbols):
+            _log_partial_quote_response(symbols, by_symbol)
             raise UpstreamMalformedError("upstream returned a partial symbol set")
         ordered = tuple(by_symbol[symbol] for symbol in symbols)
         return QuoteResponseV1(quotes=ordered)
@@ -500,6 +516,26 @@ async def quotes(request: web.Request) -> web.Response:
         timeout_message="quote upstream timed out",
         unavailable_message="quote upstream is unavailable",
         malformed_message="quote upstream returned invalid data",
+    )
+
+
+def _log_partial_quote_response(
+    requested: tuple[str, ...], returned: dict[str, object]
+) -> None:
+    """Name the symbols behind a partial-set 502 so a bad ticker can be found.
+
+    Symbols are public tickers the caller already validated; the list is bounded so a
+    large scanner batch cannot produce an unbounded log line.
+    """
+    missing = [symbol for symbol in requested if symbol not in returned]
+    unexpected = sorted(set(returned) - set(requested))
+    gateway_quote_partial_responses.inc()
+    log.warning(
+        "gateway_quote_partial_symbol_set",
+        requested_count=len(requested),
+        missing_count=len(missing),
+        missing_symbols=missing[:MAX_LOGGED_MISSING_QUOTE_SYMBOLS],
+        unexpected_count=len(unexpected),
     )
 
 

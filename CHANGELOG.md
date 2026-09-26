@@ -12,6 +12,12 @@
 - Serialize responses after the scheduler releases the execution slot, using Pydantic's
   native JSON encoder (about 2.5x faster than `model_dump` + `json.dumps` on large
   chains). Response bodies carry the same JSON values, now compactly encoded.
+- Record every event-loop lag sample in `gateway_event_loop_lag_distribution_seconds`
+  so the full-session "lag p99 below 100 ms" gate is measurable; the existing gauge
+  keeps only the latest sample.
+- When Schwab omits requested quote symbols, log `gateway_quote_partial_symbol_set`
+  with the missing count and up to ten missing tickers, and count it in
+  `gateway_quote_partial_responses_total`. The request still fails closed with `502`.
 - Stop treating December 31 as a market holiday when January 1 falls on a Saturday
   (next affected date: 2027-12-31), which NYSE does not observe.
 
