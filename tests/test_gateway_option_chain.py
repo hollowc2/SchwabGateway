@@ -1211,3 +1211,165 @@ async def test_full_chain_timeout_fails_closed_with_504() -> None:
         "code": "upstream_timeout",
         "message": "market data upstream timed out",
     }
+
+
+class _BlockingSpotUpstream:
+    """Hold the single scheduler slot until released."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_spot(self, symbol: str):
+        self.entered.set()
+        await self.release.wait()
+        raise UpstreamUnavailableError("test spot upstream")
+
+
+class _SwitchableReadiness(_Readiness):
+    def __init__(self) -> None:
+        self.state = TokenManagerState.READY
+
+    def health(self) -> TokenManagerHealth:
+        return TokenManagerHealth(state=self.state, reason="test", updated_at=RECEIVED_AT)
+
+
+def _one_slot_app(upstream, readiness=None, spot=None, **kwargs):
+    # Capacity 1 means any request that reaches the scheduler while the slot is
+    # occupied is rejected with 429: a 200 proves the scheduler was bypassed.
+    return create_app(
+        _Quotes(),
+        _authenticator(),
+        token_readiness_provider=readiness or _Readiness(),
+        option_chain_upstream=upstream,
+        spot_upstream=spot,
+        admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
+        **kwargs,
+    )
+
+
+CHAIN_PARAMS = {"symbol": "SPX", "expiration": EXPIRATION.isoformat()}
+HEADERS = {"X-Internal-API-Key": "valid-key"}
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_is_served_without_waiting_for_the_busy_scheduler_slot() -> None:
+    clock = _Clock()
+    provider = _Provider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider, monotonic_clock=clock.monotonic, utcnow=clock.utcnow
+    )
+    spot = _BlockingSpotUpstream()
+    server = TestServer(_one_slot_app(upstream, spot=spot))
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            warm = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
+            clock.advance(1)
+            busy = asyncio.create_task(
+                client.get("/v1/spot", params={"symbol": "SPX"}, headers=HEADERS)
+            )
+            await spot.entered.wait()
+            hit = await asyncio.wait_for(
+                client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS),
+                timeout=1,
+            )
+            spot.release.set()
+            await busy
+    finally:
+        spot.release.set()
+        await server.close()
+
+    assert warm.status_code == 200
+    assert hit.status_code == 200
+    assert hit.headers["Content-Type"] == "application/json; charset=utf-8"
+    assert provider.calls == [("SPX", EXPIRATION)]
+    assert hit.json()["option_chain"]["age_seconds"] == warm.json()["option_chain"][
+        "age_seconds"
+    ] + 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_request_joins_inflight_fetch_without_a_scheduler_slot() -> None:
+    clock = _Clock()
+    provider = _BlockingProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider, monotonic_clock=clock.monotonic, utcnow=clock.utcnow
+    )
+    server = TestServer(_one_slot_app(upstream))
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            owner = asyncio.create_task(
+                client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
+            )
+            await provider.entered.wait()
+            joiner = asyncio.create_task(
+                client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
+            )
+            for _ in range(50):
+                if joiner.done():
+                    break
+                await asyncio.sleep(0.01)
+            assert not joiner.done(), "joiner must wait for the fetch, not get a 429"
+            provider.release.set()
+            responses = await asyncio.gather(owner, joiner)
+    finally:
+        provider.release.set()
+        await server.close()
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    assert provider.calls == [("SPX", EXPIRATION)]
+
+
+@pytest.mark.asyncio
+async def test_joined_inflight_fetch_is_bounded_by_the_upstream_budget() -> None:
+    provider = _BlockingProvider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(provider)
+    server = TestServer(_one_slot_app(upstream, upstream_timeout_seconds=0.05))
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            owner = asyncio.create_task(
+                client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
+            )
+            await provider.entered.wait()
+            joined = await client.get(
+                "/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS
+            )
+            provider.release.set()
+            await owner
+    finally:
+        provider.release.set()
+        await server.close()
+
+    assert joined.status_code == 504
+    assert joined.json()["error"]["code"] == "upstream_timeout"
+    assert provider.calls == [("SPX", EXPIRATION)]
+
+
+@pytest.mark.asyncio
+async def test_warm_cache_still_fails_closed_when_gateway_is_not_ready() -> None:
+    clock = _Clock()
+    provider = _Provider(_payload())
+    upstream = DirectSchwabOptionChainUpstream(
+        provider, monotonic_clock=clock.monotonic, utcnow=clock.utcnow
+    )
+    readiness = _SwitchableReadiness()
+    server = TestServer(_one_slot_app(upstream, readiness=readiness))
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
+            warm = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
+            readiness.state = TokenManagerState.REFRESH_FAILED
+            refused = await client.get(
+                "/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS
+            )
+    finally:
+        await server.close()
+
+    assert warm.status_code == 200
+    assert refused.status_code == 503
+    assert refused.json()["error"]["code"] == "gateway_not_ready"
+    assert provider.calls == [("SPX", EXPIRATION)]
