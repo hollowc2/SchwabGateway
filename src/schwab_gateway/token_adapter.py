@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 
@@ -58,6 +59,13 @@ class LockedSchwabClientAdapter:
     is a bigger change than this per-call TCP+TLS cost (tens-to-~100ms) justifies on
     its own; it is not the dominant contributor to option-chain latency (see the
     2026-09 latency investigation) and is accepted as-is for now.
+
+    ``http_timeout_seconds`` replaces schwab-py's 30-second default on every client
+    built here. The scheduler never cancels a call that overruns its budget. It waits
+    for the call to finish before it frees the single execution slot. So this timeout,
+    not the scheduler budget, bounds how long one stalled Schwab response can block
+    every other read. On 2026-09-29, a stalled spot read held the slot for 28.9 seconds
+    and 13 queued protected reads returned 503.
     """
 
     def __init__(
@@ -67,11 +75,17 @@ class LockedSchwabClientAdapter:
         *,
         api_key: str,
         app_secret: str,
+        http_timeout_seconds: float | None = None,
     ) -> None:
+        if http_timeout_seconds is not None and not (
+            math.isfinite(http_timeout_seconds) and http_timeout_seconds > 0
+        ):
+            raise ValueError("Schwab HTTP timeout must be finite and positive")
         self._token_manager = token_manager
         self._client_factory = client_factory
         self._api_key = api_key
         self._app_secret = app_secret
+        self._http_timeout_seconds = http_timeout_seconds
 
     def execute(
         self,
@@ -92,12 +106,15 @@ class LockedSchwabClientAdapter:
                     asyncio=False,
                     enforce_enums=True,
                 )
+                if self._http_timeout_seconds is not None:
+                    client.set_timeout(self._http_timeout_seconds)
             except TokenManagerError:
                 raise
-            except Exception:
+            except Exception as exc:
                 log.warning(
                     "schwab_token_adapter_failed",
                     reason="client_construction_failed",
+                    error_type=type(exc).__name__,
                 )
                 raise SchwabClientConstructionError(
                     "Schwab client construction failed"
@@ -107,10 +124,14 @@ class LockedSchwabClientAdapter:
                 return operation(client)
             except TokenManagerError:
                 raise
-            except Exception:
+            except Exception as exc:
+                # The class name (for example ``ReadTimeout`` or ``HTTPStatusError``) tells
+                # a stall apart from a Schwab error. The message can carry a URL, so it is
+                # not logged.
                 log.warning(
                     "schwab_token_adapter_failed",
                     reason="client_operation_failed",
+                    error_type=type(exc).__name__,
                 )
                 raise SchwabClientOperationError(
                     "Schwab client operation failed"
