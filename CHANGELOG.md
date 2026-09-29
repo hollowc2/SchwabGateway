@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-09-29
 
 - Set the Schwab HTTP timeout to the upstream execution budget
   (`SCHWAB_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`, 3s by default) instead of schwab-py's
