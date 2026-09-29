@@ -51,6 +51,15 @@ paths:
           name: symbols
           required: true
           schema: {type: string, minLength: 1}
+        - in: query
+          name: allow_partial
+          required: false
+          description: >-
+            When true, return the quotes Schwab provided and list omitted symbols in
+            `missing_symbols` (PartialQuoteResponseV1) instead of failing the whole
+            request with 502. The request still fails with 502 when Schwab returns none
+            of the symbols. Omitted or false keeps the fail-closed QuoteResponseV1 shape.
+          schema: {type: string, enum: ["true", "false"], default: "false"}
       responses:
         "200": {$ref: "#/components/responses/QuoteResponse"}
         "400": {$ref: "#/components/responses/Error"}
@@ -257,10 +266,15 @@ components:
       name: X-Internal-API-Key
   responses:
     QuoteResponse:
-      description: Normalized quotes.
+      description: >-
+        Normalized quotes. PartialQuoteResponseV1 only when the caller sent
+        `allow_partial=true`; otherwise QuoteResponseV1.
       content:
         application/json:
-          schema: {$ref: "#/components/schemas/QuoteResponseV1"}
+          schema:
+            oneOf:
+              - {$ref: "#/components/schemas/QuoteResponseV1"}
+              - {$ref: "#/components/schemas/PartialQuoteResponseV1"}
     SpotResponse:
       description: Normalized spot value.
       content:
@@ -367,6 +381,17 @@ components:
       properties:
         schema_version: {$ref: "#/components/schemas/SchemaVersion"}
         quotes: {type: array, items: {$ref: "#/components/schemas/QuoteV1"}}
+    PartialQuoteResponseV1:
+      type: object
+      additionalProperties: false
+      required: [schema_version, quotes, missing_symbols]
+      properties:
+        schema_version: {$ref: "#/components/schemas/SchemaVersion"}
+        quotes: {type: array, items: {$ref: "#/components/schemas/QuoteV1"}}
+        missing_symbols:
+          type: array
+          uniqueItems: true
+          items: {$ref: "#/components/schemas/Symbol"}
     SpotV1:
       type: object
       additionalProperties: false

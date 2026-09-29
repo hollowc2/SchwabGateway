@@ -20,6 +20,14 @@
   `gateway_quote_partial_responses_total`. The request still fails closed with `502`.
 - Stop treating December 31 as a market holiday when January 1 falls on a Saturday
   (next affected date: 2027-12-31), which NYSE does not observe.
+- Add `allow_partial=true` to `/v1/quotes` and `GatewayMarketDataClient.get_available_quotes()`.
+  Opted-in callers get the quotes Schwab returned plus `missing_symbols`
+  (`PartialQuoteResponseV1`), instead of a `502` for the whole batch when Schwab
+  omits a ticker. On 2026-09-28, FGNX and FGNXP cost the weekly universe refresh 27
+  failed calls. A request where Schwab returns none of the symbols still fails with
+  `502`. Default requests keep the fail-closed `QuoteResponseV1` shape, which SDK pins
+  that reject unknown fields depend on. `gateway_quote_partial_responses_total` gains
+  an `outcome` label (`failed` or `served_partial`).
 
 ## 0.5.0 - 2026-09-11
 
