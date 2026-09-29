@@ -106,6 +106,10 @@ option_chain_negative_time_value_normalizations = Counter(
     "gateway_option_chain_negative_time_value_normalizations_total",
     "Schwab option contracts whose negative timeValue was normalized to null",
 )
+option_chain_negative_theoretical_value_normalizations = Counter(
+    "gateway_option_chain_negative_theoretical_value_normalizations_total",
+    "Schwab option contracts whose negative theoreticalOptionValue was normalized to null",
+)
 option_chain_negative_intrinsic_value_normalizations = Counter(
     "gateway_option_chain_negative_intrinsic_value_normalizations_total",
     "Schwab option contracts whose finite negative intrinsicValue was normalized to zero",
@@ -360,6 +364,21 @@ def _optional_time_value(payload: dict[str, Any]) -> float | None:
     value = _optional_analytic_number(payload, "timeValue")
     if value is not None and value < 0:
         option_chain_negative_time_value_normalizations.inc()
+        return None
+    return value
+
+
+def _optional_theoretical_value(payload: dict[str, Any]) -> float | None:
+    """Normalize Schwab's nonphysical negative theoretical option value.
+
+    Schwab emitted negative ``theoreticalOptionValue`` values on 0DTE SPX/NDX/XSP
+    chains at the 2026-09-29 open, which ButterflyGuy rejected. A model price below
+    zero is invalid and the field is nullable in the v1 contract, so it is represented
+    as unavailable rather than passed through for consumers to reject.
+    """
+    value = _optional_analytic_number(payload, "theoreticalOptionValue")
+    if value is not None and value < 0:
+        option_chain_negative_theoretical_value_normalizations.inc()
         return None
     return value
 
@@ -632,9 +651,7 @@ def normalize_schwab_option_chain(
                             in_the_money=option.get("inTheMoney"),
                             days_to_expiration=_integer(option, "daysToExpiration"),
                             multiplier=_number(option, "multiplier"),
-                            theoretical_option_value=_optional_analytic_number(
-                                option, "theoreticalOptionValue"
-                            ),
+                            theoretical_option_value=_optional_theoretical_value(option),
                             event_timestamp=event_timestamp,
                             stale=contract_stale,
                             age_seconds=age_seconds,
