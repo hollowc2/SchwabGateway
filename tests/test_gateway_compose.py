@@ -76,6 +76,14 @@ def test_live_container_is_unprivileged_read_only_and_internal() -> None:
     assert live["environment"]["SCHWAB_GATEWAY_ORDER_WRITES_ENABLED"] == "false"
 
 
+def test_live_logs_are_bounded_but_kept_longer_than_the_daemon_default() -> None:
+    expected = {"driver": "json-file", "options": {"max-size": "20m", "max-file": "10"}}
+    assert compose()["services"]["live"]["logging"] == expected
+
+    rendered = rendered_compose("compose.production.yml", production_image=IMAGE_ID)
+    assert rendered["services"]["live"]["logging"] == expected
+
+
 def test_healthchecks_avoid_the_slow_urllib_import() -> None:
     services = compose()["services"]
 

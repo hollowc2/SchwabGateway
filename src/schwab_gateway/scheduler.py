@@ -113,6 +113,7 @@ class _Job:
     state: Literal["queued", "running", "finished"] = "queued"
     caller_cancelled: bool = False
     queue_timed_out: bool = False
+    queue_wait_seconds: float = 0.0
 
 
 def _consume_future_exception(future: asyncio.Future[Any]) -> None:
@@ -395,8 +396,11 @@ class ExecutionScheduler:
             priority_class=job.priority.value,
             operation=job.operation_name,
         ).inc()
+        job.queue_wait_seconds = wait_seconds
         job.started.set_result(None)
-        log.info(
+        # Debug only: `gateway_scheduler_execution_finished` repeats the queue wait once
+        # the job completes, so each upstream call logs one scheduler line, not two.
+        log.debug(
             "gateway_scheduler_dispatched",
             priority_class=job.priority.value,
             operation=job.operation_name,
@@ -502,6 +506,7 @@ class ExecutionScheduler:
                 priority_class=job.priority.value,
                 operation=job.operation_name,
                 outcome=outcome,
+                queue_wait_ms=round(job.queue_wait_seconds * 1000, 2),
                 execution_ms=round(elapsed * 1000, 2),
             )
             async with self._lock:

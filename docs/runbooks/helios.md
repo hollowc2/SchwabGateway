@@ -34,6 +34,18 @@ delete or overwrite the server files. First compare them with the committed rele
 then obtain approval for the exact fetch/checkout/staging action and rerun preflight.
 Staging code must not recreate or restart the gateway.
 
+### Logs
+
+`docker logs schwab_gateway_live` is the only log store. `compose.yml` overrides the
+Helios daemon default (3 x 10 MB, about 1.5 days before 2026-09) with 10 x 20 MB. The
+new limits take effect only when the container is recreated. At INFO each request logs
+one `gateway_request` line with its caller, status, latency, and query. Each upstream
+call adds one `gateway_scheduler_execution_finished` line with its queue wait and
+execution time. Successful `/health`, `/ready`, and `/metrics` calls are not logged, and
+the aiohttp access log is disabled. To bring back the per-dispatch lines and the per-call
+`token_loaded` transitions, set `SCHWAB_GATEWAY_LOG_LEVEL=DEBUG`. For anything older than
+the retained window, use Prometheus.
+
 ## Immutable release contract
 
 Production always uses both Compose files in this order:

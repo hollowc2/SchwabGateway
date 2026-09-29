@@ -306,6 +306,30 @@ def test_callback_failure_preserves_original_and_redacts_error_and_logs(
     assert "mutated-secret" not in audit_text
 
 
+def test_only_state_changes_are_logged_at_info(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    fake_log = MagicMock()
+    monkeypatch.setattr(
+        "schwab_token_store.log",
+        fake_log,
+    )
+    token_manager = manager(path)
+
+    token_manager.load()
+    token_manager.run_access_transaction(lambda _read, _write: None)
+
+    [changed] = fake_log.info.call_args_list
+    assert changed.kwargs["previous_state"] == "uninitialized"
+    assert changed.kwargs["state"] == "ready"
+    [repeated] = fake_log.debug.call_args_list
+    assert repeated.kwargs["previous_state"] == "ready"
+    assert repeated.kwargs["reason"] == "token_loaded"
+
+
 def test_invalid_callback_result_preserves_original(tmp_path: Path) -> None:
     path = tmp_path / "tokens.json"
     original = token_document()

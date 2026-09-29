@@ -176,6 +176,7 @@ def test_runner_enables_transport_handler_cancellation(
                 "host": "127.0.0.1",
                 "port": 8010,
                 "handler_cancellation": True,
+                "access_log": None,
             },
         )
     ]
