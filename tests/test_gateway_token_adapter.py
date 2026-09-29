@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
+import socket
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -59,6 +63,10 @@ class FakeClient:
     def __init__(self, token: dict[str, Any], sdk_token_writer) -> None:
         self.token = copy.deepcopy(token)
         self._sdk_token_writer = sdk_token_writer
+        self.timeouts: list[float] = []
+
+    def set_timeout(self, timeout: float) -> None:
+        self.timeouts.append(timeout)
 
     def rotate(self, generation: int) -> None:
         rotated = copy.deepcopy(self.token)
@@ -433,3 +441,138 @@ def test_factory_exception_text_and_fake_credentials_are_not_exposed(
     assert FAKE_API_KEY not in exposed
     assert FAKE_APP_SECRET not in exposed
     assert "factory failure" not in exposed
+
+
+# --- HTTP timeout ----------------------------------------------------------------------
+
+
+def recorded_log(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    fake_log = MagicMock()
+    monkeypatch.setattr("schwab_gateway.token_adapter.log", fake_log)
+    return fake_log
+
+
+def timed_adapter(
+    path: Path, http_timeout_seconds: float | None, factory=None
+) -> LockedSchwabClientAdapter:
+    return LockedSchwabClientAdapter(
+        manager(path),
+        factory or FakeAccessFunctionFactory(),
+        api_key=FAKE_API_KEY,
+        app_secret=FAKE_APP_SECRET,
+        http_timeout_seconds=http_timeout_seconds,
+    )
+
+
+def test_http_timeout_is_set_on_every_client_before_the_operation(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_adapter = timed_adapter(path, 3.0)
+
+    assert token_adapter.execute(lambda client: list(client.timeouts)) == [3.0]
+    # A new client per transaction, so every client gets the timeout.
+    assert token_adapter.execute(lambda client: list(client.timeouts)) == [3.0]
+
+
+def test_without_http_timeout_the_client_keeps_its_default(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+
+    assert adapter(path).execute(lambda client: list(client.timeouts)) == []
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, math.inf, math.nan])
+def test_http_timeout_must_be_finite_and_positive(tmp_path: Path, value: float) -> None:
+    with pytest.raises(ValueError):
+        timed_adapter(tmp_path / "tokens.json", value)
+
+
+def test_client_that_cannot_take_a_timeout_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Never run a Schwab read with the SDK's 30s default when a bound was configured."""
+    fake_log = recorded_log(monkeypatch)
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    ran: list[bool] = []
+
+    def factory(*args, **kwargs):
+        client = FakeAccessFunctionFactory()(*args, **kwargs)
+        return SimpleNamespace(token=client.token)
+
+    with pytest.raises(SchwabClientConstructionError):
+        timed_adapter(path, 3.0, factory).execute(lambda _client: ran.append(True))
+
+    assert ran == []
+    fake_log.warning.assert_called_once_with(
+        "schwab_token_adapter_failed",
+        reason="client_construction_failed",
+        error_type="AttributeError",
+    )
+
+
+def test_operation_failure_logs_the_error_type_but_not_the_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_log = recorded_log(monkeypatch)
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+
+    def fail(_client: FakeClient) -> None:
+        raise TimeoutError("GET https://api.schwabapi.com/?access-secret-0")
+
+    with pytest.raises(SchwabClientOperationError):
+        adapter(path).execute(fail)
+
+    fake_log.warning.assert_called_once_with(
+        "schwab_token_adapter_failed",
+        reason="client_operation_failed",
+        error_type="TimeoutError",
+    )
+    assert "access-secret-0" not in repr(fake_log.method_calls)
+
+
+def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The 2026-09-29 incident: a Schwab read stalled and held the slot for 28.9s.
+
+    This uses the real schwab-py factory and its real httpx session against a local
+    socket that accepts the request and never answers. No request leaves the host.
+    """
+    schwab_auth = pytest.importorskip("schwab.auth")
+    httpx = pytest.importorskip("httpx")
+    fake_log = recorded_log(monkeypatch)
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_adapter = LockedSchwabClientAdapter(
+        manager(path),
+        schwab_auth.client_from_access_functions,
+        api_key=FAKE_API_KEY,
+        app_secret=FAKE_APP_SECRET,
+        http_timeout_seconds=0.3,
+    )
+
+    with socket.socket() as stalled:
+        stalled.bind(("127.0.0.1", 0))
+        stalled.listen(1)
+        url = "http://127.0.0.1:%d/marketdata/v1/quotes" % stalled.getsockname()[1]
+
+        session_timeouts: list[Any] = []
+
+        def read(client: Any) -> None:
+            session_timeouts.append(client.session.timeout)
+            client.session.get(url)
+
+        started = time.monotonic()
+        with pytest.raises(SchwabClientOperationError):
+            token_adapter.execute(read)
+        elapsed = time.monotonic() - started
+
+    assert session_timeouts == [httpx.Timeout(0.3)]
+    assert elapsed < 5.0
+    fake_log.warning.assert_called_once_with(
+        "schwab_token_adapter_failed",
+        reason="client_operation_failed",
+        error_type="ReadTimeout",
+    )

@@ -261,6 +261,33 @@ def test_live_app_refuses_to_build_when_the_token_is_unusable(tmp_path: Path) ->
         )
 
 
+def test_live_app_bounds_schwab_http_calls_by_the_upstream_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call that overruns its budget keeps the one execution slot until its I/O ends.
+
+    The HTTP timeout therefore has to follow the budget. schwab-py's 30s default let a
+    stalled read hold the slot for 28.9s on 2026-09-29.
+    """
+    built: list[dict[str, Any]] = []
+    real_adapter = runner.LockedSchwabClientAdapter
+
+    def recording_adapter(*args: Any, **kwargs: Any) -> Any:
+        built.append(kwargs)
+        return real_adapter(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "LockedSchwabClientAdapter", recording_adapter)
+    runner.build_live_app(
+        GatewaySettings(
+            internal_keys_path=_keys_file(tmp_path), upstream_timeout_seconds=2.5
+        ),
+        _upstream_settings(_token_file(tmp_path)),
+        _unused_factory,
+    )
+
+    assert [kwargs["http_timeout_seconds"] for kwargs in built] == [2.5]
+
+
 def test_live_app_builds_no_client_and_makes_no_request(tmp_path: Path) -> None:
     """Startup reads the token document; it does not construct a client or call Schwab."""
     calls: list[tuple] = []

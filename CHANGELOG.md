@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Set the Schwab HTTP timeout to the upstream execution budget
+  (`SCHWAB_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`, 3s by default) instead of schwab-py's
+  30-second default. The scheduler never cancels a call that overruns its budget. It
+  waits for that call to finish before it frees the single execution slot, so the HTTP
+  timeout set how long one stalled Schwab response could block every other read.
+  - On 2026-09-29 at 15:26 UTC, a `$SPX` spot read stalled and held the slot for 28.9
+    seconds. It returned 504, and 13 queued protected reads hit their 7-second queue
+    budget and returned 503. Together they fired `SchwabGatewayProtectedSchedulerFailure`
+    and `SchwabGatewayProtectedRequestFailure`.
+  - At 14:00 UTC the same day, a minute-history read took 5.9 seconds and caused 3 more
+    queue timeouts.
+  - `schwab_token_adapter_failed` now logs `error_type` (for example `ReadTimeout` or
+    `HTTPStatusError`), so a stall can be told apart from a Schwab error. The exception
+    message is still not logged.
 - Cut routine log volume by roughly 80%. On 2026-09-28, 70% of lines came from probes and
   scrapes, and each upstream call wrote five lines:
   - Successful `/health`, `/ready`, and `/metrics` calls are no longer logged. They are
