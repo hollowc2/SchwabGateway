@@ -331,6 +331,40 @@ async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_log_skips_successful_probes_and_records_query(capfd) -> None:
+    readiness = FakeTokenReadinessProvider(TokenManagerState.READY)
+    server = TestServer(
+        create_app(FakeQuoteUpstream(), authenticator(), token_readiness_provider=readiness)
+    )
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient() as http:
+            for path in ("/health", "/ready", "/metrics"):
+                assert (await http.get(str(server.make_url(path)))).status_code == 200
+            readiness.state = TokenManagerState.EXPIRED
+            assert (await http.get(str(server.make_url("/ready")))).status_code == 503
+            readiness.state = TokenManagerState.READY
+            quote = await http.get(
+                str(server.make_url("/v1/quotes?symbols=AAPL,MSFT")),
+                headers={"X-Internal-API-Key": "valid-key"},
+            )
+    finally:
+        await server.close()
+
+    assert quote.status_code == 200
+    request_logs = [
+        line
+        for line in capfd.readouterr().out.splitlines()
+        if "gateway_request " in line
+    ]
+    assert len(request_logs) == 2
+    assert "operation=ready" in request_logs[0]
+    assert "status=503" in request_logs[0]
+    assert "operation=quotes_v1" in request_logs[1]
+    assert "query='symbols=AAPL,MSFT'" in request_logs[1]
+
+
+@pytest.mark.asyncio
 async def test_gateway_surfaces_upstream_timeout() -> None:
     class SlowUpstream:
         async def get_quotes(self, _symbols):

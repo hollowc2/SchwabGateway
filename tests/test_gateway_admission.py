@@ -568,7 +568,8 @@ async def test_identity_claim_header_cannot_override_authenticated_caller(monkey
     assert response.status_code == 200
     request_record = next(item for item in records if item.get("operation") == "quotes_v1")
     assert request_record["caller"] == "equity-scanner"
-    assert set(request_record) == {"caller", "operation", "status", "latency_ms"}
+    assert set(request_record) == {"caller", "operation", "status", "latency_ms", "query"}
+    assert request_record["query"] == "symbols=AAPL"
     assert set(item.get("caller") for item in records) <= {
         "anonymous",
         "butterfly-guy",

@@ -101,6 +101,13 @@ SESSION_TYPES = ("regular", "extended")
 ORDER_BOOK_VENUES = ("NASDAQ", "NYSE")
 MAX_RECENT_ORDER_BOOK_SNAPSHOTS = 1000
 MAX_STREAM_ORDER_BOOK_SYMBOLS = 25
+# Prometheus scrapes and the Docker healthcheck were ~70% of all log lines. Their
+# successful calls are still counted in `gateway_client_requests_total`; only failures
+# are logged.
+UNLOGGED_SUCCESSFUL_OPERATIONS = frozenset({"health", "ready", "metrics"})
+# Request parameters are public tickers, dates, and bounds (the API key travels in a
+# header), but a caller controls their length.
+MAX_LOGGED_QUERY_CHARS = 256
 
 gateway_requests = Counter(
     "gateway_client_requests_total",
@@ -407,13 +414,19 @@ async def audit_middleware(request: web.Request, handler) -> web.StreamResponse:
         elapsed = time.perf_counter() - started
         gateway_requests.labels(operation=operation, status=str(status)).inc()
         gateway_latency.labels(operation=operation).observe(elapsed)
-        log.info(
-            "gateway_request",
-            caller=caller,
-            operation=operation,
-            status=status,
-            latency_ms=round(elapsed * 1000, 2),
-        )
+        if status >= 400 or operation not in UNLOGGED_SUCCESSFUL_OPERATIONS:
+            fields: dict[str, object] = {}
+            if request.query_string:
+                # Keeps the parameters the retired aiohttp access log used to carry.
+                fields["query"] = request.query_string[:MAX_LOGGED_QUERY_CHARS]
+            log.info(
+                "gateway_request",
+                caller=caller,
+                operation=operation,
+                status=status,
+                latency_ms=round(elapsed * 1000, 2),
+                **fields,
+            )
 
 
 async def health(_request: web.Request) -> web.Response:

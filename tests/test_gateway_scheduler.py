@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+from schwab_gateway import scheduler as scheduler_module
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.auth import PriorityClass
 from schwab_gateway.scheduler import (
@@ -447,6 +448,52 @@ async def test_failure_is_one_attempt_and_releases_capacity() -> None:
         )
     assert probe.started == ["fails"]
     assert scheduler.snapshot().total == 0
+
+
+@pytest.mark.asyncio
+async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records: list[tuple[str, str, dict[str, object]]] = []
+
+    class RecordingLog:
+        def debug(self, event: str, **fields: object) -> None:
+            records.append(("debug", event, fields))
+
+        def info(self, event: str, **fields: object) -> None:
+            records.append(("info", event, fields))
+
+        def warning(self, event: str, **fields: object) -> None:
+            records.append(("warning", event, fields))
+
+    monkeypatch.setattr(scheduler_module, "log", RecordingLog())
+    scheduler = ExecutionScheduler(
+        AdmissionPolicy(protected_capacity=2, background_capacity=1)
+    )
+    probe = ConcurrencyProbe()
+    release = asyncio.Event()
+
+    first = submit(
+        scheduler,
+        PriorityClass.PROTECTED,
+        "first",
+        lambda: probe.call("first", release=release),
+    )
+    await wait_for(lambda: probe.started == ["first"])
+    second = submit(
+        scheduler, PriorityClass.PROTECTED, "second", lambda: probe.call("second")
+    )
+    await asyncio.sleep(0.02)
+    release.set()
+    assert await asyncio.gather(first, second) == ["first", "second"]
+
+    info = [fields | {"event": event} for level, event, fields in records if level == "info"]
+    assert [entry["event"] for entry in info] == ["gateway_scheduler_execution_finished"] * 2
+    assert [entry["operation"] for entry in info] == ["first", "second"]
+    assert info[1]["queue_wait_ms"] >= 10
+    assert {event for level, event, _fields in records if level == "debug"} == {
+        "gateway_scheduler_dispatched"
+    }
 
 
 @pytest.mark.asyncio

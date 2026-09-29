@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Cut routine log volume by roughly 80%. On 2026-09-28, 70% of lines came from probes and
+  scrapes, and each upstream call wrote five lines:
+  - Successful `/health`, `/ready`, and `/metrics` calls are no longer logged. They are
+    still counted in `gateway_client_requests_total`.
+  - aiohttp's duplicate access log is disabled. `gateway_request` now carries the
+    request's `query` (up to 256 characters) instead.
+  - `gateway_scheduler_dispatched` moves to debug. Its `queue_wait_ms` now appears on
+    `gateway_scheduler_execution_finished`.
+  - Token-manager transitions that keep the same state, such as the `token_loaded`
+    logged on every call, move to debug.
+- Keep up to 10 x 20 MB of `json-file` logs for the live container, up from the Helios
+  daemon default of 3 x 10 MB, which held only about 1.5 days.
 - Serve `/v1/option-chain` cache hits, and duplicate requests for a chain whose fetch
   is already running, before scheduler admission. Neither issues a Schwab call, so they
   no longer queue behind the single execution slot (the source of the ~1.5s cache hits

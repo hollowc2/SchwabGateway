@@ -677,7 +677,11 @@ class AtomicTokenManager:
             self._health = TokenManagerHealth(state, reason, self._timestamp())
         token_state.labels(state=previous.value).set(0)
         token_state.labels(state=state.value).set(1)
-        log.info(
+        # Every access transaction re-confirms READY (and a latched manager re-confirms
+        # its failure on each recovery attempt), so a same-state transition goes to
+        # debug; only real state changes stay visible at info.
+        emit = log.info if state is not previous else log.debug
+        emit(
             "schwab_token_manager_transition",
             previous_state=previous.value,
             state=state.value,

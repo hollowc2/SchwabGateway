@@ -306,11 +306,14 @@ def main(argv: list[str] | None = None) -> None:
         upstream=upstream_name,
         order_writes_enabled=False,
     )
+    # aiohttp's access log duplicated every `gateway_request` line (which also carries
+    # the authenticated caller), so it is disabled rather than filtered.
     web.run_app(
         app,
         host=settings.bind_host,
         port=settings.port,
         handler_cancellation=True,
+        access_log=None,
     )
 
 
