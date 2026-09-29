@@ -5,7 +5,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
-from schwab_gateway_sdk.models import ChainMetadataV1
+from schwab_gateway_sdk.models import (
+    ChainMetadataV1,
+    PartialQuoteResponseV1,
+    QuoteResponseV1,
+)
 
 from schwab_gateway.upstream import (
     normalize_schwab_chain_metadata,
@@ -595,3 +599,47 @@ def test_chain_metadata_normalization_marks_an_old_quote_time_stale() -> None:
         "missing_put_contracts",
         "stale",
     )
+
+
+def _quote_body(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "gateway_received_at": "2026-09-28T03:00:43Z",
+        "source": "schwab_rest_quote",
+        "stale": True,
+    }
+
+
+def test_default_quote_contract_rejects_the_partial_shape() -> None:
+    body = {
+        "schema_version": "1.0",
+        "quotes": [_quote_body("FHB")],
+        "missing_symbols": ["FGNX", "FGNXP"],
+    }
+
+    with pytest.raises(ValidationError):
+        QuoteResponseV1.model_validate(body)
+    partial = PartialQuoteResponseV1.model_validate(body)
+    assert [quote.symbol for quote in partial.quotes] == ["FHB"]
+    assert partial.missing_symbols == ("FGNX", "FGNXP")
+
+
+@pytest.mark.parametrize(
+    ("quotes", "missing"),
+    [
+        pytest.param(["FHB"], ["FHB"], id="quoted_and_missing"),
+        pytest.param(["FHB", "FHB"], [], id="duplicate_quote"),
+        pytest.param([], ["FGNX", "FGNX"], id="duplicate_missing"),
+    ],
+)
+def test_partial_quote_contract_requires_disjoint_unique_symbols(
+    quotes: list[str], missing: list[str]
+) -> None:
+    with pytest.raises(ValidationError):
+        PartialQuoteResponseV1.model_validate(
+            {
+                "schema_version": "1.0",
+                "quotes": [_quote_body(symbol) for symbol in quotes],
+                "missing_symbols": missing,
+            }
+        )

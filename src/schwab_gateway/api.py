@@ -22,6 +22,7 @@ from schwab_gateway_sdk.models import (
     OptionChainResponseV1,
     OrderBookRecentResponseV1,
     OrderBookStreamEnvelopeV1,
+    PartialQuoteResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -133,7 +134,8 @@ EVENT_LOOP_LAG_INTERVAL_SECONDS = 1.0
 MAX_LOGGED_MISSING_QUOTE_SYMBOLS = 10
 gateway_quote_partial_responses = Counter(
     "gateway_quote_partial_responses_total",
-    "Quote reads failed because Schwab omitted one or more requested symbols",
+    "Quote reads where Schwab omitted one or more requested symbols",
+    ["outcome"],
 )
 
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
@@ -330,6 +332,13 @@ def _parse_session(request: web.Request) -> Literal["regular", "extended"]:
     return value  # type: ignore[return-value]
 
 
+def _parse_allow_partial(request: web.Request) -> bool:
+    value = request.query.get("allow_partial", "false").strip().lower()
+    if value not in ("true", "false"):
+        raise ValueError("allow_partial must be 'true' or 'false'")
+    return value == "true"
+
+
 def _parse_frequency(request: web.Request) -> Literal["daily", "minute"]:
     value = request.query.get("frequency", "daily").strip().lower()
     if value not in HISTORY_FREQUENCIES:
@@ -497,17 +506,29 @@ async def quotes(request: web.Request) -> web.Response:
         return denied
     try:
         symbols = _parse_symbols(request)
+        allow_partial = _parse_allow_partial(request)
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
     async def build_response() -> BaseModel:
         result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
         by_symbol = {quote.symbol: quote for quote in result}
-        if set(by_symbol) != set(symbols):
-            _log_partial_quote_response(symbols, by_symbol)
+        if set(by_symbol) == set(symbols):
+            ordered = tuple(by_symbol[symbol] for symbol in symbols)
+            if allow_partial:
+                return PartialQuoteResponseV1(quotes=ordered, missing_symbols=())
+            return QuoteResponseV1(quotes=ordered)
+        # A partial set is served only to callers that opted in, and only when every
+        # returned symbol was requested and at least one came back: an empty or
+        # foreign result says more about the upstream than about any one ticker.
+        serve_partial = allow_partial and bool(by_symbol) and set(by_symbol) <= set(symbols)
+        _log_partial_quote_response(symbols, by_symbol, served=serve_partial)
+        if not serve_partial:
             raise UpstreamMalformedError("upstream returned a partial symbol set")
-        ordered = tuple(by_symbol[symbol] for symbol in symbols)
-        return QuoteResponseV1(quotes=ordered)
+        return PartialQuoteResponseV1(
+            quotes=tuple(by_symbol[symbol] for symbol in symbols if symbol in by_symbol),
+            missing_symbols=tuple(symbol for symbol in symbols if symbol not in by_symbol),
+        )
 
     return await _serve_upstream(
         request,
@@ -520,18 +541,22 @@ async def quotes(request: web.Request) -> web.Response:
 
 
 def _log_partial_quote_response(
-    requested: tuple[str, ...], returned: dict[str, object]
+    requested: tuple[str, ...], returned: dict[str, object], *, served: bool = False
 ) -> None:
-    """Name the symbols behind a partial-set 502 so a bad ticker can be found.
+    """Name the symbols Schwab omitted so a bad ticker can be found.
 
     Symbols are public tickers the caller already validated; the list is bounded so a
-    large scanner batch cannot produce an unbounded log line.
+    large scanner batch cannot produce an unbounded log line. A partial set served to an
+    opted-in caller logs at info; one that failed the request (a 502) logs a warning.
     """
     missing = [symbol for symbol in requested if symbol not in returned]
     unexpected = sorted(set(returned) - set(requested))
-    gateway_quote_partial_responses.inc()
-    log.warning(
+    outcome = "served_partial" if served else "failed"
+    gateway_quote_partial_responses.labels(outcome=outcome).inc()
+    emit = log.info if served else log.warning
+    emit(
         "gateway_quote_partial_symbol_set",
+        outcome=outcome,
         requested_count=len(requested),
         missing_count=len(missing),
         missing_symbols=missing[:MAX_LOGGED_MISSING_QUOTE_SYMBOLS],

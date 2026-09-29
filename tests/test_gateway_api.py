@@ -370,7 +370,8 @@ async def test_partial_quote_set_fails_closed_and_names_missing_symbols(capfd) -
         )
     )
     await server.start_server()
-    before = gateway_quote_partial_responses._value.get()
+    failed = gateway_quote_partial_responses.labels(outcome="failed")
+    before = failed._value.get()
     try:
         async with httpx.AsyncClient() as http:
             response = await http.get(
@@ -382,16 +383,104 @@ async def test_partial_quote_set_fails_closed_and_names_missing_symbols(capfd) -
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "upstream_malformed"
-    assert gateway_quote_partial_responses._value.get() == before + 1
+    assert failed._value.get() == before + 1
     partial_logs = [
         line
         for line in capfd.readouterr().out.splitlines()
         if "gateway_quote_partial_symbol_set" in line
     ]
     assert len(partial_logs) == 1
+    assert "outcome=failed" in partial_logs[0]
     assert "missing_count=1" in partial_logs[0]
     assert "missing_symbols=['ZZZQ']" in partial_logs[0]
     assert "requested_count=3" in partial_logs[0]
+
+
+class OmittingQuoteUpstream(FakeQuoteUpstream):
+    """Behaves like Schwab dropping unquotable tickers from an otherwise good batch."""
+
+    def __init__(self, omitted: set[str]) -> None:
+        super().__init__()
+        self.omitted = omitted
+
+    async def get_quotes(self, symbols: tuple[str, ...]) -> tuple[QuoteV1, ...]:
+        quotes = await super().get_quotes(symbols)
+        return tuple(quote for quote in quotes if quote.symbol not in self.omitted)
+
+
+@pytest.mark.asyncio
+async def test_opted_in_partial_quote_set_serves_returned_quotes_and_names_missing(
+    capfd,
+) -> None:
+    server = TestServer(
+        create_app(
+            OmittingQuoteUpstream({"ZZZQ"}),
+            authenticator(),
+            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+        )
+    )
+    await server.start_server()
+    served = gateway_quote_partial_responses.labels(outcome="served_partial")
+    before = served._value.get()
+    try:
+        client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
+        response = await client.get_available_quotes(["AAPL", "ZZZQ", "MSFT"])
+        await client.close()
+    finally:
+        await server.close()
+
+    assert [quote.symbol for quote in response.quotes] == ["AAPL", "MSFT"]
+    assert response.missing_symbols == ("ZZZQ",)
+    assert served._value.get() == before + 1
+    partial_logs = [
+        line
+        for line in capfd.readouterr().out.splitlines()
+        if "gateway_quote_partial_symbol_set" in line
+    ]
+    assert len(partial_logs) == 1
+    assert "[info" in partial_logs[0]
+    assert "outcome=served_partial" in partial_logs[0]
+    assert "missing_symbols=['ZZZQ']" in partial_logs[0]
+
+
+@pytest.mark.asyncio
+async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> None:
+    server = TestServer(
+        create_app(
+            OmittingQuoteUpstream({"ZZZQ"}),
+            authenticator(),
+            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+        )
+    )
+    await server.start_server()
+    try:
+        async with httpx.AsyncClient(
+            base_url=str(server.make_url("/")),
+            headers={"X-Internal-API-Key": "valid-key"},
+        ) as http:
+            complete = await http.get(
+                "/v1/quotes", params={"symbols": "AAPL,MSFT", "allow_partial": "true"}
+            )
+            default = await http.get("/v1/quotes", params={"symbols": "AAPL,MSFT"})
+            nothing = await http.get(
+                "/v1/quotes", params={"symbols": "ZZZQ", "allow_partial": "true"}
+            )
+            invalid = await http.get(
+                "/v1/quotes", params={"symbols": "AAPL", "allow_partial": "yes"}
+            )
+    finally:
+        await server.close()
+
+    assert complete.status_code == 200
+    assert complete.json()["missing_symbols"] == []
+    # Callers pinned to an older SDK reject unknown fields, so the default response
+    # must never grow ``missing_symbols``.
+    assert default.status_code == 200
+    assert set(default.json()) == {"schema_version", "quotes"}
+    assert nothing.status_code == 502
+    assert nothing.json()["error"]["code"] == "upstream_malformed"
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "invalid_request"
 
 
 def test_partial_quote_log_bounds_the_symbol_list(capfd) -> None:

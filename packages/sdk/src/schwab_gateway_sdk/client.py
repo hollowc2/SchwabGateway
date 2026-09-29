@@ -23,6 +23,7 @@ from schwab_gateway_sdk.models import (
     OrderBookRecentResponseV1,
     OrderBookSnapshotV1,
     OrderBookStreamEnvelopeV1,
+    PartialQuoteResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
     SpotResponseV1,
@@ -132,13 +133,28 @@ class GatewayMarketDataClient:
         self._order_book_connections: set[ClientConnection] = set()
 
     async def get_quotes(self, symbols: Sequence[str]) -> QuoteResponseV1:
+        """Return one quote per requested symbol, or raise if Schwab omits any of them."""
+        return await self._get_quotes(symbols, QuoteResponseV1, allow_partial=False)
+
+    async def get_available_quotes(self, symbols: Sequence[str]) -> PartialQuoteResponseV1:
+        """Return the quotes Schwab has, naming the omitted symbols in ``missing_symbols``.
+
+        Unlike ``get_quotes``, one unquotable ticker does not fail the whole batch. The
+        request still fails when Schwab returns none of the requested symbols.
+        """
+        return await self._get_quotes(symbols, PartialQuoteResponseV1, allow_partial=True)
+
+    async def _get_quotes(self, symbols: Sequence[str], model: type, *, allow_partial: bool):
         requested = tuple(symbols)
         if not requested:
             raise ValueError("at least one symbol is required")
+        params = {"symbols": ",".join(requested)}
+        if allow_partial:
+            params["allow_partial"] = "true"
         try:
             response = await self._client.get(
                 "/v1/quotes",
-                params={"symbols": ",".join(requested)},
+                params=params,
                 headers={"X-Internal-API-Key": self._api_key},
             )
         except httpx.TimeoutException as exc:
@@ -163,7 +179,7 @@ class GatewayMarketDataClient:
                 f"gateway quote request failed with status {response.status_code}"
             )
         try:
-            return QuoteResponseV1.model_validate(response.json())
+            return model.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
             raise GatewayResponseError("gateway returned an invalid quote contract") from exc
 

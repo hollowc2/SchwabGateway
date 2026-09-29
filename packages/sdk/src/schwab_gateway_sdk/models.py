@@ -57,6 +57,29 @@ class QuoteResponseV1(GatewayModel):
     quotes: tuple[QuoteV1, ...]
 
 
+class PartialQuoteResponseV1(GatewayModel):
+    """Quotes Schwab returned, plus the requested symbols it omitted.
+
+    Served only to callers that request ``allow_partial=true``. The default quote
+    response keeps its fail-closed shape and never carries ``missing_symbols``.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    quotes: tuple[QuoteV1, ...]
+    missing_symbols: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def symbols_must_be_disjoint(self) -> PartialQuoteResponseV1:
+        quoted = [quote.symbol for quote in self.quotes]
+        if len(set(quoted)) != len(quoted) or len(set(self.missing_symbols)) != len(
+            self.missing_symbols
+        ):
+            raise ValueError("quote symbols and missing symbols must be unique")
+        if set(quoted) & set(self.missing_symbols):
+            raise ValueError("a symbol cannot be both quoted and missing")
+        return self
+
+
 class SpotV1(GatewayModel):
     symbol: str
     price: float | None = None
