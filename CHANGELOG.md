@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 - 2026-10-01
 
 - Normalize a negative Schwab `theoreticalOptionValue` to `null`, the same way a negative
   `timeValue` is handled, and count each case in
