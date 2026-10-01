@@ -532,6 +532,32 @@ def test_operation_failure_logs_the_error_type_but_not_the_message(
     assert "access-secret-0" not in repr(fake_log.method_calls)
 
 
+def test_operation_failure_logs_schwab_status_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fast Schwab error (2026-10-01 15:30 UTC, two NDX 503s) should say which status."""
+    httpx = pytest.importorskip("httpx")
+    fake_log = recorded_log(monkeypatch)
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    request = httpx.Request("GET", "https://api.schwabapi.com/?access-secret-0")
+    response = httpx.Response(502, request=request)
+
+    def fail(_client: FakeClient) -> None:
+        response.raise_for_status()
+
+    with pytest.raises(SchwabClientOperationError):
+        adapter(path).execute(fail)
+
+    fake_log.warning.assert_called_once_with(
+        "schwab_token_adapter_failed",
+        reason="client_operation_failed",
+        error_type="HTTPStatusError",
+        upstream_status=502,
+    )
+    assert "access-secret-0" not in repr(fake_log.method_calls)
+
+
 def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
