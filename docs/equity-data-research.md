@@ -1,15 +1,13 @@
-# Generic equity stream and candle evidence
+# Equity-data research
 
-These standalone tools own the generic chart, Level I, and session-candle evidence that
-does not belong in a trading-strategy repository. They do not expose or call account,
-position, transaction, or order methods.
+Two standalone tools for collecting general equity evidence: live chart and Level I
+streams, and one-minute session candles. Neither tool calls account, position,
+transaction, or order methods.
 
-## Capture chart and Level I streams
+## Record chart and Level I streams
 
 `schwab-gateway-capture-equity-streams` subscribes to `CHART_EQUITY` and
-`LEVELONE_EQUITIES` for the same bounded symbol set. It uses the order-book recorder's
-short atomic token-lock bootstrap: the token lock is held only for login, then released
-before subscription handling. Reconnects use bounded backoff and new connection IDs.
+`LEVELONE_EQUITIES` for the same symbols.
 
 ```bash
 uv run schwab-gateway-capture-equity-streams \
@@ -20,43 +18,49 @@ uv run schwab-gateway-capture-equity-streams \
   --confirm-shared-token-bootstrap
 ```
 
-The two explicit confirmations are mandatory because the command reads the approved
-Schwab application/token configuration. Never place secret values on the command line.
-The duration is one second through 24 hours and the normalized, unique symbol set is
-capped at 25.
+- **Confirmation flags are required** because the command reads the approved Schwab
+  application and token. Never put secrets on the command line.
+- **Duration:** 1 second to 24 hours.
+- **Symbols:** uppercased, unique, at most 25.
+- **Token lock:** held only during login, then released before subscribing (the same
+  approach as the order-book recorder). Reconnects use bounded backoff and get a new
+  connection ID.
 
-Every invocation creates a new mode-0700 run directory containing:
+Each run creates a new directory (mode `0700`) containing:
 
-- `raw_frames.jsonseq`: matching websocket JSON texts preserved before schwab-py field
-  relabeling;
-- `relabeled_messages.ndjson`: receipt timestamp, service, and the relabeled handler
-  payload;
-- `connection_events.ndjson`: credential-free connection and retry boundaries;
-- `manifest.json`: requested scope, counts, termination/failure status, relative paths,
-  and SHA-256 hashes.
+| File | Contents |
+| --- | --- |
+| `raw_frames.jsonseq` | WebSocket JSON exactly as received, before schwab-py relabels fields |
+| `relabeled_messages.ndjson` | Receipt time, service, and the relabeled payload |
+| `connection_events.ndjson` | Connection and retry events, without credentials |
+| `manifest.json` | Requested scope, counts, final status, relative paths, and SHA-256 hashes |
 
-Level I is state update data containing the latest quote/trade fields; it is not a
-complete time-and-sales tape. Chart updates are not a substitute for the REST session
-history export below. Venue-specific Level II remains owned by the stricter recorder in
-`order-book-research.md`.
+**Limits**
+
+- Level I carries the latest quote and trade fields. It is not a full time-and-sales
+  tape.
+- Chart updates do not replace the session-candle export below.
+- For venue-specific Level II, use the [order-book recorder](order-book-research.md).
 
 ## Export one-minute session candles
 
-`schwab-gateway-export-session-history` uses only the pinned gateway SDK and an external
-read-only gateway key. The key should identify a background-priority research consumer.
-The command fetches both regular and extended segments, rejects stale or empty evidence,
-sorts and deduplicates candles by timestamp, and refuses to overwrite an existing run.
+`schwab-gateway-export-session-history` reads regular and extended session candles for
+one symbol and date through the gateway SDK.
 
 ```bash
 uv run schwab-gateway-export-session-history AAPL 2026-09-11 \
   --output-root /absolute/path/to/equity-session-history
 ```
 
-Supply `SCHWAB_GATEWAY_URL` and `SCHWAB_GATEWAY_API_KEY` through the approved secret
-environment mechanism rather than copying either into evidence. Output is nested by
-symbol, date, and retrieval timestamp and contains `candles_1m.json` plus `manifest.json`
-with counts and a SHA-256 hash.
+- Set `SCHWAB_GATEWAY_URL` and `SCHWAB_GATEWAY_API_KEY` through the approved secret
+  mechanism. Don't copy either into evidence.
+- Use a read-only key for a background-priority research consumer.
+- Stale or empty data is rejected. Candles are sorted and de-duplicated by timestamp.
+- Output goes to `<symbol>/<date>/<retrieval time>/` and contains `candles_1m.json` and
+  a `manifest.json` with counts and a SHA-256 hash. Existing runs are never overwritten.
 
-Historical session export is a gateway read, so it does not touch Schwab OAuth tokens or
-account data. Running either tool against real credentials or a deployed gateway remains
-an explicitly approved operational action.
+This export only calls the gateway, so it never touches Schwab OAuth tokens or account
+data.
+
+Running either tool against real credentials or a deployed gateway requires explicit
+operational approval.

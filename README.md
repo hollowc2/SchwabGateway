@@ -4,60 +4,70 @@
 
 # SchwabGateway
 
-An internal, read-only HTTP service for bounded Charles Schwab market-data reads.
-The repository also builds two standalone Python packages: `schwab_gateway_sdk`
-(client) and `schwab_token_store` (token storage). The v1 wire contract is
-defined in [`openapi.yaml`](openapi.yaml).
+A read-only HTTP service that gives internal consumers safe, rate-bounded access to
+Charles Schwab market data.
+
+This repository also publishes two Python packages:
+
+- **`schwab_gateway_sdk`**: the typed client for the gateway.
+- **`schwab_token_store`**: shared storage for Schwab OAuth tokens.
+
+The v1 API contract is defined in [`openapi.yaml`](openapi.yaml).
 
 ## Endpoints
 
-| Route | Purpose |
+| Route | Returns |
 | --- | --- |
-| `GET /health`, `GET /ready`, `GET /metrics` | Liveness, readiness, Prometheus metrics |
+| `GET /health`, `/ready`, `/metrics` | Liveness, readiness, Prometheus metrics |
 | `GET /v1/quotes` | Current quotes for one or more symbols |
-| `GET /v1/spot` | Single-symbol spot with Schwab quote/trade timestamps |
-| `GET /v1/chain` | Metadata-only option-chain summary (compatibility surface) |
-| `GET /v1/option-chain` | Normalized contracts for one symbol + expiration (≤ 5000) |
+| `GET /v1/spot` | Spot price for one symbol, with Schwab quote and trade timestamps |
+| `GET /v1/chain` | Option-chain summary without contracts (kept for compatibility) |
+| `GET /v1/option-chain` | Normalized contracts for one symbol and expiration (max 5,000) |
 | `GET /v1/history` | Minute bars; `days_back` counts Eastern calendar days |
 | `GET /v1/movers` | Market movers |
-| `GET /v1/session-history` | Exact regular/extended session bars for a point in time |
-| `GET /v1/order-book/recent` | Authenticated recent venue order-book snapshots |
-| `GET /v1/order-book/stream` | Authenticated read-only WebSocket order-book stream |
+| `GET /v1/session-history` | Regular and extended session bars for a point in time |
+| `GET /v1/order-book/recent` | Recent order-book snapshots for one venue |
+| `GET /v1/order-book/stream` | Live order-book snapshots over WebSocket |
 
-Related tooling, documented separately:
+## Guides
 
-- **Order-book research** — standalone recorder that captures one `NASDAQ_BOOK` or
+- [SDK order books](docs/sdk-order-books.md): read recent snapshots and stream live
+  depth from Python.
+- [Order-book research](docs/order-book-research.md): record a `NASDAQ_BOOK` or
   `NYSE_BOOK` stream with a hashed evidence manifest.
-  See [`docs/order-book-research.md`](docs/order-book-research.md).
-- **Equity-data research** — captures bounded `CHART_EQUITY` plus Level I streams and
-  exports one date's regular/extended one-minute candles through the gateway SDK.
-  See [`docs/equity-data-research.md`](docs/equity-data-research.md).
-- **SDK order books** — typed, fail-closed WebSocket consumer alongside recent HTTP
-  reads. See [`docs/sdk-order-books.md`](docs/sdk-order-books.md).
+- [Equity-data research](docs/equity-data-research.md): record `CHART_EQUITY` and
+  Level I streams, and export one day of one-minute candles.
 
-## Safety boundaries
+## Guarantees
 
-- **Read-only.** No account, position, transaction, or order-entry routes exist.
-  `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must remain false.
-- **Fails closed.** Freshness-gated order-book and option-chain reads return errors
-  during feed outages rather than serving stale or truncated data. The gateway never
-  silently truncates a chain.
-- **Bounded and protected-first.** One strict-priority FIFO scheduler feeds the single
-  Schwab worker. Protected and background capacity are independent; background work is
-  delayed or shed before it can consume protected capacity. `429` means class capacity
-  is full, `503 gateway_queue_timeout` means dispatch wait expired, and `504
-  upstream_timeout` means a dispatched operation exceeded its three-second budget.
-  Optional order-book stream login is background work in this same scheduler; only its
-  established socket runs independently after the token transaction has completed.
-- **Venue-specific depth.** `NASDAQ_BOOK` / `NYSE_BOOK` are Level II books for one
-  venue, not consolidated market depth.
-- **Chain cache is paper-only.** Successful full chains are cached for a bounded,
-  configurable interval per `(symbol, expiration)`: four seconds by default and eight
-  seconds in the reviewed production PAPER profile. Any real-money workflow must use an
-  explicitly reviewed force-fresh policy instead.
-- Before promoting multiple paper strategies, stage one consumer at a time and prove a
-  full session under real collector/position-monitor load; the contract tests do not
-  establish multi-consumer capacity.
+- **Read-only.** There are no account, position, transaction, or order routes.
+  `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must stay `false`.
+- **Fails closed.** During a feed outage, order-book and option-chain reads return an
+  error instead of stale data. Option chains are never truncated.
+- **Protected traffic first.** All Schwab calls go through one strict-priority FIFO
+  scheduler and a single worker. Protected and background traffic have separate
+  capacity, and background work is delayed or dropped before it can affect protected
+  work. This includes order-book stream logins; only the open socket runs outside the
+  scheduler.
+- **Venue-specific depth.** `NASDAQ_BOOK` and `NYSE_BOOK` each show one venue's
+  Level II book. Neither is consolidated market depth.
+- **Chain caching is for paper trading only.** Complete chains are cached briefly per
+  `(symbol, expiration)`: 4 seconds by default, 8 seconds in the production PAPER
+  profile. Real-money workflows need a reviewed force-fresh policy.
+
+### Error codes
+
+| Status | Meaning |
+| --- | --- |
+| `429` | Capacity for your priority class is full |
+| `503 gateway_queue_timeout` | The request waited too long to be dispatched |
+| `504 upstream_timeout` | Schwab took longer than the 3-second budget |
+
+### Adding consumers
+
+Add paper strategies one at a time, and prove each one through a full session under
+real collector and position-monitor load before adding the next. The contract tests do
+not prove multi-consumer capacity.
 
 ## Development
 
@@ -72,7 +82,7 @@ uv build --package schwab-gateway-sdk
 uv build --package schwab-token-store
 ```
 
-Run the demo profile against a test-only key file:
+To run the demo profile, first issue a test-only key file:
 
 ```bash
 uv run schwab-gateway-issue-keys \
@@ -85,17 +95,16 @@ SCHWAB_GATEWAY_DEMO_KEYS_PATH=/tmp/schwab-gateway-demo-keys.json \
   docker compose --profile demo up --build
 ```
 
-## Deployment & versioning
+## Operations
 
-Production deployment and rollback are covered by
-[`docs/runbooks/helios.md`](docs/runbooks/helios.md) and
-[`docs/runbooks/rollback.md`](docs/runbooks/rollback.md).
+- Deploy: [`docs/runbooks/helios.md`](docs/runbooks/helios.md)
+- Roll back: [`docs/runbooks/rollback.md`](docs/runbooks/rollback.md)
+- Full-session load test and option-chain TTL analysis:
+  [`docs/runbooks/full-session-load-test.md`](docs/runbooks/full-session-load-test.md)
 
-The full-session acceptance workload, scheduler evidence, and post-session
-option-chain TTL analysis are gateway-owned procedures in
-[`docs/runbooks/full-session-load-test.md`](docs/runbooks/full-session-load-test.md).
+## Versioning
 
-The gateway distribution, `openapi.yaml`, and the SDK are released together and share
-a version whenever the HTTP or SDK surface changes. The wire `schema_version` moves
-only on an incompatible JSON contract. `schwab_token_store` is versioned independently
-because it can be installed on its own.
+- The gateway, `openapi.yaml`, and the SDK share one version. It changes whenever the
+  HTTP or SDK surface changes.
+- The wire `schema_version` changes only for incompatible JSON changes.
+- `schwab_token_store` has its own version because it can be installed separately.
