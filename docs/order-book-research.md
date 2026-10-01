@@ -1,30 +1,27 @@
-# Schwab order-book research capture
+# Order-book research
 
-The order-book recorder is a standalone, read-only evidence collector. It subscribes to
-exactly one Schwab equity book service per run:
+A standalone, read-only recorder for Schwab equity order books. Each run subscribes to
+one service:
 
 - `NASDAQ_BOOK`
 - `NYSE_BOOK`
 
-The resulting depth is venue-specific. It must not be described or analyzed as a
-consolidated US-equity order book. Options books and time-and-sales are outside this first
-contract.
+Each service shows one venue's depth. Never describe or analyze it as a consolidated US
+equity book. Options books and time-and-sales are not supported.
 
-## Safety boundary
+## Safety
 
-The recorder uses the same atomic token manager as the HTTP gateway. Each initial login
-or reconnect holds the exclusive token lock only for a bounded Schwab login handshake
-(eight seconds by default). Token callbacks are invalidated and the lock is released
-before subscription handling or recording begins. Other token consumers can continue to
-run, although an HTTP request may briefly wait behind that login transaction.
+- The recorder uses the same atomic token manager as the gateway.
+- Each login or reconnect holds the token lock only for the Schwab login handshake
+  (8 seconds by default). The lock is released before subscribing or recording.
+- Other token users keep running. A gateway request may wait briefly during a login.
+- No account, position, transaction, or order methods are used.
 
-No account, position, transaction, or order method is used or exposed.
+## Record a run
 
-## Capture one bounded run
-
-The existing `SCHWAB_API_KEY`, `SCHWAB_SECRET_KEY`, and absolute `SCHWAB_TOKEN_PATH`
-environment settings must identify the approved Schwab application and token. Do not put
-those values on the command line or in capture output.
+`SCHWAB_API_KEY`, `SCHWAB_SECRET_KEY`, and an absolute `SCHWAB_TOKEN_PATH` must point to
+the approved Schwab application and token. Never put these values on the command line
+or in output.
 
 ```bash
 uv run schwab-gateway-capture-order-books \
@@ -38,55 +35,55 @@ uv run schwab-gateway-capture-order-books \
   --max-reconnects 3
 ```
 
-The duration is measured from subscription startup and must be between one second and 24
-hours. Symbols are normalized to uppercase, must be unique, and are capped at 25 per run.
-The output root must be absolute. Each invocation creates a new timestamped directory and
-refuses to overwrite an existing run.
+- **Duration:** 1 second to 24 hours, measured from subscription start.
+- **Symbols:** uppercased, unique, at most 25.
+- **Output root:** must be absolute. Each run gets a new timestamped directory and never
+  overwrites an existing one.
 
-## Evidence layout
+## Output files
 
-Each successful or post-subscription failed run contains:
+Every completed run, and every run that fails after subscribing, contains:
 
-- `raw_frames.jsonseq`: relevant websocket JSON texts using RFC 7464 record separators;
-  each Schwab frame is preserved before schwab-py relabels numeric fields.
-- `normalized_snapshots.ndjson`: validated research models with venue, service, sequence,
-  timestamps, price levels, aggregate size, participant contributions, connection ID,
-  and continuity epoch.
-- `connection_events.ndjson`: credential-free connection, failure, and retry boundaries.
-- `manifest.json`: provider, requested scope, actual UTC range, display timezone,
-  manifest-relative evidence paths, SHA-256 hashes, event counts, malformed counts,
-  sequence gaps, missing sequences, duplicates/out-of-order observations, drops, and
-  termination reason, reconnect counts, and continuity epoch counts. Relative paths keep
-  the manifest valid when a container-mounted
-  capture directory is viewed from its host or moved intact.
+| File | Contents |
+| --- | --- |
+| `raw_frames.jsonseq` | WebSocket JSON in RFC 7464 format, saved before schwab-py relabels numeric fields |
+| `normalized_snapshots.ndjson` | Validated snapshots: venue, service, sequence, timestamps, price levels, sizes, participants, connection ID, continuity epoch |
+| `connection_events.ndjson` | Connections, failures, and retries, without credentials |
+| `manifest.json` | Scope, UTC time range, display timezone, file paths, SHA-256 hashes, and quality counts |
 
-Raw and normalized data are intentionally separate. Never repair or replace the raw file
-with normalized output. A missing manifest means the stream did not progress far enough
-to establish a capture run; a non-`completed` termination reason means the evidence is
-partial and must be treated accordingly.
+The manifest's quality counts cover events, malformed messages, sequence gaps, missing
+sequences, duplicates, out-of-order messages, drops, reconnects, and continuity epochs,
+plus the termination reason. Paths are relative, so the manifest stays valid when the
+directory is moved or viewed from outside a container.
+
+**Reading a run**
+
+- Raw and normalized files are kept separate. Never overwrite the raw file with
+  normalized data.
+- No manifest means the stream never started a capture.
+- Any termination reason other than `completed` means the evidence is partial.
 
 ## Interpretation limits
 
-- Schwab book messages are treated as snapshots, not trade prints or executable orders.
-- A sequence gap is disclosed in both the affected normalized snapshot and manifest; no
-  missing depth is synthesized.
-- Continuity never crosses a reconnect boundary. The first snapshot after a reconnect is
-  flagged and sequence comparisons restart inside its new epoch.
-- If Schwab omits a per-symbol sequence, the snapshot is flagged `missing_sequence`, the
-  manifest counts it, and `sequence_continuity_observable` is false. Zero detected gaps
-  must not be interpreted as proof of continuity in that case.
-- Empty sides and participant total/count mismatches are retained with quality flags.
-- Structurally malformed snapshots are excluded from normalized output, counted in the
-  manifest, and remain available in the raw evidence.
-- Historical depth exists only for intervals captured live. This feature does not backfill
-  an order book.
+- Book messages are snapshots. They are not trades or executable orders.
+- Sequence gaps are flagged on the affected snapshot and in the manifest. Missing depth
+  is never filled in.
+- Continuity resets at every reconnect. The first snapshot after a reconnect is flagged,
+  and sequence checks restart in the new epoch.
+- If Schwab omits a sequence number, the snapshot is flagged `missing_sequence` and
+  `sequence_continuity_observable` is `false`. In that case, zero gaps does not prove
+  continuity.
+- Empty sides and participant total/count mismatches are kept and flagged.
+- Malformed snapshots are left out of the normalized file, counted in the manifest, and
+  kept in the raw file.
+- History exists only for time you recorded live. There is no backfill.
 
-## Derived research datasets
+## Derive research datasets
 
-Derivation first verifies the capture's normalized SHA-256 and row count, then creates a
-new non-overwriting directory. It computes spread, midpoint, top-level microprice, depth,
-imbalance, midpoint movement, and snapshot-delta add/removal rates. Those rates are
-explicitly inferred from adjacent snapshots; they are not exchange order events.
+Derivation checks the capture's normalized SHA-256 and row count, then writes to a new
+directory. It computes spread, midpoint, top-of-book microprice, depth, imbalance,
+midpoint movement, and add/remove rates. The rates are inferred from consecutive
+snapshots; they are not exchange order events.
 
 ```bash
 uv run schwab-gateway-derive-order-books \
@@ -95,15 +92,15 @@ uv run schwab-gateway-derive-order-books \
   --depth-levels 10
 ```
 
-The derived manifest pins both the source manifest and normalized evidence hashes and
-labels liquidity/price correlations as descriptive, not causal.
+The derived manifest pins the hashes of both the source manifest and the normalized
+file. Liquidity/price correlations are labeled descriptive, not causal.
 
-## Catalog and retention plan
+## Catalog and retention
 
-Catalog refreshes verify raw, normalized, and connection-event hashes. The retention rule
-only marks older captures as `archive_copy_then_verify`; it never deletes or rewrites a
-capture. Any later deletion remains a separately approved operation after archive hashes
-are verified.
+Refreshing the catalog verifies the hashes of the raw, normalized, and connection-event
+files. Captures older than the threshold are marked `archive_copy_then_verify`. Nothing
+is deleted or rewritten. Deletion is a separate, approved step after archive hashes are
+verified.
 
 ```bash
 uv run schwab-gateway-catalog-order-books \
@@ -112,9 +109,9 @@ uv run schwab-gateway-catalog-order-books \
   --archive-after-days 30
 ```
 
-## Gateway recent snapshots and WebSocket
+## Serving order books from the gateway
 
-The live feed is opt-in. Configure one venue and at most 25 symbols:
+The live feed is off by default. To turn it on, set one venue and up to 25 symbols:
 
 ```text
 SCHWAB_GATEWAY_ORDER_BOOK_STREAM_ENABLED=true
@@ -122,12 +119,18 @@ SCHWAB_GATEWAY_ORDER_BOOK_STREAM_VENUE=NASDAQ
 SCHWAB_GATEWAY_ORDER_BOOK_STREAM_SYMBOLS=AAPL,MSFT
 ```
 
-`GET /v1/order-book/recent?symbol=AAPL&venue=NASDAQ&limit=100` returns oldest-to-newest
-bounded snapshots. `/v1/order-book/stream?symbols=AAPL&venue=NASDAQ` upgrades to a
-WebSocket. Both use the existing `X-Internal-API-Key` authentication and
-`market_data:read` capability. Subscriber queues are bounded; a slow client may skip
-intermediate snapshots and must use continuity fields rather than assuming losslessness.
-Recent reads fail closed with `503` when the configured feed is disconnected, has no
-snapshot for the symbol, or the newest in-memory snapshot exceeds the configured maximum
-age (15 seconds by default). WebSocket connections use separate protected/background
-capacity pools held for each socket's complete lifetime; excess upgrades receive `429`.
+| Route | Behavior |
+| --- | --- |
+| `GET /v1/order-book/recent?symbol=AAPL&venue=NASDAQ&limit=100` | Recent snapshots, oldest first |
+| `/v1/order-book/stream?symbols=AAPL&venue=NASDAQ` | Upgrades to a WebSocket |
+
+- **Auth:** `X-Internal-API-Key` with the `market_data:read` capability.
+- **Slow clients:** subscriber queues are bounded, so a slow client can miss snapshots.
+  Use the continuity fields to detect gaps.
+- **Stale data:** recent reads return `503` if the feed is disconnected, has no snapshot
+  for the symbol, or its newest snapshot is older than the max age (15 seconds by
+  default).
+- **Capacity:** each WebSocket holds a slot in the protected or background pool while it
+  is open. When the pool is full, new connections get `429`.
+
+For a Python client, see [SDK order books](sdk-order-books.md).
