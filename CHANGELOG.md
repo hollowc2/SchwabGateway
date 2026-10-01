@@ -6,6 +6,21 @@
   with an HTTP error, so a fast Schwab failure can be told apart (for example 401
   against 5xx) without logging the URL. On 2026-10-01 at 15:30 UTC, two NDX reads
   returned 503 after Schwab errors, and the log showed only `HTTPStatusError`.
+- Cache `/v1/session-history` reads for completed sessions (any date before today in
+  New York) and serve hits before scheduler admission, as option-chain hits already
+  are. On 2026-09-28, butterfly-guy made 530 session-history reads covering 193
+  distinct sessions, and 524 of the reads were for sessions that were already
+  complete.
+  - The cache is a bounded LRU with no TTL, capped at 1,024 entries and 32 MiB of
+    serialized JSON.
+  - A hit recomputes `age_seconds` and `stale`, and keeps the original
+    `gateway_received_at`.
+  - Today's session, empty reads and reads with dropped malformed bars always go to
+    Schwab.
+  - Hits still require readiness.
+  - New metrics: `gateway_session_history_cache_events_total` (`hit`, `miss`,
+    `stored`, `not_cacheable`, `eviction`), plus `gateway_session_history_cache_entries`
+    and `gateway_session_history_cache_bytes`.
 
 ## 0.6.0 - 2026-09-29
 

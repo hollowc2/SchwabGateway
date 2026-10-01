@@ -813,15 +813,36 @@ async def session_history(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)
 
+    upstream = request.app[SESSION_HISTORY_UPSTREAM_KEY]
+    read_cached = getattr(upstream, "cached_session_history", None)
+    if callable(read_cached):
+        # A completed session is answered from the cache without a scheduler slot, the
+        # same way option-chain hits are. Readiness still gates it.
+        state, _reason = _token_readiness(request.app)
+        if state is not TokenManagerState.READY:
+            return _error("gateway_not_ready", "gateway is not ready", 503)
+        try:
+            cached = read_cached(symbol, date, session)
+            if cached is not None:
+                return _json(_session_history_response(cached, symbol, date, session))
+        except (UpstreamMalformedError, ValueError):
+            return _error(
+                "upstream_malformed", "market data upstream returned invalid data", 502
+            )
+
     async def build_response() -> BaseModel:
-        result = await request.app[SESSION_HISTORY_UPSTREAM_KEY].get_session_history(
-            symbol, date, session
-        )
-        if result.symbol != symbol or result.date != date or result.session != session:
-            raise UpstreamMalformedError("upstream returned a different session history")
-        return SessionHistoryResponseV1(session_history=result)
+        result = await upstream.get_session_history(symbol, date, session)
+        return _session_history_response(result, symbol, date, session)
 
     return await _serve_upstream(request, "session_history", build_response)
+
+
+def _session_history_response(
+    result, symbol: str, date: dt.date, session: str
+) -> SessionHistoryResponseV1:
+    if result.symbol != symbol or result.date != date or result.session != session:
+        raise UpstreamMalformedError("upstream returned a different session history")
+    return SessionHistoryResponseV1(session_history=result)
 
 
 async def recent_order_book(request: web.Request) -> web.Response:
