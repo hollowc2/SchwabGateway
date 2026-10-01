@@ -92,7 +92,8 @@ exact locally built and reviewed ID/digest; it is not a secret:
 ```bash
 sg_record="/tmp/schwab-gateway-preflight-$(date -u +%Y%m%dT%H%M%SZ).txt"
 SCHWAB_GATEWAY_PRODUCTION_IMAGE='sha256:<exact-image-id>' \
-  scripts/helios_preflight.sh --phase predeploy --record "$sg_record"
+  scripts/helios_preflight.sh --phase predeploy \
+  --repo "/opt/schwab-gateway-releases/${sg_release_sha}" --record "$sg_record"
 ```
 
 The script defaults to `billy@helios`, `/opt/schwab-gateway`, `compose.yml` plus
@@ -109,7 +110,8 @@ not Git.
 The script's `--repo` default (`/opt/schwab-gateway`) is the stale checkout, so its
 `compose-files`, `compose-validity`, `compose-service`, and `compose-image` checks would
 validate compose content that activation will not use. Always pass
-`--repo=/opt/schwab-gateway-releases/<approved-release-short-sha>` so preflight validates
+`--repo /opt/schwab-gateway-releases/<approved-release-short-sha>` (a space, not `=`;
+the script rejects `--repo=PATH` as an unknown option) so preflight validates
 the same worktree the activation step `cd`s into.
 
 Use `--host`, repeated `--compose-file`, or the other documented flags only
@@ -251,7 +253,8 @@ approved image as an acceptance gate; keep its sanitized record with the change 
 ```bash
 sg_post_record="/tmp/schwab-gateway-postdeploy-$(date -u +%Y%m%dT%H%M%SZ).txt"
 SCHWAB_GATEWAY_PRODUCTION_IMAGE='sha256:<approved-exact-image-id>' \
-  scripts/helios_preflight.sh --phase postdeploy --record "$sg_post_record"
+  scripts/helios_preflight.sh --phase postdeploy \
+  --repo "/opt/schwab-gateway-releases/${sg_release_sha}" --record "$sg_post_record"
 ```
 
 Example port and alias gates:
