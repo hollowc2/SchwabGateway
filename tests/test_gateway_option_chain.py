@@ -33,6 +33,7 @@ from schwab_gateway.upstream import (
     normalize_schwab_option_chain,
     option_chain_crossed_market_normalizations,
     option_chain_negative_intrinsic_value_normalizations,
+    option_chain_negative_theoretical_value_normalizations,
     option_chain_negative_time_value_normalizations,
 )
 
@@ -311,6 +312,61 @@ def test_normalizer_maps_negative_schwab_time_value_to_null_with_observability(
         len(chain.contracts),
     ) == (3, 1, 2, 4)
     assert option_chain_negative_time_value_normalizations._value.get() == before + 1
+
+
+@pytest.mark.parametrize("negative_theoretical_value", [-0.01, -3.25])
+def test_normalizer_maps_negative_schwab_theoretical_value_to_null_with_observability(
+    negative_theoretical_value: float,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "theoreticalOptionValue"
+    ] = negative_theoretical_value
+    before = option_chain_negative_theoretical_value_normalizations._value.get()
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].theoretical_option_value is None
+    assert chain.contracts[0].bid == 1.1
+    assert chain.contracts[0].ask == 1.3
+    assert chain.contracts[0].mark == 1.2
+    assert len(chain.contracts) == 4
+    assert (
+        option_chain_negative_theoretical_value_normalizations._value.get()
+        == before + 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("theoretical_value", "expected"),
+    [(1.22, 1.22), (0.0, 0.0), (-999.0, None), (None, None)],
+)
+def test_normalizer_preserves_nonnegative_or_null_theoretical_value(
+    theoretical_value: float | None,
+    expected: float | None,
+) -> None:
+    payload = _payload()
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
+        "theoreticalOptionValue"
+    ] = theoretical_value
+    before = option_chain_negative_theoretical_value_normalizations._value.get()
+
+    chain = normalize_schwab_option_chain(
+        "SPX",
+        payload,
+        EXPIRATION,
+        received_at=RECEIVED_AT,
+        stale_after_seconds=90,
+    )
+
+    assert chain.contracts[0].theoretical_option_value == expected
+    assert option_chain_negative_theoretical_value_normalizations._value.get() == before
 
 
 @pytest.mark.parametrize(

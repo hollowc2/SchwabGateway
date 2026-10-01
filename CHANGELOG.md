@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Normalize a negative Schwab `theoreticalOptionValue` to `null`, the same way a negative
+  `timeValue` is handled, and count each case in
+  `gateway_option_chain_negative_theoretical_value_normalizations_total`. At the
+  2026-09-29 open, ButterflyGuy rejected the first 0DTE SPX/NDX/XSP snapshots because
+  the gateway passed these values through.
+
 ## 0.7.0 - 2026-10-01
 
 - Add `upstream_status` to `schwab_token_adapter_failed` warnings when Schwab answers
