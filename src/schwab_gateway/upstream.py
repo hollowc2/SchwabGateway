@@ -60,6 +60,12 @@ MAX_OPTION_CHAIN_CACHE_ENTRIES = 16
 MAX_OPTION_CHAIN_CACHE_BYTES = 64 * 1024 * 1024
 DEFAULT_OPTION_CHAIN_MAX_INFLIGHT = 4
 MAX_OPTION_CHAIN_MAX_INFLIGHT = 16
+# A session whose New York date has passed can no longer change. On 2026-09-28,
+# 530 session-history reads covered only 193 distinct sessions, and 524 of them were
+# already complete. Entries are kept as serialized JSON (about 44 KB for a regular
+# session, against about 440 KB as a validated model) and parsed again on each hit.
+DEFAULT_SESSION_HISTORY_CACHE_MAX_ENTRIES = 1024
+DEFAULT_SESSION_HISTORY_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
 option_chain_cache_events = Counter(
     "gateway_option_chain_cache_events_total",
@@ -82,6 +88,19 @@ option_chain_cache_bytes = Gauge(
 option_chain_inflight = Gauge(
     "gateway_option_chain_inflight",
     "Number of distinct option-chain upstream fetches currently in flight",
+)
+session_history_cache_events = Counter(
+    "gateway_session_history_cache_events_total",
+    "Completed-session history cache decisions",
+    ["outcome"],
+)
+session_history_cache_entries = Gauge(
+    "gateway_session_history_cache_entries",
+    "Number of completed sessions retained in the session-history cache",
+)
+session_history_cache_bytes = Gauge(
+    "gateway_session_history_cache_bytes",
+    "Serialized bytes retained in the session-history cache",
 )
 option_chain_negative_time_value_normalizations = Counter(
     "gateway_option_chain_negative_time_value_normalizations_total",
@@ -996,38 +1015,145 @@ def normalize_schwab_session_history(
     )
 
 
+def _is_completed_session(history: SessionHistoryV1, evaluated_at: dt.datetime) -> bool:
+    """True once the session's New York date has passed and the read looks complete.
+
+    A read with no bars (a holiday, or Schwab briefly returning nothing) or with dropped
+    malformed bars is never cached, so a transient gap cannot be pinned in place.
+    """
+    return (
+        history.date < evaluated_at.astimezone(EASTERN).date()
+        and bool(history.candles)
+        and "malformed_bars_dropped" not in history.data_quality_flags
+    )
+
+
+def _reevaluate_session_history_freshness(
+    history: SessionHistoryV1,
+    *,
+    evaluated_at: dt.datetime,
+    stale_after_seconds: float,
+) -> SessionHistoryV1:
+    age_seconds = (
+        max(0.0, (evaluated_at - history.event_timestamp).total_seconds())
+        if history.event_timestamp is not None
+        else None
+    )
+    stale = age_seconds is None or age_seconds > stale_after_seconds
+    flags = [flag for flag in history.data_quality_flags if flag != "stale"]
+    if stale:
+        flags.append("stale")
+    return history.model_copy(
+        update={
+            "age_seconds": age_seconds,
+            "stale": stale,
+            "data_quality_flags": tuple(flags),
+        }
+    )
+
+
 class DirectSchwabSessionHistoryUpstream:
     """Normalize a point-in-time session read from the direct adapter.
 
     Distinct from ``DirectSchwabHistoryUpstream``: this fetches one calendar day and
     splits it into the regular or extended segment, rather than a trailing window ending
     now. Both share ``_bar_from_candle``, so a malformed candle is dropped identically.
+
+    Completed sessions are kept in a bounded LRU cache with no TTL, because their bars
+    can no longer change. Today's session in New York always goes to Schwab.
     """
 
     def __init__(
-        self, provider: SessionHistoryProvider, *, stale_after_seconds: float = 86400.0
+        self,
+        provider: SessionHistoryProvider,
+        *,
+        stale_after_seconds: float = 86400.0,
+        cache_max_entries: int = DEFAULT_SESSION_HISTORY_CACHE_MAX_ENTRIES,
+        cache_max_bytes: int = DEFAULT_SESSION_HISTORY_CACHE_MAX_BYTES,
+        utcnow: Callable[[], dt.datetime] | None = None,
     ) -> None:
+        if cache_max_entries < 1:
+            raise ValueError("session-history cache capacity must be at least 1")
+        if cache_max_bytes < 1:
+            raise ValueError("session-history cache byte capacity must be at least 1")
         self._provider = provider
         self._stale_after_seconds = stale_after_seconds
+        self._cache_max_entries = cache_max_entries
+        self._cache_max_bytes = cache_max_bytes
+        self._utcnow = utcnow or (lambda: dt.datetime.now(UTC))
+        self._cache: OrderedDict[tuple[str, dt.date, str], bytes] = OrderedDict()
+        self._cache_bytes = 0
+
+    def cached_session_history(
+        self, symbol: str, date: dt.date, session: Literal["regular", "extended"]
+    ) -> SessionHistoryV1 | None:
+        """Return a cached completed session with recomputed freshness, or ``None``.
+
+        Synchronous on purpose: the API calls this before scheduler admission so a hit
+        never queues behind the single Schwab execution slot.
+        """
+        key = (symbol, date, session)
+        payload = self._cache.get(key)
+        if payload is None:
+            return None
+        self._cache.move_to_end(key)
+        session_history_cache_events.labels(outcome="hit").inc()
+        return _reevaluate_session_history_freshness(
+            SessionHistoryV1.model_validate_json(payload),
+            evaluated_at=self._utcnow(),
+            stale_after_seconds=self._stale_after_seconds,
+        )
 
     async def get_session_history(
         self, symbol: str, date: dt.date, session: Literal["regular", "extended"]
     ) -> SessionHistoryV1:
+        cached = self.cached_session_history(symbol, date, session)
+        if cached is not None:
+            return cached
+        session_history_cache_events.labels(outcome="miss").inc()
         try:
             candles = await self._provider.get_session_bars(symbol, date)
         except Exception as exc:
             raise UpstreamUnavailableError("Schwab session history request failed") from exc
+        received_at = self._utcnow()
         try:
-            return normalize_schwab_session_history(
+            history = normalize_schwab_session_history(
                 symbol,
                 date,
                 session,
                 candles,
-                received_at=dt.datetime.now(UTC),
+                received_at=received_at,
                 stale_after_seconds=self._stale_after_seconds,
             )
         except ValueError as exc:
             raise UpstreamMalformedError("Schwab session history response was invalid") from exc
+        self._store(history, received_at)
+        return history
+
+    def _store(self, history: SessionHistoryV1, received_at: dt.datetime) -> None:
+        if not _is_completed_session(history, received_at):
+            session_history_cache_events.labels(outcome="not_cacheable").inc()
+            return
+        payload = history.model_dump_json().encode()
+        if len(payload) > self._cache_max_bytes:
+            session_history_cache_events.labels(outcome="not_cacheable").inc()
+            return
+        key = (history.symbol, history.date, history.session)
+        previous = self._cache.pop(key, None)
+        if previous is not None:
+            self._cache_bytes -= len(previous)
+        self._cache[key] = payload
+        self._cache_bytes += len(payload)
+        session_history_cache_events.labels(outcome="stored").inc()
+        while (
+            len(self._cache) > self._cache_max_entries
+            or self._cache_bytes > self._cache_max_bytes
+        ):
+            _, evicted = self._cache.popitem(last=False)
+            self._cache_bytes -= len(evicted)
+            session_history_cache_events.labels(outcome="eviction").inc()
+        session_history_cache_entries.set(len(self._cache))
+        session_history_cache_bytes.set(self._cache_bytes)
 
 
 class DirectSchwabSpotUpstream:
