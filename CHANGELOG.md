@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-10-01
 
 - Add `upstream_status` to `schwab_token_adapter_failed` warnings when Schwab answers
   with an HTTP error, so a fast Schwab failure can be told apart (for example 401
