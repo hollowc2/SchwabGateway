@@ -21,6 +21,15 @@ ClientT = TypeVar("ClientT")
 OperationResult = TypeVar("OperationResult")
 
 
+def _upstream_status(exc: Exception) -> dict[str, int]:
+    """Schwab's HTTP status for an ``httpx.HTTPStatusError``, or nothing."""
+
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return {"upstream_status": status_code}
+    return {}
+
+
 class SchwabAccessFunctionClientFactory(Protocol[ClientT]):
     """Signature of schwab.auth.client_from_access_functions in schwab-py 1.5.1."""
 
@@ -126,12 +135,14 @@ class LockedSchwabClientAdapter:
                 raise
             except Exception as exc:
                 # The class name (for example ``ReadTimeout`` or ``HTTPStatusError``) tells
-                # a stall apart from a Schwab error. The message can carry a URL, so it is
-                # not logged.
+                # a stall apart from a Schwab error, and Schwab's status code tells a
+                # rejected request from a Schwab outage. The message can carry a URL, so
+                # it is not logged.
                 log.warning(
                     "schwab_token_adapter_failed",
                     reason="client_operation_failed",
                     error_type=type(exc).__name__,
+                    **_upstream_status(exc),
                 )
                 raise SchwabClientOperationError(
                     "Schwab client operation failed"

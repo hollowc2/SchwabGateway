@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `upstream_status` to `schwab_token_adapter_failed` warnings when Schwab answers
+  with an HTTP error, so a fast Schwab failure can be told apart (for example 401
+  against 5xx) without logging the URL. On 2026-10-01 at 15:30 UTC, two NDX reads
+  returned 503 after Schwab errors, and the log showed only `HTTPStatusError`.
+
 ## 0.6.0 - 2026-09-29
 
 - Set the Schwab HTTP timeout to the upstream execution budget
