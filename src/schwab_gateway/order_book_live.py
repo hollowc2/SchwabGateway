@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from schwab.contrib.util import StreamJsonDecoder
@@ -24,6 +24,8 @@ from schwab_gateway.order_book_capture import (
     DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
     MAX_CAPTURE_SYMBOLS,
     bootstrap_stream_under_token_lock,
+    frame_has_service,
+    subscribe_venue_book,
 )
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
 from schwab_gateway.scheduler import ExecutionScheduler
@@ -39,12 +41,8 @@ class _LiveBookDecoder(StreamJsonDecoder):
 
     def decode_json_string(self, raw: str) -> Any:
         payload = json.loads(raw)
-        if isinstance(payload, Mapping):
-            data = payload.get("data")
-            if isinstance(data, list) and any(
-                isinstance(item, Mapping) and item.get("service") == self._service for item in data
-            ):
-                self.last_received_at = dt.datetime.now(UTC)
+        if frame_has_service(payload, (self._service,)):
+            self.last_received_at = dt.datetime.now(UTC)
         return payload
 
 
@@ -145,12 +143,7 @@ class OrderBookLiveFeed:
                         )
 
                 stream.set_json_decoder(decoder)
-                if self._venue == "NASDAQ":
-                    stream.add_nasdaq_book_handler(handle_book)
-                    await stream.nasdaq_book_subs(list(self._symbols))
-                else:
-                    stream.add_nyse_book_handler(handle_book)
-                    await stream.nyse_book_subs(list(self._symbols))
+                await subscribe_venue_book(stream, self._venue, self._symbols, handle_book)
                 self._store.mark_feed_state(self._venue, "connected")
                 log.info(
                     "gateway_order_book_stream_connected",

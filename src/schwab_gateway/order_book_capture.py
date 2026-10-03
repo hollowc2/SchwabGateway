@@ -14,7 +14,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from schwab.contrib.util import StreamJsonDecoder
@@ -113,9 +113,9 @@ class OrderBookResearchRecorder:
         self._first_event_timestamp: dt.datetime | None = None
         self._last_event_timestamp: dt.datetime | None = None
         self._last_sequence: dict[tuple[int, str], int] = {}
-        self._raw_handle: Any = None
-        self._normalized_handle: Any = None
-        self._connection_events_handle: Any = None
+        self._raw_handle: BinaryIO | None = None
+        self._normalized_handle: TextIO | None = None
+        self._connection_events_handle: TextIO | None = None
         self._finalized = False
 
     def start(self) -> None:
@@ -307,6 +307,31 @@ class OrderBookResearchRecorder:
         return self.manifest_path
 
 
+def frame_has_service(payload: Any, services: tuple[str, ...]) -> bool:
+    """True when a decoded stream frame carries data for one of ``services``."""
+    if not isinstance(payload, Mapping):
+        return False
+    data = payload.get("data")
+    return isinstance(data, list) and any(
+        isinstance(item, Mapping) and item.get("service") in services for item in data
+    )
+
+
+async def subscribe_venue_book(
+    stream: Any,
+    venue: OrderBookVenue,
+    symbols: Sequence[str],
+    handler: Callable[[Any], None],
+) -> None:
+    """Install ``handler`` and subscribe ``symbols`` on the venue's Level II book service."""
+    if venue == "NASDAQ":
+        stream.add_nasdaq_book_handler(handler)
+        await stream.nasdaq_book_subs(list(symbols))
+    else:
+        stream.add_nyse_book_handler(handler)
+        await stream.nyse_book_subs(list(symbols))
+
+
 class CapturingBookJsonDecoder(StreamJsonDecoder):
     """Tee relevant raw book frames before schwab-py relabels their fields."""
 
@@ -325,18 +350,10 @@ class CapturingBookJsonDecoder(StreamJsonDecoder):
     def decode_json_string(self, raw: str) -> Any:
         payload = json.loads(raw)
         received_at = self._clock().astimezone(UTC)
-        if self._contains_target_service(payload):
+        if frame_has_service(payload, (self._service,)):
             self._recorder.record_raw_frame(raw, received_at)
             self.last_received_at = received_at
         return payload
-
-    def _contains_target_service(self, payload: Any) -> bool:
-        if not isinstance(payload, Mapping):
-            return False
-        data = payload.get("data")
-        return isinstance(data, list) and any(
-            isinstance(item, Mapping) and item.get("service") == self._service for item in data
-        )
 
 
 async def bootstrap_stream_under_token_lock(
@@ -443,12 +460,7 @@ async def capture_order_book_with_reconnects(
                     recorder.record_snapshot(snapshot)
 
             stream.set_json_decoder(decoder)
-            if request.venue == "NASDAQ":
-                stream.add_nasdaq_book_handler(handle_book)
-                await stream.nasdaq_book_subs(list(request.symbols))
-            else:
-                stream.add_nyse_book_handler(handle_book)
-                await stream.nyse_book_subs(list(request.symbols))
+            await subscribe_venue_book(stream, request.venue, request.symbols, handle_book)
 
             while (remaining := deadline - loop.time()) > 0:
                 try:
