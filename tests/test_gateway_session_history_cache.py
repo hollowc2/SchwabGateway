@@ -71,7 +71,6 @@ def _hits() -> float:
     return session_history_cache_events.labels(outcome="hit")._value.get()
 
 
-@pytest.mark.asyncio
 async def test_completed_session_is_fetched_once_and_ages_on_later_hits() -> None:
     clock = _Clock()
     provider = _Provider()
@@ -89,7 +88,6 @@ async def test_completed_session_is_fetched_once_and_ages_on_later_hits() -> Non
     assert cached.age_seconds == fetched.age_seconds + 3600
 
 
-@pytest.mark.asyncio
 async def test_hit_recomputes_the_stale_flag() -> None:
     # 00:30 New York on Saturday 09-26: Friday's session is complete and its last bar
     # (17:00 New York) is under a day old.
@@ -106,7 +104,6 @@ async def test_hit_recomputes_the_stale_flag() -> None:
     assert cached.data_quality_flags.count("stale") == 1
 
 
-@pytest.mark.asyncio
 async def test_todays_session_in_new_york_is_never_cached() -> None:
     today = dt.date(2026, 9, 28)
     # 22:00 in New York on 09-28 is already 09-29 in UTC.
@@ -120,7 +117,6 @@ async def test_todays_session_in_new_york_is_never_cached() -> None:
     assert provider.calls == [("AAPL", today), ("AAPL", today)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "day",
     [
@@ -142,7 +138,6 @@ async def test_incomplete_reads_are_not_cached(day) -> None:
     assert len(provider.calls) == 2
 
 
-@pytest.mark.asyncio
 async def test_failed_fetch_is_not_cached() -> None:
     class FailingOnce(_Provider):
         async def get_session_bars(self, symbol: str, date: dt.date):
@@ -162,7 +157,6 @@ async def test_failed_fetch_is_not_cached() -> None:
     assert [bar.close for bar in recovered.candles] == [1.0]
 
 
-@pytest.mark.asyncio
 async def test_sessions_are_cached_separately_and_evicted_least_recently_used() -> None:
     provider = _Provider()
     upstream = DirectSchwabSessionHistoryUpstream(
@@ -187,7 +181,6 @@ async def test_sessions_are_cached_separately_and_evicted_least_recently_used() 
     ]
 
 
-@pytest.mark.asyncio
 async def test_a_session_larger_than_the_byte_budget_is_not_cached() -> None:
     provider = _Provider()
     upstream = DirectSchwabSessionHistoryUpstream(
@@ -231,7 +224,6 @@ def _one_slot_app(upstream, readiness: FakeReadiness, spot=None):
 SESSION_PARAMS = {"symbol": "$VIX", "date": COMPLETED.isoformat(), "session": "regular"}
 
 
-@pytest.mark.asyncio
 async def test_cached_session_is_served_without_waiting_for_the_busy_scheduler_slot() -> None:
     clock = _Clock()
     provider = _Provider()
@@ -266,7 +258,6 @@ async def test_cached_session_is_served_without_waiting_for_the_busy_scheduler_s
     assert hit_body["age_seconds"] == warm_body["age_seconds"] + 60
 
 
-@pytest.mark.asyncio
 async def test_warm_session_cache_still_fails_closed_when_gateway_is_not_ready() -> None:
     provider = _Provider()
     upstream = DirectSchwabSessionHistoryUpstream(provider, utcnow=_Clock().utcnow)

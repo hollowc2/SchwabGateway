@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 from support import serving
 
 from schwab_gateway.auth import hash_api_key
@@ -11,7 +10,6 @@ from schwab_gateway.config import GatewaySettings
 from schwab_gateway.runner import build_demo_app
 
 
-@pytest.mark.asyncio
 async def test_demo_mode_over_real_http(tmp_path) -> None:
     keys = tmp_path / "keys.json"
     keys.write_text(

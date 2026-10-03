@@ -414,7 +414,6 @@ def test_request_and_cli_keep_scope_explicit(tmp_path: Path) -> None:
     assert args.venue == "NYSE"
 
 
-@pytest.mark.asyncio
 async def test_live_feed_retains_backoff_until_validated_data_arrives(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

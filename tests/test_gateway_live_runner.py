@@ -349,7 +349,6 @@ def test_demo_app_registers_only_scheduler_cleanup(tmp_path: Path) -> None:
 # --- Readiness recovery --------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_recovery_does_not_touch_the_token_while_ready(tmp_path: Path) -> None:
     """A healthy gateway must never take the token lock on the recovery path."""
     manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
@@ -369,7 +368,6 @@ async def test_recovery_does_not_touch_the_token_while_ready(tmp_path: Path) -> 
     assert loads == 0
 
 
-@pytest.mark.asyncio
 async def test_recovery_relifts_a_latched_manager(tmp_path: Path) -> None:
     """The latch this fixes: a token-level failure that no request can clear.
 
@@ -397,7 +395,6 @@ async def test_recovery_relifts_a_latched_manager(tmp_path: Path) -> None:
     assert manager.health().state is TokenManagerState.READY
 
 
-@pytest.mark.asyncio
 async def test_recovery_leaves_the_recorded_state_alone_when_it_keeps_failing(
     tmp_path: Path,
 ) -> None:
@@ -419,7 +416,6 @@ def test_recovery_interval_must_be_positive(tmp_path: Path) -> None:
 # --- Upstream warmup readiness ------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_warmup_gate_reports_not_ready_until_a_read_succeeds(
     tmp_path: Path,
 ) -> None:
@@ -445,7 +441,6 @@ async def test_warmup_gate_reports_not_ready_until_a_read_succeeds(
     assert calls == 1
 
 
-@pytest.mark.asyncio
 async def test_warmup_gate_stays_not_ready_while_the_read_keeps_failing() -> None:
     manager = SimpleNamespace(health=lambda: None)
 
@@ -459,7 +454,6 @@ async def test_warmup_gate_stays_not_ready_while_the_read_keeps_failing() -> Non
     assert gate.health().state is TokenManagerState.REFRESHING
 
 
-@pytest.mark.asyncio
 async def test_warmup_gate_run_until_warm_stops_on_first_success() -> None:
     outcomes = iter([False, False, True])
 
@@ -477,7 +471,6 @@ async def test_warmup_gate_run_until_warm_stops_on_first_success() -> None:
     assert gate.health() == "delegated"
 
 
-@pytest.mark.asyncio
 async def test_warmup_ctx_blocks_startup_until_warm_then_yields() -> None:
     manager = SimpleNamespace(health=lambda: "delegated")
 
@@ -493,7 +486,6 @@ async def test_warmup_ctx_blocks_startup_until_warm_then_yields() -> None:
         await ctx.__anext__()
 
 
-@pytest.mark.asyncio
 async def test_warmup_ctx_starts_serving_not_ready_when_warmup_fails() -> None:
     manager = SimpleNamespace(health=lambda: "delegated")
     attempts = 0
