@@ -67,9 +67,7 @@ def _capture(tmp_path: Path) -> Path:
     )
     recorder = OrderBookResearchRecorder(request, clock=lambda: next(times))
     recorder.start()
-    recorder.record_raw_frame(
-        '{"data":[{"service":"NASDAQ_BOOK","content":[]}]}', NOW
-    )
+    recorder.record_raw_frame('{"data":[{"service":"NASDAQ_BOOK","content":[]}]}', NOW)
     recorder.record_snapshot(
         _snapshot(0, bid_price=100.0, ask_price=100.2, bid_size=10, ask_size=5)
     )
@@ -95,13 +93,13 @@ def test_derivation_is_traceable_and_labels_snapshot_delta_inference(
     )
     derived_manifest = json.loads(derived_manifest_path.read_text())
     rows = [
-        json.loads(line)
-        for line in (output / "order_book_metrics.ndjson").read_text().splitlines()
+        json.loads(line) for line in (output / "order_book_metrics.ndjson").read_text().splitlines()
     ]
 
-    assert derived_manifest["source_normalized_sha256"] == json.loads(
-        capture_manifest.read_text()
-    )["normalized_sha256"]
+    assert (
+        derived_manifest["source_normalized_sha256"]
+        == json.loads(capture_manifest.read_text())["normalized_sha256"]
+    )
     assert derived_manifest["summary"]["row_count"] == 3
     assert derived_manifest["summary"]["correlations_are_descriptive_not_causal"] is True
     assert rows[0]["spread"] == pytest.approx(0.2)

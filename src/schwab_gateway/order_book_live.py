@@ -38,8 +38,7 @@ class _LiveBookDecoder(StreamJsonDecoder):
         if isinstance(payload, Mapping):
             data = payload.get("data")
             if isinstance(data, list) and any(
-                isinstance(item, Mapping) and item.get("service") == self._service
-                for item in data
+                isinstance(item, Mapping) and item.get("service") == self._service for item in data
             ):
                 self.last_received_at = dt.datetime.now(UTC)
         return payload

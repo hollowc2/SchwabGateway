@@ -281,9 +281,7 @@ async def test_cached_session_is_served_without_waiting_for_the_busy_scheduler_s
     await server.start_server()
     try:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
-            warm = await client.get(
-                "/v1/session-history", params=SESSION_PARAMS, headers=HEADERS
-            )
+            warm = await client.get("/v1/session-history", params=SESSION_PARAMS, headers=HEADERS)
             clock.advance(60)
             busy = asyncio.create_task(
                 client.get("/v1/spot", params={"symbol": "SPX"}, headers=HEADERS)
@@ -317,9 +315,7 @@ async def test_warm_session_cache_still_fails_closed_when_gateway_is_not_ready()
     await server.start_server()
     try:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
-            warm = await client.get(
-                "/v1/session-history", params=SESSION_PARAMS, headers=HEADERS
-            )
+            warm = await client.get("/v1/session-history", params=SESSION_PARAMS, headers=HEADERS)
             readiness.state = TokenManagerState.EXPIRED
             refused = await client.get(
                 "/v1/session-history", params=SESSION_PARAMS, headers=HEADERS

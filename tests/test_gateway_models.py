@@ -267,9 +267,7 @@ def test_minute_history_keeps_prior_session_just_after_eastern_midnight() -> Non
     )
 
     assert len(history.bars) == 3
-    assert {
-        bar.timestamp.astimezone(EASTERN).date() for bar in history.bars
-    } == {prior_session}
+    assert {bar.timestamp.astimezone(EASTERN).date() for bar in history.bars} == {prior_session}
     assert history.stale is True
     assert "stale" in history.data_quality_flags
     assert "no_bars_returned" not in history.data_quality_flags
@@ -313,12 +311,12 @@ def test_daily_history_treats_friday_as_fresh_across_weekend_or_holiday(
 
 def test_daily_history_recognizes_early_close_as_completed_session() -> None:
     early_close = dt.date(2026, 11, 27)
-    event_timestamp = dt.datetime.combine(
-        early_close, dt.time(13), tzinfo=EASTERN
-    ).astimezone(dt.timezone.utc)
-    received_at = dt.datetime.combine(
-        early_close, dt.time(13, 30), tzinfo=EASTERN
-    ).astimezone(dt.timezone.utc)
+    event_timestamp = dt.datetime.combine(early_close, dt.time(13), tzinfo=EASTERN).astimezone(
+        dt.timezone.utc
+    )
+    received_at = dt.datetime.combine(early_close, dt.time(13, 30), tzinfo=EASTERN).astimezone(
+        dt.timezone.utc
+    )
 
     history = normalize_schwab_history(
         "AAPL",
@@ -565,16 +563,12 @@ def test_movers_normalization_drops_malformed_items_and_reports_unknown_freshnes
 def test_movers_normalization_rejects_a_non_list_payload() -> None:
     received_at = dt.datetime(2026, 8, 10, 21, 0, tzinfo=dt.timezone.utc)
     with pytest.raises(ValueError):
-        normalize_schwab_movers(
-            "$SPX", "up", {"screeners": []}, received_at=received_at
-        )
+        normalize_schwab_movers("$SPX", "up", {"screeners": []}, received_at=received_at)
 
 
 def test_movers_contract_rejects_naive_timestamps() -> None:
     with pytest.raises(ValidationError, match="timezone-aware"):
-        normalize_schwab_movers(
-            "$SPX", "up", [], received_at=dt.datetime(2026, 8, 10, 21, 0)
-        )
+        normalize_schwab_movers("$SPX", "up", [], received_at=dt.datetime(2026, 8, 10, 21, 0))
 
 
 def test_chain_metadata_normalization_marks_an_old_quote_time_stale() -> None:

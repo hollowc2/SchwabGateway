@@ -69,9 +69,7 @@ class OrderBookCaptureRequest:
             not math.isfinite(self.duration_seconds)
             or not 1 <= self.duration_seconds <= MAX_CAPTURE_DURATION_SECONDS
         ):
-            raise ValueError(
-                "order-book duration must be between 1 second and 24 hours"
-            )
+            raise ValueError("order-book duration must be between 1 second and 24 hours")
         if not self.output_root.is_absolute():
             raise ValueError("order-book output root must be absolute")
         try:
@@ -149,9 +147,7 @@ class OrderBookResearchRecorder:
         self.manifest_path = run_directory / "manifest.json"
         self._raw_handle = self.raw_path.open("xb")
         self._normalized_handle = self.normalized_path.open("x", encoding="utf-8")
-        self._connection_events_handle = self.connection_events_path.open(
-            "x", encoding="utf-8"
-        )
+        self._connection_events_handle = self.connection_events_path.open("x", encoding="utf-8")
         os.chmod(self.raw_path, 0o600)
         os.chmod(self.normalized_path, 0o600)
         os.chmod(self.connection_events_path, 0o600)
@@ -353,8 +349,7 @@ class CapturingBookJsonDecoder(StreamJsonDecoder):
             return False
         data = payload.get("data")
         return isinstance(data, list) and any(
-            isinstance(item, Mapping) and item.get("service") == self._service
-            for item in data
+            isinstance(item, Mapping) and item.get("service") == self._service for item in data
         )
 
 
@@ -674,8 +669,5 @@ def parse_symbols(values: Sequence[str]) -> tuple[str, ...]:
     """Parse repeated/comma-separated CLI symbol values without widening scope."""
 
     return tuple(
-        part.strip().upper()
-        for value in values
-        for part in value.split(",")
-        if part.strip()
+        part.strip().upper() for value in values for part in value.split(",") if part.strip()
     )

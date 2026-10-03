@@ -26,9 +26,7 @@ async def consume_depth() -> None:
         os.environ["SCHWAB_GATEWAY_URL"],
         os.environ["SCHWAB_GATEWAY_API_KEY"],
     ) as client:
-        async with client.stream_order_books(
-            ["AAPL", "MSFT"], venue="NASDAQ"
-        ) as snapshots:
+        async with client.stream_order_books(["AAPL", "MSFT"], venue="NASDAQ") as snapshots:
             async for snapshot in snapshots:
                 print(
                     snapshot.symbol,

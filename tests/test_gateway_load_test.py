@@ -231,8 +231,7 @@ async def test_run_load_test_writes_a_complete_manifest(tmp_path: Path) -> None:
     assert manifest["completed_request_count"] >= 3  # at least the warm-up reads
 
     rows = [
-        json.loads(line)
-        for line in (recorder.run_dir / "requests.ndjson").read_text().splitlines()
+        json.loads(line) for line in (recorder.run_dir / "requests.ndjson").read_text().splitlines()
     ]
     assert {row["status_class"] for row in rows} == {"success"}
     assert manifest["stage_summaries"]["warmup"]["success_count"] == 3

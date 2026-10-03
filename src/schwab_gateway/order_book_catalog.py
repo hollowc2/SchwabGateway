@@ -100,9 +100,7 @@ def build_catalog_document(
         "generated_at": generated_at.isoformat(),
         "evidence_root": str(root),
         "capture_count": len(entries),
-        "verified_capture_count": sum(
-            entry["evidence_status"] == "verified" for entry in entries
-        ),
+        "verified_capture_count": sum(entry["evidence_status"] == "verified" for entry in entries),
         "retention_policy": {
             "archive_after_days": archive_after_days,
             "raw_deletion": "never_automatic",
@@ -122,9 +120,7 @@ def write_catalog(
 ) -> Path:
     """Atomically refresh the mutable catalog index; capture files remain untouched."""
 
-    document = build_catalog_document(
-        evidence_root, archive_after_days=archive_after_days, now=now
-    )
+    document = build_catalog_document(evidence_root, archive_after_days=archive_after_days, now=now)
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

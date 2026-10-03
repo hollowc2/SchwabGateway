@@ -219,10 +219,24 @@ class EvidenceRecorder:
             raise RuntimeError("evidence recorder is not started")
         # A fixed allowlist makes accidental response-body or credential persistence fail closed.
         allowed = {
-            "sequence", "stage", "endpoint", "symbol", "scheduled_offset_seconds",
-            "started_at", "finished_at", "latency_ms", "status_code", "status_class",
-            "error_class", "exception_class", "schema_version", "schema_valid", "stale",
-            "age_seconds", "contract_count", "data_quality_flag_count",
+            "sequence",
+            "stage",
+            "endpoint",
+            "symbol",
+            "scheduled_offset_seconds",
+            "started_at",
+            "finished_at",
+            "latency_ms",
+            "status_code",
+            "status_class",
+            "error_class",
+            "exception_class",
+            "schema_version",
+            "schema_valid",
+            "stale",
+            "age_seconds",
+            "contract_count",
+            "data_quality_flag_count",
         }
         if set(row) - allowed:
             raise ValueError("evidence row contains a prohibited field")

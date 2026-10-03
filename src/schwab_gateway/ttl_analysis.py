@@ -68,9 +68,9 @@ def parse_histograms(text: str, *, operation: str) -> dict[str, Histogram]:
             if raw_boundary is None:
                 continue
             boundary = math.inf if raw_boundary == "+Inf" else float(raw_boundary)
-            result[metric_name].buckets[boundary] = (
-                result[metric_name].buckets.get(boundary, 0.0) + float(sample.value)
-            )
+            result[metric_name].buckets[boundary] = result[metric_name].buckets.get(
+                boundary, 0.0
+            ) + float(sample.value)
     return result
 
 

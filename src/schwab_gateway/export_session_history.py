@@ -44,9 +44,7 @@ async def export_session_history(
     if any(response.stale for response in responses):
         raise RuntimeError("gateway returned stale session-history evidence")
     candles_by_timestamp = {
-        candle.timestamp: candle
-        for response in responses
-        for candle in response.candles
+        candle.timestamp: candle for response in responses for candle in response.candles
     }
     if not candles_by_timestamp:
         raise RuntimeError(f"gateway returned no candles for {normalized_symbol} on {date}")

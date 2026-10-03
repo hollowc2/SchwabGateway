@@ -62,9 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (
-        args.authorize_real_credential_read and args.confirm_shared_token_bootstrap
-    ):
+    if not (args.authorize_real_credential_read and args.confirm_shared_token_bootstrap):
         parser.error(
             "order-book capture requires explicit real-credential and shared-token-"
             "bootstrap confirmations"

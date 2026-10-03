@@ -124,9 +124,7 @@ def _levels(value: Any, *, side: Literal["bid", "ask"]) -> tuple[OrderBookLevelV
                 participants=participants,
             )
         )
-    return tuple(
-        sorted(levels, key=lambda level: level.price, reverse=side == "bid")
-    )
+    return tuple(sorted(levels, key=lambda level: level.price, reverse=side == "bid"))
 
 
 def normalize_schwab_book_message(

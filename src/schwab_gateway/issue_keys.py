@@ -104,18 +104,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--plaintext-output",
         type=Path,
-        help=(
-            "write the one-time plaintext key to a new mode-0600 file instead of "
-            "printing it"
-        ),
+        help=("write the one-time plaintext key to a new mode-0600 file instead of printing it"),
     )
     parser.add_argument("--application-id", required=True)
-    parser.add_argument(
-        "--capability", required=True, choices=sorted(KNOWN_CAPABILITIES)
-    )
-    parser.add_argument(
-        "--priority", required=True, choices=[item.value for item in PriorityClass]
-    )
+    parser.add_argument("--capability", required=True, choices=sorted(KNOWN_CAPABILITIES))
+    parser.add_argument("--priority", required=True, choices=[item.value for item in PriorityClass])
     args = parser.parse_args(argv)
 
     if args.output.exists():
@@ -156,8 +149,7 @@ def main(argv: list[str] | None = None) -> None:
             "its value was not printed.\n"
         )
     sys.stdout.write(
-        f"\nAdded 1 new digest; wrote {len(document['clients'])} total digest(s) "
-        "at mode 0600.\n"
+        f"\nAdded 1 new digest; wrote {len(document['clients'])} total digest(s) at mode 0600.\n"
     )
 
 

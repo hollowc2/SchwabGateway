@@ -36,12 +36,8 @@ def test_parse_histograms_filters_operation_and_aggregates_label_sets() -> None:
 
 def test_recommendation_uses_conservative_sum_headroom_and_ceiling() -> None:
     histograms = {
-        "schwab_gateway_scheduler_queue_wait_seconds": Histogram(
-            {0.5: 98, 1.0: 100}
-        ),
-        "schwab_gateway_scheduler_upstream_execution_seconds": Histogram(
-            {2.5: 99, 5.0: 100}
-        ),
+        "schwab_gateway_scheduler_queue_wait_seconds": Histogram({0.5: 98, 1.0: 100}),
+        "schwab_gateway_scheduler_upstream_execution_seconds": Histogram({2.5: 99, 5.0: 100}),
     }
 
     result = recommend_ttl(
@@ -62,12 +58,15 @@ def test_recommendation_uses_conservative_sum_headroom_and_ceiling() -> None:
 def test_recommendation_requires_both_histograms_to_have_samples() -> None:
     histograms = parse_histograms(SAMPLE_METRICS, operation="history")
 
-    assert recommend_ttl(
-        histograms,
-        percentile=0.99,
-        headroom_seconds=1.0,
-        current_ttl_seconds=4.0,
-    ) is None
+    assert (
+        recommend_ttl(
+            histograms,
+            percentile=0.99,
+            headroom_seconds=1.0,
+            current_ttl_seconds=4.0,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("percentile", [0.0, -0.1, 1.1])

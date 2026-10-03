@@ -65,9 +65,7 @@ def _book_message(*, sequence: int = 10) -> dict[str, Any]:
                         "BID_PRICE": 200.2,
                         "TOTAL_VOLUME": 3,
                         "NUM_BIDS": 1,
-                        "BIDS": [
-                            {"EXCHANGE": "Q", "BID_VOLUME": 3, "SEQUENCE": 102}
-                        ],
+                        "BIDS": [{"EXCHANGE": "Q", "BID_VOLUME": 3, "SEQUENCE": 102}],
                     },
                 ],
                 "ASKS": [
@@ -75,17 +73,13 @@ def _book_message(*, sequence: int = 10) -> dict[str, Any]:
                         "ASK_PRICE": 200.4,
                         "TOTAL_VOLUME": 4,
                         "NUM_ASKS": 1,
-                        "ASKS": [
-                            {"EXCHANGE": "Q", "ASK_VOLUME": 4, "SEQUENCE": 103}
-                        ],
+                        "ASKS": [{"EXCHANGE": "Q", "ASK_VOLUME": 4, "SEQUENCE": 103}],
                     },
                     {
                         "ASK_PRICE": 200.3,
                         "TOTAL_VOLUME": 6,
                         "NUM_ASKS": 1,
-                        "ASKS": [
-                            {"EXCHANGE": "P", "ASK_VOLUME": 6, "SEQUENCE": 104}
-                        ],
+                        "ASKS": [{"EXCHANGE": "P", "ASK_VOLUME": 6, "SEQUENCE": 104}],
                     },
                 ],
             }
@@ -117,9 +111,7 @@ def test_normalizer_produces_sorted_venue_specific_snapshot() -> None:
     assert [level.price for level in snapshot.bids] == [200.2, 200.1]
     assert [level.price for level in snapshot.asks] == [200.3, 200.4]
     assert snapshot.bids[1].participants[0].exchange == "Q"
-    assert snapshot.event_timestamp == dt.datetime.fromtimestamp(
-        BOOK_TIME_MILLIS / 1000, tz=UTC
-    )
+    assert snapshot.event_timestamp == dt.datetime.fromtimestamp(BOOK_TIME_MILLIS / 1000, tz=UTC)
     assert snapshot.data_quality_flags == ()
 
 
@@ -247,9 +239,7 @@ def test_recorder_discloses_when_sequence_continuity_is_unobservable(tmp_path: P
         _book_message(), venue="NASDAQ", gateway_received_at=RECEIVED_AT
     )[0].model_copy(update={"sequence": None})
     recorder.record_snapshot(snapshot)
-    manifest = json.loads(
-        recorder.finalize(termination_reason="completed").read_text()
-    )
+    manifest = json.loads(recorder.finalize(termination_reason="completed").read_text())
 
     assert manifest["snapshots_without_sequence_count"] == 1
     assert manifest["sequence_continuity_observable"] is False
@@ -428,9 +418,7 @@ async def test_shared_bootstrap_reconnects_into_explicit_continuity_epochs(
     assert manifest["reconnect_count"] == 1
     assert manifest["continuity_epoch_count"] == 2
     assert recorder.normalized_path is not None
-    snapshots = [
-        json.loads(line) for line in recorder.normalized_path.read_text().splitlines()
-    ]
+    snapshots = [json.loads(line) for line in recorder.normalized_path.read_text().splitlines()]
     assert [item["continuity_epoch"] for item in snapshots] == [1, 2]
     assert "reconnect_boundary" in snapshots[1]["data_quality_flags"]
 
@@ -495,9 +483,7 @@ async def test_live_feed_retains_backoff_until_validated_data_arrives(
         SCHWAB_TOKEN_PATH=tmp_path / "tokens.json",
     )
     store = OrderBookSnapshotStore()
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=1, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
     feed = OrderBookLiveFeed(
         manager,  # type: ignore[arg-type]
         settings,

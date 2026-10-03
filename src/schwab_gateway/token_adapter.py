@@ -125,9 +125,7 @@ class LockedSchwabClientAdapter:
                     reason="client_construction_failed",
                     error_type=type(exc).__name__,
                 )
-                raise SchwabClientConstructionError(
-                    "Schwab client construction failed"
-                ) from None
+                raise SchwabClientConstructionError("Schwab client construction failed") from None
 
             try:
                 return operation(client)
@@ -144,8 +142,6 @@ class LockedSchwabClientAdapter:
                     error_type=type(exc).__name__,
                     **_upstream_status(exc),
                 )
-                raise SchwabClientOperationError(
-                    "Schwab client operation failed"
-                ) from None
+                raise SchwabClientOperationError("Schwab client operation failed") from None
 
         return self._token_manager.run_access_transaction(run_locked)

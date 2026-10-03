@@ -148,9 +148,7 @@ gateway_quote_partial_responses = Counter(
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
 CHAIN_UPSTREAM_KEY = web.AppKey("gateway_chain_upstream", ChainMetadataUpstream)
-OPTION_CHAIN_UPSTREAM_KEY = web.AppKey(
-    "gateway_option_chain_upstream", OptionChainUpstream
-)
+OPTION_CHAIN_UPSTREAM_KEY = web.AppKey("gateway_option_chain_upstream", OptionChainUpstream)
 HISTORY_UPSTREAM_KEY = web.AppKey("gateway_history_upstream", HistoryUpstream)
 MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
 SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
@@ -711,9 +709,7 @@ async def option_chain(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "option_chain", build_response)
 
 
-def _option_chain_response(
-    result, symbol: str, expiration: dt.date
-) -> OptionChainResponseV1:
+def _option_chain_response(result, symbol: str, expiration: dt.date) -> OptionChainResponseV1:
     if result.symbol != symbol or result.expiration != expiration:
         raise UpstreamMalformedError("upstream returned a different option chain")
     return OptionChainResponseV1(option_chain=result)
@@ -755,9 +751,7 @@ async def _serve_option_chain_without_worker(
     except UpstreamUnavailableError:
         return _error("upstream_unavailable", "market data upstream is unavailable", 503)
     except (UpstreamMalformedError, ValueError):
-        return _error(
-            "upstream_malformed", "market data upstream returned invalid data", 502
-        )
+        return _error("upstream_malformed", "market data upstream returned invalid data", 502)
     return _json(response)
 
 
@@ -773,9 +767,7 @@ async def history(request: web.Request) -> web.Response:
         return _error("invalid_request", str(exc), 400)
 
     async def build_response() -> BaseModel:
-        result = await request.app[HISTORY_UPSTREAM_KEY].get_history(
-            symbol, frequency, days_back
-        )
+        result = await request.app[HISTORY_UPSTREAM_KEY].get_history(symbol, frequency, days_back)
         if result.symbol != symbol or result.frequency != frequency:
             raise UpstreamMalformedError("upstream returned a different history series")
         return HistoryResponseV1(history=result)
@@ -826,9 +818,7 @@ async def session_history(request: web.Request) -> web.Response:
             if cached is not None:
                 return _json(_session_history_response(cached, symbol, date, session))
         except (UpstreamMalformedError, ValueError):
-            return _error(
-                "upstream_malformed", "market data upstream returned invalid data", 502
-            )
+            return _error("upstream_malformed", "market data upstream returned invalid data", 502)
 
     async def build_response() -> BaseModel:
         result = await upstream.get_session_history(symbol, date, session)
@@ -904,9 +894,7 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
         )
     principal = request[PRINCIPAL_KEY]
     try:
-        async with request.app[ORDER_BOOK_STREAM_ADMISSION_KEY].admit(
-            principal.priority_class
-        ):
+        async with request.app[ORDER_BOOK_STREAM_ADMISSION_KEY].admit(principal.priority_class):
             gateway_admission.labels(
                 priority_class=principal.priority_class.value,
                 outcome="admitted",
@@ -939,9 +927,7 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
                         }:
                             break
                     if snapshot_task in done:
-                        envelope = OrderBookStreamEnvelopeV1(
-                            snapshot=snapshot_task.result()
-                        )
+                        envelope = OrderBookStreamEnvelopeV1(snapshot=snapshot_task.result())
                         await socket.send_str(envelope.model_dump_json())
             finally:
                 store.unsubscribe(subscription)
@@ -994,9 +980,7 @@ def create_app(
     app[UPSTREAM_KEY] = upstream
     app[SPOT_UPSTREAM_KEY] = spot_upstream or _UnavailableSpotUpstream()
     app[CHAIN_UPSTREAM_KEY] = chain_upstream or _UnavailableChainMetadataUpstream()
-    app[OPTION_CHAIN_UPSTREAM_KEY] = (
-        option_chain_upstream or _UnavailableOptionChainUpstream()
-    )
+    app[OPTION_CHAIN_UPSTREAM_KEY] = option_chain_upstream or _UnavailableOptionChainUpstream()
     app[HISTORY_UPSTREAM_KEY] = history_upstream or _UnavailableHistoryUpstream()
     app[MOVERS_UPSTREAM_KEY] = movers_upstream or _UnavailableMoversUpstream()
     app[SESSION_HISTORY_UPSTREAM_KEY] = (
@@ -1020,8 +1004,7 @@ def create_app(
     app.cleanup_ctx.append(execution_scheduler_context)
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
     app[ORDER_BOOK_STREAM_ADMISSION_KEY] = AdmissionController(
-        order_book_stream_policy
-        or AdmissionPolicy(protected_capacity=4, background_capacity=2)
+        order_book_stream_policy or AdmissionPolicy(protected_capacity=4, background_capacity=2)
     )
     app[ORDER_BOOK_MAX_AGE_KEY] = order_book_max_age_seconds
     app.router.add_get("/health", health, name="health")

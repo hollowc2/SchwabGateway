@@ -248,8 +248,7 @@ def test_preflight_passes_and_writes_sanitized_rollback_record(tmp_path: Path) -
         f"rollback_primary=SCHWAB_GATEWAY_PRODUCTION_IMAGE={RUNNING_IMAGE_ID} "
         "docker compose --project-name schwab_gateway "
         "-f compose.yml -f compose.production.yml --profile live "
-        "up --detach --no-build --no-deps --force-recreate live"
-        in result.stdout
+        "up --detach --no-build --no-deps --force-recreate live" in result.stdout
     )
     assert "prometheus_rollback=not-required-no-change" in result.stdout
     assert "SUMMARY PASS failures=0" in result.stdout

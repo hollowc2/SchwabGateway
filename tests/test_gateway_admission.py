@@ -447,9 +447,7 @@ async def test_application_cleanup_waits_for_timed_out_worker_drain() -> None:
 
 @pytest.mark.asyncio
 async def test_permits_release_after_success_failure_timeout_and_cancellation() -> None:
-    controller = AdmissionController(
-        AdmissionPolicy(protected_capacity=1, background_capacity=1)
-    )
+    controller = AdmissionController(AdmissionPolicy(protected_capacity=1, background_capacity=1))
 
     async with controller.admit(PriorityClass.BACKGROUND):
         assert await controller.active_count(PriorityClass.BACKGROUND) == 1

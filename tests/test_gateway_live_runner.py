@@ -278,9 +278,7 @@ def test_live_app_bounds_schwab_http_calls_by_the_upstream_budget(
 
     monkeypatch.setattr(runner, "LockedSchwabClientAdapter", recording_adapter)
     runner.build_live_app(
-        GatewaySettings(
-            internal_keys_path=_keys_file(tmp_path), upstream_timeout_seconds=2.5
-        ),
+        GatewaySettings(internal_keys_path=_keys_file(tmp_path), upstream_timeout_seconds=2.5),
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )

@@ -79,9 +79,7 @@ async def test_stream_authenticates_normalizes_query_and_preserves_contract() ->
     app.router.add_get("/v1/order-book/stream", stream)
     async with TestServer(app) as server:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
-            async with client.stream_order_books(
-                [" aapl ", "msft"], venue="nasdaq"
-            ) as snapshots:
+            async with client.stream_order_books([" aapl ", "msft"], venue="nasdaq") as snapshots:
                 received = [snapshot async for snapshot in snapshots]
 
     assert [snapshot.symbol for snapshot in received] == ["AAPL", "MSFT"]
@@ -132,9 +130,7 @@ async def test_stream_classifies_failed_upgrades(status: int, error_type: type[E
         (json.dumps(_envelope(venue="NYSE")), "mismatched"),
     ],
 )
-async def test_stream_rejects_malformed_or_mismatched_payloads(
-    payload: str, message: str
-) -> None:
+async def test_stream_rejects_malformed_or_mismatched_payloads(payload: str, message: str) -> None:
     async def stream(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse()
         await socket.prepare(request)
@@ -146,9 +142,7 @@ async def test_stream_rejects_malformed_or_mismatched_payloads(
     async with TestServer(app) as server:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
             with pytest.raises(GatewayResponseError, match=message):
-                async with client.stream_order_books(
-                    ["AAPL"], venue="NASDAQ"
-                ) as snapshots:
+                async with client.stream_order_books(["AAPL"], venue="NASDAQ") as snapshots:
                     await anext(snapshots)
 
 
@@ -164,9 +158,7 @@ async def test_stream_normal_server_close_ends_iteration() -> None:
     app.router.add_get("/v1/order-book/stream", stream)
     async with TestServer(app) as server:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
-            async with client.stream_order_books(
-                ["AAPL"], venue="NASDAQ"
-            ) as snapshots:
+            async with client.stream_order_books(["AAPL"], venue="NASDAQ") as snapshots:
                 assert [snapshot async for snapshot in snapshots] == []
 
 
@@ -187,9 +179,7 @@ async def test_stream_partial_iteration_closes_socket() -> None:
     app.router.add_get("/v1/order-book/stream", stream)
     async with TestServer(app) as server:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
-            async with client.stream_order_books(
-                ["AAPL"], venue="NASDAQ"
-            ) as snapshots:
+            async with client.stream_order_books(["AAPL"], venue="NASDAQ") as snapshots:
                 assert (await anext(snapshots)).symbol == "AAPL"
         await asyncio.wait_for(server_saw_close.wait(), timeout=1)
 
@@ -207,9 +197,7 @@ async def test_stream_does_not_reclassify_caller_exceptions() -> None:
     async with TestServer(app) as server:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
             with pytest.raises(OSError, match="caller failure"):
-                async with client.stream_order_books(
-                    ["AAPL"], venue="NASDAQ"
-                ) as snapshots:
+                async with client.stream_order_books(["AAPL"], venue="NASDAQ") as snapshots:
                     await anext(snapshots)
                     raise OSError("caller failure")
 
@@ -235,9 +223,7 @@ async def test_stream_cancellation_closes_socket() -> None:
         async with GatewayMarketDataClient(str(server.make_url("/")), "secret") as client:
 
             async def consume() -> None:
-                async with client.stream_order_books(
-                    ["AAPL"], venue="NASDAQ"
-                ) as snapshots:
+                async with client.stream_order_books(["AAPL"], venue="NASDAQ") as snapshots:
                     await anext(snapshots)
                     snapshot_received.set()
                     await blocker.wait()
@@ -286,9 +272,7 @@ async def test_stream_classifies_connection_failures(
     ],
 )
 @pytest.mark.asyncio
-async def test_stream_rejects_unsafe_or_ambiguous_inputs(
-    symbols: list[str], venue: str
-) -> None:
+async def test_stream_rejects_unsafe_or_ambiguous_inputs(symbols: list[str], venue: str) -> None:
     async with GatewayMarketDataClient("http://gateway.invalid", "secret") as client:
         with pytest.raises(ValueError):
             async with client.stream_order_books(symbols, venue=venue):

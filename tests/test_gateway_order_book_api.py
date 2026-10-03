@@ -50,12 +50,8 @@ def _snapshot(sequence: int) -> OrderBookSnapshotV1:
         sequence=sequence,
         event_timestamp=now,
         gateway_received_at=now,
-        bids=(
-            OrderBookLevelV1(price=100, total_size=10, participant_count=0),
-        ),
-        asks=(
-            OrderBookLevelV1(price=100.1, total_size=8, participant_count=0),
-        ),
+        bids=(OrderBookLevelV1(price=100, total_size=10, participant_count=0),),
+        asks=(OrderBookLevelV1(price=100.1, total_size=8, participant_count=0),),
     )
 
 
@@ -75,9 +71,7 @@ async def test_recent_order_book_is_authenticated_bounded_and_venue_specific() -
     )
     await client.start_server()
     try:
-        unauthorized = await client.get(
-            "/v1/order-book/recent?symbol=AAPL&venue=NASDAQ"
-        )
+        unauthorized = await client.get("/v1/order-book/recent?symbol=AAPL&venue=NASDAQ")
         response = await client.get(
             "/v1/order-book/recent?symbol=AAPL&venue=NASDAQ&limit=1",
             headers={"X-Internal-API-Key": "valid-key"},
@@ -111,9 +105,7 @@ async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> No
     await client.start_server()
     try:
         with pytest.raises(WSServerHandshakeError) as denied:
-            await client.ws_connect(
-                "/v1/order-book/stream?symbols=AAPL&venue=NASDAQ"
-            )
+            await client.ws_connect("/v1/order-book/stream?symbols=AAPL&venue=NASDAQ")
         socket = await client.ws_connect(
             "/v1/order-book/stream?symbols=AAPL&venue=NASDAQ",
             headers={"X-Internal-API-Key": "valid-key"},
