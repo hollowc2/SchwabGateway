@@ -446,6 +446,27 @@ def validate_token_document(value: object) -> TokenDocument:
     return document
 
 
+# (failure class, state, reason, refresh-counter result); any other failure is corrupt.
+_FAILURE_OUTCOMES: tuple[tuple[type[TokenManagerError], TokenManagerState, str, str], ...] = (
+    (TokenMissingError, TokenManagerState.MISSING, "token_missing", "missing"),
+    (TokenExpiredError, TokenManagerState.EXPIRED, "refresh_token_expired", "expired"),
+    (TokenLockTimeoutError, TokenManagerState.LOCK_TIMEOUT, "lock_timeout", "lock_timeout"),
+    (
+        TokenPersistenceError,
+        TokenManagerState.PERSISTENCE_FAILED,
+        "store_unavailable",
+        "persistence_error",
+    ),
+)
+
+
+def _failure_outcome(exc: TokenManagerError) -> tuple[TokenManagerState, str, str]:
+    for failure, state, reason, result in _FAILURE_OUTCOMES:
+        if isinstance(exc, failure):
+            return state, reason, result
+    return TokenManagerState.CORRUPT, "token_corrupt", "corrupt"
+
+
 class AtomicTokenManager:
     """Serialize refreshes and atomically persist one validated token document."""
 
@@ -623,38 +644,11 @@ class AtomicTokenManager:
         return token
 
     def _record_load_failure(self, exc: TokenManagerError) -> None:
-        if isinstance(exc, TokenMissingError):
-            self._transition(TokenManagerState.MISSING, "token_missing")
-        elif isinstance(exc, TokenExpiredError):
-            self._transition(TokenManagerState.EXPIRED, "refresh_token_expired")
-        elif isinstance(exc, TokenLockTimeoutError):
-            self._transition(TokenManagerState.LOCK_TIMEOUT, "lock_timeout")
-        elif isinstance(exc, TokenPersistenceError):
-            self._transition(TokenManagerState.PERSISTENCE_FAILED, "store_unavailable")
-        else:
-            self._transition(TokenManagerState.CORRUPT, "token_corrupt")
+        state, reason, _result = _failure_outcome(exc)
+        self._transition(state, reason)
 
     def _record_refresh_failure(self, exc: TokenManagerError) -> None:
-        if isinstance(exc, TokenMissingError):
-            result = "missing"
-            state = TokenManagerState.MISSING
-            reason = "token_missing"
-        elif isinstance(exc, TokenExpiredError):
-            result = "expired"
-            state = TokenManagerState.EXPIRED
-            reason = "refresh_token_expired"
-        elif isinstance(exc, TokenLockTimeoutError):
-            result = "lock_timeout"
-            state = TokenManagerState.LOCK_TIMEOUT
-            reason = "lock_timeout"
-        elif isinstance(exc, TokenPersistenceError):
-            result = "persistence_error"
-            state = TokenManagerState.PERSISTENCE_FAILED
-            reason = "store_unavailable"
-        else:
-            result = "corrupt"
-            state = TokenManagerState.CORRUPT
-            reason = "token_corrupt"
+        state, reason, result = _failure_outcome(exc)
         token_refresh_total.labels(result=result).inc()
         self._transition(state, reason)
 
