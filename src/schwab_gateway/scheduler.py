@@ -232,7 +232,7 @@ class ExecutionScheduler:
             except TimeoutError:
                 async with self._lock:
                     if job.state == "queued":
-                        self._expire_queued_locked(job, asyncio.get_running_loop().time())
+                        self._expire_queued_locked(job, loop.time())
                     if job.queue_timed_out:
                         raise SchedulerQueueTimeoutError(
                             "gateway worker queue wait timed out"
@@ -243,7 +243,7 @@ class ExecutionScheduler:
         except asyncio.CancelledError:
             async with self._lock:
                 if job.state == "queued":
-                    wait_seconds = asyncio.get_running_loop().time() - job.enqueued_at
+                    wait_seconds = loop.time() - job.enqueued_at
                     self._remove_queued_locked(job)
                     scheduler_queue_wait.labels(
                         priority_class=priority.value,
@@ -315,27 +315,31 @@ class ExecutionScheduler:
         scheduler_allocated.labels(priority_class=priority.value).set(self._allocated[priority])
         gateway_active_admitted.labels(priority_class=priority.value).set(self._allocated[priority])
 
-    def _remove_queued_locked(self, job: _Job) -> None:
-        self._queues[job.priority].remove(job)
-        job.state = "finished"
-        job.started.cancel()
-        job.result.cancel()
-        self._allocated[job.priority] -= 1
-        self._update_class_metrics(job.priority)
+    def _set_idle_if_drained(self) -> None:
         if not any(self._allocated.values()):
             self._idle.set()
 
-    def _expire_queued_locked(self, job: _Job, now: float) -> None:
+    def _release_queued_locked(self, job: _Job) -> None:
+        """Take a job that never dispatched out of its queue and free its allocation."""
         self._queues[job.priority].remove(job)
         job.state = "finished"
+        self._allocated[job.priority] -= 1
+        self._update_class_metrics(job.priority)
+        self._set_idle_if_drained()
+
+    def _remove_queued_locked(self, job: _Job) -> None:
+        self._release_queued_locked(job)
+        job.started.cancel()
+        job.result.cancel()
+
+    def _expire_queued_locked(self, job: _Job, now: float) -> None:
+        self._release_queued_locked(job)
         job.queue_timed_out = True
         error = SchedulerQueueTimeoutError("gateway worker queue wait timed out")
         if not job.started.done():
             job.started.set_exception(error)
         if not job.result.done():
             job.result.cancel()
-        self._allocated[job.priority] -= 1
-        self._update_class_metrics(job.priority)
         wait_seconds = max(0.0, now - job.enqueued_at)
         scheduler_queue_wait.labels(
             priority_class=job.priority.value,
@@ -351,8 +355,6 @@ class ExecutionScheduler:
             operation=job.operation_name,
             queue_wait_ms=round(wait_seconds * 1000, 2),
         )
-        if not any(self._allocated.values()):
-            self._idle.set()
 
     def _dispatch_locked(self) -> None:
         if self._worker_active:
@@ -363,8 +365,7 @@ class ExecutionScheduler:
             if not queue:
                 queue = self._queues[PriorityClass.BACKGROUND]
             if not queue:
-                if not any(self._allocated.values()):
-                    self._idle.set()
+                self._set_idle_if_drained()
                 return
             if queue[0].queue_deadline > now:
                 break
@@ -501,5 +502,4 @@ class ExecutionScheduler:
                 scheduler_worker_active.set(0)
                 self._update_class_metrics(job.priority)
                 self._dispatch_locked()
-                if not any(self._allocated.values()):
-                    self._idle.set()
+                self._set_idle_if_drained()
