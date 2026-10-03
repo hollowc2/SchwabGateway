@@ -12,7 +12,11 @@ from schwab_gateway.equity_stream_capture import (
 )
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.logging import get_logger, setup_logging
-from schwab_gateway.order_book_capture import parse_symbols
+from schwab_gateway.order_book_capture import (
+    DEFAULT_MAX_RECONNECTS,
+    DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
+    parse_symbols,
+)
 
 log = get_logger(__name__)
 
@@ -25,8 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--display-timezone", default="America/New_York")
     parser.add_argument("--authorize-real-credential-read", action="store_true")
     parser.add_argument("--confirm-shared-token-bootstrap", action="store_true")
-    parser.add_argument("--max-reconnects", type=int, default=3)
-    parser.add_argument("--login-timeout-seconds", type=float, default=8.0)
+    parser.add_argument("--max-reconnects", type=int, default=DEFAULT_MAX_RECONNECTS)
+    parser.add_argument(
+        "--login-timeout-seconds", type=float, default=DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS
+    )
     return parser
 
 

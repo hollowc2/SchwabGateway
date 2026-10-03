@@ -20,7 +20,11 @@ from schwab_gateway.order_book import (
     OrderBookVenue,
     normalize_schwab_book_message,
 )
-from schwab_gateway.order_book_capture import bootstrap_stream_under_token_lock
+from schwab_gateway.order_book_capture import (
+    DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
+    MAX_CAPTURE_SYMBOLS,
+    bootstrap_stream_under_token_lock,
+)
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
 from schwab_gateway.scheduler import ExecutionScheduler
 
@@ -59,12 +63,12 @@ class OrderBookLiveFeed:
         scheduler: ExecutionScheduler,
         queue_timeout_seconds: float,
         stream_client_factory: Callable[[Any], Any] | None = None,
-        login_timeout_seconds: float = 8.0,
+        login_timeout_seconds: float = DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
     ) -> None:
         if not symbols:
             raise ValueError("live order-book feed requires at least one symbol")
-        if len(symbols) > 25:
-            raise ValueError("live order-book feed supports at most 25 symbols")
+        if len(symbols) > MAX_CAPTURE_SYMBOLS:
+            raise ValueError(f"live order-book feed supports at most {MAX_CAPTURE_SYMBOLS} symbols")
         self._manager = manager
         self._upstream_settings = upstream_settings
         self._client_factory = client_factory

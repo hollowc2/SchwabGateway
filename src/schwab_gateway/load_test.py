@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 
 from schwab_gateway_sdk.client import (
     GatewayAuthenticationError,
@@ -32,6 +32,30 @@ from schwab_gateway_sdk.client import (
 UTC = dt.timezone.utc
 MAX_DURATION_SECONDS = 86_400.0
 MAX_CONCURRENCY = 32
+MAX_ENTRY_BURST_REQUESTS = 20
+# A fixed allowlist makes accidental response-body or credential persistence fail closed.
+EVIDENCE_ROW_FIELDS = frozenset(
+    {
+        "sequence",
+        "stage",
+        "endpoint",
+        "symbol",
+        "scheduled_offset_seconds",
+        "started_at",
+        "finished_at",
+        "latency_ms",
+        "status_code",
+        "status_class",
+        "error_class",
+        "exception_class",
+        "schema_version",
+        "schema_valid",
+        "stale",
+        "age_seconds",
+        "contract_count",
+        "data_quality_flag_count",
+    }
+)
 Endpoint = Literal["spot", "option_chain", "history"]
 
 
@@ -76,7 +100,7 @@ class LoadTestConfig:
         if self.collector_interval_seconds <= 0 or self.monitor_interval_seconds <= 0:
             raise ValueError("request intervals must be greater than zero")
         if not 1 <= self.max_concurrency <= MAX_CONCURRENCY:
-            raise ValueError("max_concurrency must be between 1 and 32")
+            raise ValueError(f"max_concurrency must be between 1 and {MAX_CONCURRENCY}")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
         for window in self.monitor_windows:
@@ -92,9 +116,10 @@ class LoadTestConfig:
             if burst.symbol.upper() not in symbols:
                 raise ValueError(f"burst symbol {burst.symbol!r} is not configured")
             start_in_session = 0 <= burst.start_seconds <= self.duration_seconds
-            if not start_in_session or not 1 <= burst.requests <= 20:
+            if not start_in_session or not 1 <= burst.requests <= MAX_ENTRY_BURST_REQUESTS:
                 raise ValueError(
-                    "entry bursts require an in-session start and 1 through 20 requests"
+                    "entry bursts require an in-session start and 1 through "
+                    f"{MAX_ENTRY_BURST_REQUESTS} requests"
                 )
 
 
@@ -205,7 +230,7 @@ class EvidenceRecorder:
         self.run_dir = config.output_root.resolve() / self.run_id
         self.events_path = self.run_dir / "requests.ndjson"
         self.manifest_path = self.run_dir / "manifest.json"
-        self._handle: Any = None
+        self._handle: TextIO | None = None
         self._rows: list[dict[str, Any]] = []
         self.started_at: dt.datetime | None = None
 
@@ -217,28 +242,7 @@ class EvidenceRecorder:
     def record(self, row: dict[str, Any]) -> None:
         if self._handle is None:
             raise RuntimeError("evidence recorder is not started")
-        # A fixed allowlist makes accidental response-body or credential persistence fail closed.
-        allowed = {
-            "sequence",
-            "stage",
-            "endpoint",
-            "symbol",
-            "scheduled_offset_seconds",
-            "started_at",
-            "finished_at",
-            "latency_ms",
-            "status_code",
-            "status_class",
-            "error_class",
-            "exception_class",
-            "schema_version",
-            "schema_valid",
-            "stale",
-            "age_seconds",
-            "contract_count",
-            "data_quality_flag_count",
-        }
-        if set(row) - allowed:
+        if set(row) - EVIDENCE_ROW_FIELDS:
             raise ValueError("evidence row contains a prohibited field")
         self._handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
         self._handle.flush()

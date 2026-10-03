@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 import httpx
 from prometheus_client.parser import text_string_to_metric_families
 
-from schwab_gateway.upstream import MAX_OPTION_CHAIN_CACHE_TTL_SECONDS
+from schwab_gateway.upstream import (
+    DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS,
+    MAX_OPTION_CHAIN_CACHE_TTL_SECONDS,
+)
 
 METRIC_NAMES = (
     "schwab_gateway_scheduler_queue_wait_seconds",
@@ -108,7 +111,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--operation", default="option_chain")
     parser.add_argument("--percentile", type=float, default=0.99)
     parser.add_argument("--headroom-seconds", type=float, default=1.0)
-    parser.add_argument("--current-ttl-seconds", type=float, default=4.0)
+    parser.add_argument(
+        "--current-ttl-seconds", type=float, default=DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS
+    )
     return parser.parse_args()
 
 
