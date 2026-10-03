@@ -8,7 +8,7 @@ import functools
 import math
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 from zoneinfo import ZoneInfo
@@ -245,6 +245,12 @@ class SpotPriceProvider(Protocol):
     async def get_spot_price(self, symbol: str = "$SPX") -> float: ...
 
 
+class TimestampedSpotPriceProvider(SpotPriceProvider, Protocol):
+    """Optional richer spot reader; ``DirectSchwabSpotUpstream`` prefers it when present."""
+
+    async def get_spot_snapshot(self, symbol: str = "$SPX") -> tuple[float, dt.datetime | None]: ...
+
+
 class PriceHistoryProvider(Protocol):
     async def get_daily_bars(self, symbol: str, days_back: int = 10) -> list[dict[str, Any]]: ...
 
@@ -407,6 +413,14 @@ def _integer(payload: dict[str, Any], name: str) -> int | None:
         return None
 
 
+def _first_number(payload: dict[str, Any], *names: str) -> float | None:
+    return next((value for name in names if (value := _number(payload, name)) is not None), None)
+
+
+def _first_integer(payload: dict[str, Any], *names: str) -> int | None:
+    return next((value for name in names if (value := _integer(payload, name)) is not None), None)
+
+
 def _event_time(payload: dict[str, Any]) -> dt.datetime | None:
     candidates = [
         value
@@ -556,6 +570,86 @@ def normalize_schwab_chain_metadata(
     )
 
 
+def _expiration_options(
+    payload: dict[str, Any], map_key: str, expiration_text: str
+) -> Iterator[tuple[float, dict[str, Any]]]:
+    """Yield ``(strike, contract)`` for one side and expiration, failing closed on shape."""
+    exp_map = payload.get(map_key, {})
+    if exp_map is None:
+        exp_map = {}
+    if not isinstance(exp_map, dict):
+        raise ValueError(f"{map_key} was not an object")
+    for exp_key, strike_map in exp_map.items():
+        if not isinstance(exp_key, str):
+            raise ValueError("option-chain expiration key was not a string")
+        if expiration_text not in exp_key:
+            continue
+        if not isinstance(strike_map, dict):
+            raise ValueError("option-chain strike map was not an object")
+        for strike_text, options in strike_map.items():
+            try:
+                strike = float(strike_text)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("option-chain strike was not numeric") from exc
+            if not isinstance(options, list):
+                raise ValueError("option-chain contracts were not a list")
+            for option in options:
+                if not isinstance(option, dict):
+                    raise ValueError("option-chain contract was not an object")
+                yield strike, option
+
+
+def _normalize_contract(
+    option: dict[str, Any],
+    option_type: Literal["CALL", "PUT"],
+    expiration: dt.date,
+    strike: float,
+    *,
+    received_at: dt.datetime,
+    stale_after_seconds: float,
+) -> OptionContractV1:
+    event_timestamp = _event_time(option)
+    age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
+    flags: list[str] = []
+    bid, ask, crossed_market_normalized = _normalized_bid_ask(option)
+    if crossed_market_normalized:
+        flags.append("crossed_market_normalized")
+    if event_timestamp is None:
+        flags.append("missing_event_timestamp")
+    if stale:
+        flags.append("stale")
+    return OptionContractV1(
+        symbol=option.get("symbol"),
+        option_type=option_type,
+        expiration=expiration,
+        strike=strike,
+        bid=bid,
+        ask=ask,
+        mark=_number(option, "mark"),
+        last=_number(option, "last"),
+        total_volume=_integer(option, "totalVolume"),
+        open_interest=_integer(option, "openInterest"),
+        volatility=_optional_analytic_number(option, "volatility"),
+        delta=_optional_analytic_number(option, "delta"),
+        gamma=_optional_analytic_number(option, "gamma"),
+        theta=_optional_analytic_number(option, "theta"),
+        vega=_optional_analytic_number(option, "vega"),
+        bid_size=_integer(option, "bidSize"),
+        ask_size=_integer(option, "askSize"),
+        rho=_optional_analytic_number(option, "rho"),
+        intrinsic_value=_optional_intrinsic_value(option),
+        time_value=_optional_time_value(option),
+        in_the_money=option.get("inTheMoney"),
+        days_to_expiration=_integer(option, "daysToExpiration"),
+        multiplier=_number(option, "multiplier"),
+        theoretical_option_value=_optional_theoretical_value(option),
+        event_timestamp=event_timestamp,
+        stale=stale,
+        age_seconds=age_seconds,
+        data_quality_flags=tuple(flags),
+    )
+
+
 def normalize_schwab_option_chain(
     symbol: str,
     payload: dict[str, Any],
@@ -573,80 +667,20 @@ def normalize_schwab_option_chain(
     """
     fields = extract_chain_metadata(payload, expiration)
     contracts: list[OptionContractV1] = []
-    expiration_text = str(expiration)
-
-    for option_type, map_key in (
-        ("CALL", "callExpDateMap"),
-        ("PUT", "putExpDateMap"),
-    ):
-        exp_map = payload.get(map_key, {})
-        if exp_map is None:
-            exp_map = {}
-        if not isinstance(exp_map, dict):
-            raise ValueError(f"{map_key} was not an object")
-        for exp_key, strike_map in exp_map.items():
-            if not isinstance(exp_key, str):
-                raise ValueError("option-chain expiration key was not a string")
-            if expiration_text not in exp_key:
-                continue
-            if not isinstance(strike_map, dict):
-                raise ValueError("option-chain strike map was not an object")
-            for strike_text, options in strike_map.items():
-                try:
-                    strike = float(strike_text)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("option-chain strike was not numeric") from exc
-                if not isinstance(options, list):
-                    raise ValueError("option-chain contracts were not a list")
-                for option in options:
-                    if not isinstance(option, dict):
-                        raise ValueError("option-chain contract was not an object")
-                    if len(contracts) >= MAX_OPTION_CHAIN_CONTRACTS_V1:
-                        raise ValueError("option chain exceeded the maximum contract count")
-                    event_timestamp = _event_time(option)
-                    age_seconds, contract_stale = _freshness(
-                        event_timestamp, received_at, stale_after_seconds
-                    )
-                    contract_flags: list[str] = []
-                    bid, ask, crossed_market_normalized = _normalized_bid_ask(option)
-                    if crossed_market_normalized:
-                        contract_flags.append("crossed_market_normalized")
-                    if event_timestamp is None:
-                        contract_flags.append("missing_event_timestamp")
-                    if contract_stale:
-                        contract_flags.append("stale")
-                    contracts.append(
-                        OptionContractV1(
-                            symbol=option.get("symbol"),
-                            option_type=option_type,
-                            expiration=expiration,
-                            strike=strike,
-                            bid=bid,
-                            ask=ask,
-                            mark=_number(option, "mark"),
-                            last=_number(option, "last"),
-                            total_volume=_integer(option, "totalVolume"),
-                            open_interest=_integer(option, "openInterest"),
-                            volatility=_optional_analytic_number(option, "volatility"),
-                            delta=_optional_analytic_number(option, "delta"),
-                            gamma=_optional_analytic_number(option, "gamma"),
-                            theta=_optional_analytic_number(option, "theta"),
-                            vega=_optional_analytic_number(option, "vega"),
-                            bid_size=_integer(option, "bidSize"),
-                            ask_size=_integer(option, "askSize"),
-                            rho=_optional_analytic_number(option, "rho"),
-                            intrinsic_value=_optional_intrinsic_value(option),
-                            time_value=_optional_time_value(option),
-                            in_the_money=option.get("inTheMoney"),
-                            days_to_expiration=_integer(option, "daysToExpiration"),
-                            multiplier=_number(option, "multiplier"),
-                            theoretical_option_value=_optional_theoretical_value(option),
-                            event_timestamp=event_timestamp,
-                            stale=contract_stale,
-                            age_seconds=age_seconds,
-                            data_quality_flags=tuple(contract_flags),
-                        )
-                    )
+    for option_type, map_key in (("CALL", "callExpDateMap"), ("PUT", "putExpDateMap")):
+        for strike, option in _expiration_options(payload, map_key, str(expiration)):
+            if len(contracts) >= MAX_OPTION_CHAIN_CONTRACTS_V1:
+                raise ValueError("option chain exceeded the maximum contract count")
+            contracts.append(
+                _normalize_contract(
+                    option,
+                    option_type,
+                    expiration,
+                    strike,
+                    received_at=received_at,
+                    stale_after_seconds=stale_after_seconds,
+                )
+            )
 
     contract_timestamps = [
         contract.event_timestamp for contract in contracts if contract.event_timestamp is not None
@@ -734,15 +768,8 @@ def normalize_schwab_history(
         raise ValueError("price history response was not a list of candles")
 
     flags: list[str] = []
-    bars: list[PriceBarV1] = []
-    dropped = 0
-    for candle in candles:
-        bar = _bar_from_candle(candle)
-        if bar is None:
-            dropped += 1
-            continue
-        bars.append(bar)
-    if dropped:
+    bars = [bar for candle in candles if (bar := _bar_from_candle(candle)) is not None]
+    if len(bars) != len(candles):
         raise ValueError("price history contained malformed candles")
     if not bars:
         flags.append("no_bars_returned")
@@ -755,11 +782,8 @@ def normalize_schwab_history(
             # it to the newest available date plus the preceding N-1 Eastern calendar
             # dates here. Exact point-in-time reads belong on ``/v1/session-history``.
             current_date = received_at.astimezone(EASTERN).date()
-            available_dates = {
-                bar.timestamp.astimezone(EASTERN).date()
-                for bar in bars
-                if bar.timestamp.astimezone(EASTERN).date() <= current_date
-            }
+            dated_bars = [(bar, bar.timestamp.astimezone(EASTERN).date()) for bar in bars]
+            available_dates = {date for _, date in dated_bars if date <= current_date}
             # Between midnight and the first bar of a new Eastern session, Schwab's
             # explicit trailing window legitimately ends on the prior session. Anchor
             # the bounded response to the newest date actually returned so a calendar
@@ -768,11 +792,7 @@ def normalize_schwab_history(
             # prior-session minute history is still marked stale overnight.
             anchor_date = max(available_dates, default=current_date)
             first_date = anchor_date - dt.timedelta(days=days_back - 1)
-            bars = [
-                bar
-                for bar in bars
-                if first_date <= bar.timestamp.astimezone(EASTERN).date() <= anchor_date
-            ]
+            bars = [bar for bar, date in dated_bars if first_date <= date <= anchor_date]
 
     event_timestamp = bars[-1].timestamp if bars else None
     age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
@@ -800,25 +820,13 @@ def _mover_from_item(item: Any) -> MoverV1 | None:
     symbol = item.get("symbol") or item.get("ticker")
     if not isinstance(symbol, str) or not symbol:
         return None
-    change_percent = _number(item, "changePercent")
-    if change_percent is None:
-        change_percent = _number(item, "netPercentChange")
-    change = _number(item, "change")
-    if change is None:
-        change = _number(item, "netChange")
-    last_price = _number(item, "lastPrice")
-    if last_price is None:
-        last_price = _number(item, "last")
-    volume = _integer(item, "totalVolume")
-    if volume is None:
-        volume = _integer(item, "volume")
     try:
         return MoverV1(
             symbol=symbol,
-            last_price=last_price,
-            change=change,
-            change_percent=change_percent,
-            volume=volume,
+            last_price=_first_number(item, "lastPrice", "last"),
+            change=_first_number(item, "change", "netChange"),
+            change_percent=_first_number(item, "changePercent", "netPercentChange"),
+            volume=_first_integer(item, "totalVolume", "volume"),
         )
     except ValueError:
         return None
@@ -835,15 +843,8 @@ def normalize_schwab_movers(
         raise ValueError("movers response was not a list of movers")
 
     flags: list[str] = []
-    movers: list[MoverV1] = []
-    dropped = 0
-    for item in items:
-        mover = _mover_from_item(item)
-        if mover is None:
-            dropped += 1
-            continue
-        movers.append(mover)
-    if dropped:
+    movers = [mover for item in items if (mover := _mover_from_item(item)) is not None]
+    if len(movers) != len(items):
         flags.append("malformed_movers_dropped")
     # The movers endpoint carries no per-item or response event time, so age is always
     # unknown here -- the same honest staleness contract ``normalize_schwab_spot`` uses.
