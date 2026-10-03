@@ -32,7 +32,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from prometheus_client import Histogram
 from pydantic import Field, SecretStr, field_validator
@@ -49,6 +49,7 @@ from schwab_gateway.market_calendar import EASTERN
 from schwab_gateway.token_adapter import LockedSchwabClientAdapter
 
 log = get_logger(__name__)
+T = TypeVar("T")
 
 DEFAULT_QUOTE_BATCH_SIZE = 150
 DEFAULT_READINESS_RECOVERY_SECONDS = 30.0
@@ -156,6 +157,18 @@ def _closing_session(client: Any) -> Iterator[None]:
             close()
 
 
+def _candles(response: Any) -> list[dict[str, Any]]:
+    """Return the candle list from a successful Schwab price-history response."""
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("price history response was not an object")
+    candles = payload.get("candles")
+    if not isinstance(candles, list):
+        raise ValueError("price history response carried no candle list")
+    return candles
+
+
 class LockedSchwabMarketDataProvider:
     """Read-only Schwab market data through one locked token transaction per call."""
 
@@ -176,7 +189,7 @@ class LockedSchwabMarketDataProvider:
         with self._worker_lease_guard:
             self._worker_active = False
 
-    async def _execute(self, operation_name: str, operation: Any) -> Any:
+    async def _execute(self, operation_name: str, operation: Callable[[Any], T]) -> T:
         """Run one synchronous locked transaction behind a one-worker lease.
 
         Response cancellation propagates immediately so the API timeout can return 504.
@@ -321,14 +334,7 @@ class LockedSchwabMarketDataProvider:
                     period=client.PriceHistory.Period.ONE_YEAR,
                     frequency_type=client.PriceHistory.FrequencyType.DAILY,
                 )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("price history response was not an object")
-                candles = payload.get("candles")
-                if not isinstance(candles, list):
-                    raise ValueError("price history response carried no candle list")
-                return candles
+                return _candles(response)
 
         return await self._execute("daily_history", operation)
 
@@ -355,14 +361,7 @@ class LockedSchwabMarketDataProvider:
                     start_datetime=dt.datetime.combine(start, dt.time.min),
                     end_datetime=dt.datetime.combine(today, dt.time.max),
                 )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("price history response was not an object")
-                candles = payload.get("candles")
-                if not isinstance(candles, list):
-                    raise ValueError("price history response carried no candle list")
-                return candles
+                return _candles(response)
 
         return await self._execute("minute_history", operation)
 
@@ -416,14 +415,7 @@ class LockedSchwabMarketDataProvider:
                     end_datetime=end,
                     need_extended_hours_data=True,
                 )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict):
-                    raise ValueError("price history response was not an object")
-                candles = payload.get("candles")
-                if not isinstance(candles, list):
-                    raise ValueError("price history response carried no candle list")
-                return candles
+                return _candles(response)
 
         return await self._execute("session_history", operation)
 
