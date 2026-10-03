@@ -288,8 +288,7 @@ class AtomicFileTokenStore:
         self._lock_path = self.path.with_name(f".{self.path.name}.lock")
         self._thread_lock = _thread_lock_for(self.path)
 
-    @contextmanager
-    def read_locked(self, timeout_seconds: float) -> Iterator[TokenReadTransaction]:
+    def read_locked(self, timeout_seconds: float) -> AbstractContextManager[TokenReadTransaction]:
         """Read under the writers' lock without requiring a writable token mount.
 
         Persistent writers open ``.tokens.json.lock`` read/write and take an exclusive
@@ -297,68 +296,52 @@ class AtomicFileTokenStore:
         and take a shared flock, preserving coordination without granting the consumer
         permission to create, replace, or truncate credential files.
         """
-        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
-            raise ValueError("lock timeout must be finite and nonnegative")
-        if not self.path.parent.is_dir():
-            raise TokenPersistenceError("token parent directory is unavailable")
+        return self._hold_lock(
+            timeout_seconds, mode="shared", open_lock=self._open_shared_lock, flock=fcntl.LOCK_SH
+        )
 
-        wait_started = time.monotonic()
-        deadline = wait_started + timeout_seconds
-        if not self._thread_lock.acquire(timeout=timeout_seconds):
-            token_lock_wait_seconds.labels(mode="shared", outcome="timeout").observe(
-                time.monotonic() - wait_started
-            )
-            raise TokenLockTimeoutError("timed out waiting for the token lock")
+    def locked(self, timeout_seconds: float) -> AbstractContextManager[TokenTransaction]:
+        return self._hold_lock(
+            timeout_seconds,
+            mode="exclusive",
+            open_lock=self._open_exclusive_lock,
+            flock=fcntl.LOCK_EX,
+        )
 
+    def _open_shared_lock(self) -> int:
         lock_fd = -1
-        hold_started: float | None = None
         try:
-            flags = os.O_RDONLY | _SAFE_OPEN_FLAGS
-            try:
-                lock_fd = os.open(self._lock_path, flags)
-                lock_stat = os.fstat(lock_fd)
-                if not stat.S_ISREG(lock_stat.st_mode) or stat.S_IMODE(lock_stat.st_mode) != 0o600:
-                    raise OSError
-            except OSError:
-                if lock_fd >= 0:
-                    os.close(lock_fd)
-                    lock_fd = -1
-                raise TokenPersistenceError("token lock file cannot be opened read-only") from None
-
-            while True:
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        token_lock_wait_seconds.labels(mode="shared", outcome="timeout").observe(
-                            time.monotonic() - wait_started
-                        )
-                        raise TokenLockTimeoutError("timed out waiting for the token lock")
-                    time.sleep(min(0.01, remaining))
-                except OSError:
-                    raise TokenPersistenceError("token lock could not be acquired") from None
-
-            token_lock_wait_seconds.labels(mode="shared", outcome="acquired").observe(
-                time.monotonic() - wait_started
-            )
-            hold_started = time.monotonic()
-            yield _AtomicFileTokenTransaction(self.path, self._max_token_bytes)
-        finally:
-            if hold_started is not None:
-                token_lock_hold_seconds.labels(mode="shared").observe(
-                    time.monotonic() - hold_started
-                )
+            lock_fd = os.open(self._lock_path, os.O_RDONLY | _SAFE_OPEN_FLAGS)
+            lock_stat = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_stat.st_mode) or stat.S_IMODE(lock_stat.st_mode) != 0o600:
+                raise OSError
+        except OSError:
             if lock_fd >= 0:
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(lock_fd)
-            self._thread_lock.release()
+                os.close(lock_fd)
+            raise TokenPersistenceError("token lock file cannot be opened read-only") from None
+        return lock_fd
+
+    def _open_exclusive_lock(self) -> int:
+        lock_fd = -1
+        try:
+            lock_fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT | _SAFE_OPEN_FLAGS, 0o600)
+            os.fchmod(lock_fd, 0o600)
+        except OSError:
+            if lock_fd >= 0:
+                os.close(lock_fd)
+            raise TokenPersistenceError("token lock file cannot be opened safely") from None
+        return lock_fd
 
     @contextmanager
-    def locked(self, timeout_seconds: float) -> Iterator[TokenTransaction]:
+    def _hold_lock(
+        self,
+        timeout_seconds: float,
+        *,
+        mode: str,
+        open_lock: Callable[[], int],
+        flock: int,
+    ) -> Iterator[_AtomicFileTokenTransaction]:
+        """Hold the per-path thread lock, then a ``flock`` of ``flock`` kind on the lock file."""
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError("lock timeout must be finite and nonnegative")
         if not self.path.parent.is_dir():
@@ -367,7 +350,7 @@ class AtomicFileTokenStore:
         wait_started = time.monotonic()
         deadline = wait_started + timeout_seconds
         if not self._thread_lock.acquire(timeout=timeout_seconds):
-            token_lock_wait_seconds.labels(mode="exclusive", outcome="timeout").observe(
+            token_lock_wait_seconds.labels(mode=mode, outcome="timeout").observe(
                 time.monotonic() - wait_started
             )
             raise TokenLockTimeoutError("timed out waiting for the token lock")
@@ -375,21 +358,15 @@ class AtomicFileTokenStore:
         lock_fd = -1
         hold_started: float | None = None
         try:
-            flags = os.O_RDWR | os.O_CREAT | _SAFE_OPEN_FLAGS
-            try:
-                lock_fd = os.open(self._lock_path, flags, 0o600)
-                os.fchmod(lock_fd, 0o600)
-            except OSError:
-                raise TokenPersistenceError("token lock file cannot be opened safely") from None
-
+            lock_fd = open_lock()
             while True:
                 try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock_fd, flock | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        token_lock_wait_seconds.labels(mode="exclusive", outcome="timeout").observe(
+                        token_lock_wait_seconds.labels(mode=mode, outcome="timeout").observe(
                             time.monotonic() - wait_started
                         )
                         raise TokenLockTimeoutError("timed out waiting for the token lock")
@@ -397,16 +374,14 @@ class AtomicFileTokenStore:
                 except OSError:
                     raise TokenPersistenceError("token lock could not be acquired") from None
 
-            token_lock_wait_seconds.labels(mode="exclusive", outcome="acquired").observe(
+            token_lock_wait_seconds.labels(mode=mode, outcome="acquired").observe(
                 time.monotonic() - wait_started
             )
             hold_started = time.monotonic()
             yield _AtomicFileTokenTransaction(self.path, self._max_token_bytes)
         finally:
             if hold_started is not None:
-                token_lock_hold_seconds.labels(mode="exclusive").observe(
-                    time.monotonic() - hold_started
-                )
+                token_lock_hold_seconds.labels(mode=mode).observe(time.monotonic() - hold_started)
             if lock_fd >= 0:
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
