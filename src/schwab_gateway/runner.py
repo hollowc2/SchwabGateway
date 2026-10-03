@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-from collections.abc import AsyncIterator
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from aiohttp import web
@@ -36,7 +36,10 @@ from schwab_gateway.live_provider import (
 from schwab_gateway.logging import get_logger, setup_logging
 from schwab_gateway.order_book_live import OrderBookLiveFeed
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
-from schwab_gateway.token_adapter import LockedSchwabClientAdapter
+from schwab_gateway.token_adapter import (
+    LockedSchwabClientAdapter,
+    SchwabAccessFunctionClientFactory,
+)
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
     DirectSchwabHistoryUpstream,
@@ -48,6 +51,7 @@ from schwab_gateway.upstream import (
 )
 
 log = get_logger(__name__)
+CleanupContext = Callable[[web.Application], AsyncIterator[None]]
 
 
 class DemoQuoteUpstream:
@@ -114,7 +118,7 @@ def build_demo_app(settings: GatewaySettings) -> web.Application:
 def build_live_app(
     settings: GatewaySettings,
     upstream_settings: GatewayUpstreamSettings,
-    client_factory: Any,
+    client_factory: SchwabAccessFunctionClientFactory[Any],
 ) -> web.Application:
     """Real application: every read surface over one locked token manager.
 
@@ -209,7 +213,19 @@ def build_live_app(
     return app
 
 
-def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> Any:
+@asynccontextmanager
+async def _background_task(coroutine: Coroutine[Any, Any, None]) -> AsyncIterator[None]:
+    """Run ``coroutine`` as a task for the block's lifetime, then cancel and await it."""
+    task = asyncio.create_task(coroutine)
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> CleanupContext:
     """Run readiness recovery for the lifetime of the application.
 
     Registered only in live mode: the demo app's readiness is a static fake with nothing
@@ -217,13 +233,8 @@ def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> Any:
     """
 
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
-        task = asyncio.create_task(recovery.run_forever())
-        try:
+        async with _background_task(recovery.run_forever()):
             yield
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
 
     return ctx
 
@@ -232,7 +243,7 @@ def _upstream_warmup_ctx(
     warmup: UpstreamWarmupReadiness,
     *,
     startup_timeout_seconds: float = DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS,
-) -> Any:
+) -> CleanupContext:
     """Prime the Schwab client before serving; keep retrying if the first try fails.
 
     Registered only in live mode. A bounded blocking attempt lets a healthy deploy come
@@ -245,26 +256,16 @@ def _upstream_warmup_ctx(
             await asyncio.wait_for(warmup.attempt_once(), timeout=startup_timeout_seconds)
         if not warmup.is_warm:
             log.warning("gateway_upstream_warmup_startup_incomplete")
-        task = asyncio.create_task(warmup.run_until_warm())
-        try:
+        async with _background_task(warmup.run_until_warm()):
             yield
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
 
     return ctx
 
 
-def _order_book_feed_ctx(feed: OrderBookLiveFeed) -> Any:
+def _order_book_feed_ctx(feed: OrderBookLiveFeed) -> CleanupContext:
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
-        task = asyncio.create_task(feed.run_forever())
-        try:
+        async with _background_task(feed.run_forever()):
             yield
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
 
     return ctx
 
