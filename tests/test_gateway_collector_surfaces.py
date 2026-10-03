@@ -7,7 +7,6 @@ import datetime as dt
 
 import httpx
 import pytest
-from aiohttp.test_utils import TestServer
 from schwab_gateway_sdk.client import (
     GatewayAuthenticationError,
     GatewayAuthorizationError,
@@ -26,18 +25,12 @@ from schwab_gateway_sdk.models import (
     SpotV1,
 )
 from schwab_token_store import (
-    TokenManagerHealth,
     TokenManagerState,
 )
+from support import EmptyQuoteUpstream, FakeReadiness, serving, single_principal_authenticator
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import create_app
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
-)
 from schwab_gateway.upstream import (
     DirectSchwabChainMetadataUpstream,
     DirectSchwabHistoryUpstream,
@@ -49,36 +42,6 @@ from schwab_gateway.upstream import (
 )
 
 EXPIRATION = dt.date(2026, 8, 6)
-
-
-def authenticator(*, capability: str | None = "market_data:read") -> InternalKeyAuthenticator:
-    return InternalKeyAuthenticator(
-        (
-            InternalPrincipal(
-                client_id="butterfly-guy",
-                key_sha256=hash_api_key("valid-key"),
-                capabilities=frozenset({capability} if capability else set()),
-                priority_class=PriorityClass.PROTECTED,
-            ),
-        )
-    )
-
-
-class FakeReadiness:
-    def __init__(self, state: TokenManagerState = TokenManagerState.READY) -> None:
-        self.state = state
-
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(
-            state=self.state,
-            reason="fake reason",
-            updated_at=dt.datetime.now(dt.timezone.utc),
-        )
-
-
-class FakeQuoteUpstream:
-    async def get_quotes(self, symbols: tuple[str, ...]) -> tuple:
-        return ()
 
 
 class FakeSpotUpstream:
@@ -200,8 +163,8 @@ def app(
     admission_policy: AdmissionPolicy | None = None,
 ):
     return create_app(
-        FakeQuoteUpstream(),
-        authenticator(capability=capability),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(capability=capability),
         upstream_timeout_seconds=upstream_timeout_seconds,
         token_readiness_provider=FakeReadiness(
             TokenManagerState.READY if ready else TokenManagerState.MISSING
@@ -221,14 +184,10 @@ def app(
 @pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_spot_upstream_returns_typed_contract() -> None:
     upstream = FakeSpotUpstream(price=5123.5)
-    server = TestServer(app(spot_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(spot_upstream=upstream)) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_spot("$SPX")
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert response.spot.symbol == "$SPX"
@@ -240,9 +199,7 @@ async def test_client_to_http_gateway_to_fake_spot_upstream_returns_typed_contra
 @pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_only() -> None:
     upstream = FakeChainUpstream()
-    server = TestServer(app(chain_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(chain_upstream=upstream)) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_chain_metadata("SPX", EXPIRATION)
         raw = await client._client.get(
@@ -251,8 +208,6 @@ async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_on
             headers={"X-Internal-API-Key": "valid-key"},
         )
         await client.close()
-    finally:
-        await server.close()
 
     assert response.chain.symbol == "SPX"
     assert response.chain.expiration == EXPIRATION
@@ -270,14 +225,10 @@ async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_on
 @pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_history_upstream_returns_typed_contract() -> None:
     upstream = FakeHistoryUpstream()
-    server = TestServer(app(history_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(history_upstream=upstream)) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_history("AAPL", frequency="daily", days_back=5)
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert response.history.symbol == "AAPL"
@@ -291,17 +242,13 @@ async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> Non
     """The default is 20, not the direct wrapper's 10: it must already satisfy
     ButterflyGuy's 20-day rolling-average lookback without the caller overriding it."""
     upstream = FakeHistoryUpstream()
-    server = TestServer(app(history_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(history_upstream=upstream)) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get(
                 "/v1/history",
                 params={"symbol": "AAPL"},
                 headers={"X-Internal-API-Key": "valid-key"},
             )
-    finally:
-        await server.close()
 
     assert response.status_code == 200
     assert upstream.calls == [("AAPL", "daily", 20)]
@@ -310,14 +257,10 @@ async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> Non
 @pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_movers_upstream_returns_typed_contract() -> None:
     upstream = FakeMoversUpstream()
-    server = TestServer(app(movers_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(movers_upstream=upstream)) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_movers("$SPX", direction="down")
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert response.movers.index == "$SPX"
@@ -331,16 +274,12 @@ async def test_client_to_http_gateway_to_fake_session_history_upstream_returns_t
     None
 ):
     upstream = FakeSessionHistoryUpstream()
-    server = TestServer(app(session_history_upstream=upstream))
-    await server.start_server()
-    try:
+    async with serving(app(session_history_upstream=upstream)) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_session_history(
             "AAPL", dt.date(2026, 8, 12), session="extended"
         )
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert response.session_history.symbol == "AAPL"
@@ -367,7 +306,7 @@ async def test_client_to_http_gateway_to_fake_session_history_upstream_returns_t
 async def test_missing_key_is_401_and_wrong_capability_is_403(
     path: str, params: dict[str, str]
 ) -> None:
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=FakeSpotUpstream(),
             chain_upstream=FakeChainUpstream(),
@@ -376,9 +315,7 @@ async def test_missing_key_is_401_and_wrong_capability_is_403(
             session_history_upstream=FakeSessionHistoryUpstream(),
             capability=None,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             missing = await http.get(path, params=params)
             invalid = await http.get(
@@ -387,8 +324,6 @@ async def test_missing_key_is_401_and_wrong_capability_is_403(
             denied = await http.get(
                 path, params=params, headers={"X-Internal-API-Key": "valid-key"}
             )
-    finally:
-        await server.close()
 
     assert missing.status_code == 401
     assert invalid.status_code == 401
@@ -441,7 +376,7 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
     history_upstream = FakeHistoryUpstream()
     movers_upstream = FakeMoversUpstream()
     session_history_upstream = FakeSessionHistoryUpstream()
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=spot_upstream,
             chain_upstream=chain_upstream,
@@ -449,15 +384,11 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
             movers_upstream=movers_upstream,
             session_history_upstream=session_history_upstream,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get(
                 path, params=params, headers={"X-Internal-API-Key": "valid-key"}
             )
-    finally:
-        await server.close()
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
@@ -490,7 +421,7 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
     history_upstream = FakeHistoryUpstream()
     movers_upstream = FakeMoversUpstream()
     session_history_upstream = FakeSessionHistoryUpstream()
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=spot_upstream,
             chain_upstream=chain_upstream,
@@ -499,15 +430,11 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
             session_history_upstream=session_history_upstream,
             ready=False,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get(
                 path, params=params, headers={"X-Internal-API-Key": "valid-key"}
             )
-    finally:
-        await server.close()
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "gateway_not_ready"
@@ -554,7 +481,7 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
             raise UpstreamUnavailableError("never returns a value in this test")
 
     blocking = BlockingUpstream()
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=blocking,
             chain_upstream=blocking,
@@ -563,9 +490,7 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
             session_history_upstream=blocking,
             admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             held = asyncio.create_task(
                 http.get(path, params=params, headers={"X-Internal-API-Key": "valid-key"})
@@ -576,8 +501,6 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
             )
             release.set()
             await held
-    finally:
-        await server.close()
 
     assert rejected.status_code == 429
     assert rejected.json()["error"]["code"] == "gateway_capacity_exceeded"
@@ -592,9 +515,7 @@ async def test_active_admitted_gauge_tracks_in_flight_requests() -> None:
             await release.wait()
             raise UpstreamUnavailableError("never returns a value in this test")
 
-    server = TestServer(app(spot_upstream=BlockingSpot()))
-    await server.start_server()
-    try:
+    async with serving(app(spot_upstream=BlockingSpot())) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             held = asyncio.create_task(
                 http.get(
@@ -608,8 +529,6 @@ async def test_active_admitted_gauge_tracks_in_flight_requests() -> None:
             release.set()
             await held
             settled = await http.get("/metrics")
-    finally:
-        await server.close()
 
     assert 'gateway_active_admitted_requests{priority_class="protected"} 1.0' in in_flight.text
     assert 'gateway_active_admitted_requests{priority_class="protected"} 0.0' in settled.text
@@ -651,15 +570,11 @@ async def test_upstream_failures_map_to_bounded_status_codes(
             },
         )
 
-    server = TestServer(app(**kwargs))
-    await server.start_server()
-    try:
+    async with serving(app(**kwargs)) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get(
                 path, params=params, headers={"X-Internal-API-Key": "valid-key"}
             )
-    finally:
-        await server.close()
 
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
@@ -687,7 +602,7 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
             await asyncio.sleep(0.05)
 
     slow = SlowUpstream()
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=slow,
             chain_upstream=slow,
@@ -696,9 +611,7 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
             session_history_upstream=slow,
             upstream_timeout_seconds=0.001,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         with pytest.raises(GatewayTimeoutError):
             if surface == "spot":
@@ -712,16 +625,12 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
             else:
                 await client.get_session_history("AAPL", dt.date(2026, 8, 12))
         await client.close()
-    finally:
-        await server.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> None:
-    server = TestServer(app())
-    await server.start_server()
-    try:
+    async with serving(app()) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         with pytest.raises(GatewayUnavailableError):
             if surface == "spot":
@@ -735,8 +644,6 @@ async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> N
             else:
                 await client.get_session_history("AAPL", dt.date(2026, 8, 12))
         await client.close()
-    finally:
-        await server.close()
 
 
 @pytest.mark.asyncio
@@ -797,7 +704,7 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
             )
 
     wrong = WrongSymbolUpstream()
-    server = TestServer(
+    async with serving(
         app(
             spot_upstream=wrong,
             chain_upstream=wrong,
@@ -805,9 +712,7 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
             movers_upstream=wrong,
             session_history_upstream=wrong,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             spot_response = await http.get(
                 "/v1/spot",
@@ -834,8 +739,6 @@ async def test_upstream_returning_a_different_subject_is_rejected_as_malformed()
                 params={"symbol": "AAPL", "date": "2026-08-12", "session": "regular"},
                 headers={"X-Internal-API-Key": "valid-key"},
             )
-    finally:
-        await server.close()
 
     for response in (
         spot_response,

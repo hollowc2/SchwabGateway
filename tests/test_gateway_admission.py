@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestServer
 from schwab_gateway_sdk.client import GatewayCapacityError, GatewayMarketDataClient
 from schwab_gateway_sdk.models import QuoteV1
 from schwab_token_store import TokenManagerState
+from support import serving
 
 from schwab_gateway import api
 from schwab_gateway.admission import (
@@ -132,9 +133,7 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
         token_readiness_provider=ready_provider(),
         admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=2),
     )
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             scanner = asyncio.create_task(
                 client.get(
@@ -181,8 +180,6 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
             upstream.release.set()
             responses = await asyncio.gather(scanner, lab, protected)
             metrics = await client.get("/metrics")
-    finally:
-        await server.close()
 
     assert rejected.status_code == 429
     assert rejected.json()["error"] == {
@@ -507,9 +504,7 @@ async def test_normalized_upstream_failure_releases_permit_for_next_request() ->
         token_readiness_provider=ready_provider(),
         admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
     )
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             failed = await client.get(
                 "/v1/quotes", params={"symbols": "AAPL"}, headers=headers("equity-scanner")
@@ -517,8 +512,6 @@ async def test_normalized_upstream_failure_releases_permit_for_next_request() ->
             recovered = await client.get(
                 "/v1/quotes", params={"symbols": "AAPL"}, headers=headers("equity-scanner")
             )
-    finally:
-        await server.close()
 
     assert failed.status_code == 503
     assert failed.json()["error"]["code"] == "upstream_unavailable"
@@ -542,15 +535,13 @@ async def test_identity_claim_header_cannot_override_authenticated_caller(monkey
     upstream = BlockingUpstream()
     upstream.release.set()
     monkeypatch.setattr(api, "log", RecordingLog())
-    server = TestServer(
+    async with serving(
         create_app(
             upstream,
             authenticator(),
             token_readiness_provider=ready_provider(),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             response = await client.get(
                 "/v1/quotes",
@@ -560,8 +551,6 @@ async def test_identity_claim_header_cannot_override_authenticated_caller(monkey
                     **{"X-Internal-Caller-ID": "butterfly-guy"},
                 ),
             )
-    finally:
-        await server.close()
 
     assert response.status_code == 200
     request_record = next(item for item in records if item.get("operation") == "quotes_v1")
