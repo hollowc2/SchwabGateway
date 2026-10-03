@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import functools
 import math
 import time
 from collections import OrderedDict
@@ -166,6 +167,7 @@ def _easter_sunday(year: int) -> dt.date:
     return dt.date(year, month, day)
 
 
+@functools.cache
 def _market_holidays(year: int) -> frozenset[dt.date]:
     holidays = {
         _observed_holiday(dt.date(year, 7, 4)),
@@ -192,6 +194,7 @@ def _is_trading_day(date: dt.date) -> bool:
     return date.weekday() < 5 and date not in _market_holidays(date.year)
 
 
+@functools.cache
 def _early_close_sessions(year: int) -> frozenset[dt.date]:
     """Return recurring 13:00 ET US-equity closes for ``year``.
 
@@ -923,14 +926,6 @@ class DirectSchwabMoversUpstream:
             raise UpstreamMalformedError("Schwab movers response was invalid") from exc
 
 
-def _is_regular_session(timestamp: dt.datetime, date: dt.date) -> bool:
-    session_end = _regular_session_end(date)
-    if session_end is None:
-        return False
-    eastern = timestamp.astimezone(EASTERN)
-    return eastern.date() == date and REGULAR_SESSION_START <= eastern.time() < session_end
-
-
 def normalize_schwab_session_history(
     symbol: str,
     date: dt.date,
@@ -963,10 +958,10 @@ def normalize_schwab_session_history(
         if bar is None:
             dropped += 1
             continue
-        eastern_date = bar.timestamp.astimezone(EASTERN).date()
-        if eastern_date != date or session_end is None:
+        eastern = bar.timestamp.astimezone(EASTERN)
+        if eastern.date() != date or session_end is None:
             continue
-        is_regular = _is_regular_session(bar.timestamp, date)
+        is_regular = REGULAR_SESSION_START <= eastern.time() < session_end
         if is_regular is (session == "regular"):
             bars.append(bar)
     if dropped:
