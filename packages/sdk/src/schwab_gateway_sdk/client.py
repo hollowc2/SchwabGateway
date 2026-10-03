@@ -7,11 +7,11 @@ import json
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Literal, TypeVar
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosedError, InvalidStatus, WebSocketException
 
@@ -30,6 +30,7 @@ from schwab_gateway_sdk.models import (
 )
 
 OrderBookVenue = Literal["NASDAQ", "NYSE"]
+ModelT = TypeVar("ModelT", bound=BaseModel)
 _ORDER_BOOK_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 _MAX_ORDER_BOOK_SYMBOLS = 25
 
@@ -66,15 +67,31 @@ class GatewayResponseError(GatewayClientError):
     pass
 
 
-def _error_code(response: httpx.Response) -> str | None:
+def _error_code_in(payload: object) -> str | None:
     """Read only the bounded error discriminator; malformed bodies fail closed."""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def _error_code(response: httpx.Response) -> str | None:
     try:
-        payload = response.json()
-        error = payload.get("error") if isinstance(payload, dict) else None
-        code = error.get("code") if isinstance(error, dict) else None
+        return _error_code_in(response.json())
     except ValueError:
         return None
-    return code if isinstance(code, str) else None
+
+
+def _required_symbol(symbol: str, message: str = "a symbol is required") -> str:
+    requested = symbol.strip()
+    if not requested:
+        raise ValueError(message)
+    return requested
+
+
+def _required_date(value: dt.date, message: str) -> dt.date:
+    if not isinstance(value, dt.date) or isinstance(value, dt.datetime):
+        raise ValueError(message)
+    return value
 
 
 def _normalize_order_book_venue(venue: str) -> OrderBookVenue:
@@ -99,12 +116,9 @@ def _normalize_order_book_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
 
 def _websocket_error_code(exc: InvalidStatus) -> str | None:
     try:
-        payload = json.loads(exc.response.body)
-        error = payload.get("error") if isinstance(payload, dict) else None
-        code = error.get("code") if isinstance(error, dict) else None
+        return _error_code_in(json.loads(exc.response.body))
     except (TypeError, UnicodeDecodeError, ValueError):
         return None
-    return code if isinstance(code, str) else None
 
 
 class GatewayMarketDataClient:
@@ -142,47 +156,26 @@ class GatewayMarketDataClient:
         """
         return await self._get_quotes(symbols, PartialQuoteResponseV1, allow_partial=True)
 
-    async def _get_quotes(self, symbols: Sequence[str], model: type, *, allow_partial: bool):
+    async def _get_quotes(
+        self, symbols: Sequence[str], model: type[ModelT], *, allow_partial: bool
+    ) -> ModelT:
         requested = tuple(symbols)
         if not requested:
             raise ValueError("at least one symbol is required")
         params = {"symbols": ",".join(requested)}
         if allow_partial:
             params["allow_partial"] = "true"
-        try:
-            response = await self._client.get(
-                "/v1/quotes",
-                params=params,
-                headers={"X-Internal-API-Key": self._api_key},
-            )
-        except httpx.TimeoutException as exc:
-            raise GatewayTimeoutError("gateway quote request timed out") from exc
-        except httpx.TransportError as exc:
-            raise GatewayUnavailableError("gateway quote request unavailable") from exc
+        return await self._get_typed("/v1/quotes", params, model, noun="quote")
 
-        if response.status_code == 401:
-            raise GatewayAuthenticationError("gateway authentication failed")
-        if response.status_code == 403:
-            raise GatewayAuthorizationError("gateway capability denied")
-        if response.status_code == 429:
-            raise GatewayCapacityError("gateway request capacity is unavailable")
-        if response.status_code == 503 and _error_code(response) == "gateway_queue_timeout":
-            raise GatewayQueueTimeoutError("gateway worker queue wait timed out")
-        if response.status_code == 504:
-            raise GatewayTimeoutError("gateway quote upstream timed out")
-        if response.status_code in {502, 503}:
-            raise GatewayUnavailableError("gateway upstream is unavailable")
-        if response.status_code != 200:
-            raise GatewayResponseError(
-                f"gateway quote request failed with status {response.status_code}"
-            )
-        try:
-            return model.model_validate(response.json())
-        except (ValueError, ValidationError) as exc:
-            raise GatewayResponseError("gateway returned an invalid quote contract") from exc
-
-    async def _get_typed(self, path: str, params: dict[str, str], model: type):
-        """Fail-closed GET for the collector-facing surfaces. No retries."""
+    async def _get_typed(
+        self,
+        path: str,
+        params: dict[str, str],
+        model: type[ModelT],
+        *,
+        noun: str = "market data",
+    ) -> ModelT:
+        """Fail-closed GET for one gateway read. No retries."""
         try:
             response = await self._client.get(
                 path,
@@ -190,9 +183,9 @@ class GatewayMarketDataClient:
                 headers={"X-Internal-API-Key": self._api_key},
             )
         except httpx.TimeoutException as exc:
-            raise GatewayTimeoutError("gateway market data request timed out") from exc
+            raise GatewayTimeoutError(f"gateway {noun} request timed out") from exc
         except httpx.TransportError as exc:
-            raise GatewayUnavailableError("gateway market data request unavailable") from exc
+            raise GatewayUnavailableError(f"gateway {noun} request unavailable") from exc
 
         if response.status_code == 401:
             raise GatewayAuthenticationError("gateway authentication failed")
@@ -203,30 +196,25 @@ class GatewayMarketDataClient:
         if response.status_code == 503 and _error_code(response) == "gateway_queue_timeout":
             raise GatewayQueueTimeoutError("gateway worker queue wait timed out")
         if response.status_code == 504:
-            raise GatewayTimeoutError("gateway market data upstream timed out")
+            raise GatewayTimeoutError(f"gateway {noun} upstream timed out")
         if response.status_code in {502, 503}:
             raise GatewayUnavailableError("gateway upstream is unavailable")
         if response.status_code != 200:
             raise GatewayResponseError(
-                f"gateway market data request failed with status {response.status_code}"
+                f"gateway {noun} request failed with status {response.status_code}"
             )
         try:
             return model.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
-            raise GatewayResponseError("gateway returned an invalid market data contract") from exc
+            raise GatewayResponseError(f"gateway returned an invalid {noun} contract") from exc
 
     async def get_spot(self, symbol: str) -> SpotResponseV1:
-        requested = symbol.strip()
-        if not requested:
-            raise ValueError("a symbol is required")
+        requested = _required_symbol(symbol)
         return await self._get_typed("/v1/spot", {"symbol": requested}, SpotResponseV1)
 
     async def get_chain_metadata(self, symbol: str, expiration: dt.date) -> ChainMetadataResponseV1:
-        requested = symbol.strip()
-        if not requested:
-            raise ValueError("a symbol is required")
-        if not isinstance(expiration, dt.date) or isinstance(expiration, dt.datetime):
-            raise ValueError("an expiration date is required")
+        requested = _required_symbol(symbol)
+        expiration = _required_date(expiration, "an expiration date is required")
         return await self._get_typed(
             "/v1/chain",
             {"symbol": requested, "expiration": expiration.isoformat()},
@@ -235,11 +223,8 @@ class GatewayMarketDataClient:
 
     async def get_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainResponseV1:
         """Fetch a complete normalized chain for one expiration. No retries."""
-        requested = symbol.strip()
-        if not requested:
-            raise ValueError("a symbol is required")
-        if not isinstance(expiration, dt.date) or isinstance(expiration, dt.datetime):
-            raise ValueError("an expiration date is required")
+        requested = _required_symbol(symbol)
+        expiration = _required_date(expiration, "an expiration date is required")
         return await self._get_typed(
             "/v1/option-chain",
             {"symbol": requested, "expiration": expiration.isoformat()},
@@ -249,9 +234,7 @@ class GatewayMarketDataClient:
     async def get_history(
         self, symbol: str, *, frequency: str = "daily", days_back: int | None = None
     ) -> HistoryResponseV1:
-        requested = symbol.strip()
-        if not requested:
-            raise ValueError("a symbol is required")
+        requested = _required_symbol(symbol)
         if frequency not in {"daily", "minute"}:
             raise ValueError("frequency must be 'daily' or 'minute'")
         params = {"symbol": requested, "frequency": frequency}
@@ -260,9 +243,7 @@ class GatewayMarketDataClient:
         return await self._get_typed("/v1/history", params, HistoryResponseV1)
 
     async def get_movers(self, index: str, *, direction: str = "up") -> MoversResponseV1:
-        requested = index.strip()
-        if not requested:
-            raise ValueError("an index is required")
+        requested = _required_symbol(index, "an index is required")
         if direction not in {"up", "down"}:
             raise ValueError("direction must be 'up' or 'down'")
         return await self._get_typed(
@@ -272,11 +253,8 @@ class GatewayMarketDataClient:
     async def get_session_history(
         self, symbol: str, date: dt.date, *, session: str = "regular"
     ) -> SessionHistoryResponseV1:
-        requested = symbol.strip()
-        if not requested:
-            raise ValueError("a symbol is required")
-        if not isinstance(date, dt.date) or isinstance(date, dt.datetime):
-            raise ValueError("a date is required")
+        requested = _required_symbol(symbol)
+        date = _required_date(date, "a date is required")
         if session not in {"regular", "extended"}:
             raise ValueError("session must be 'regular' or 'extended'")
         return await self._get_typed(
