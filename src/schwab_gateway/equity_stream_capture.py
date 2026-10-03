@@ -24,8 +24,7 @@ from schwab_gateway.order_book_capture import (
     DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
     MAX_CAPTURE_DURATION_SECONDS,
     MAX_CAPTURE_SYMBOLS,
-    MAX_RECONNECT_DELAY_SECONDS,
-    bootstrap_stream_under_token_lock,
+    capture_stream_with_reconnects,
     frame_has_service,
 )
 from schwab_gateway.symbols import SYMBOL_PATTERN
@@ -241,91 +240,34 @@ async def capture_equity_stream_with_reconnects(
     max_reconnects: int = DEFAULT_MAX_RECONNECTS,
     reconnect_base_delay_seconds: float = DEFAULT_RECONNECT_BASE_DELAY_SECONDS,
 ) -> None:
-    if login_timeout_seconds <= 0:
-        raise ValueError("stream login timeout must be positive")
-    if max_reconnects < 0:
-        raise ValueError("maximum reconnects must be nonnegative")
-    if reconnect_base_delay_seconds < 0:
-        raise ValueError("reconnect base delay must be nonnegative")
-    if stream_client_factory is None:
-        from schwab.streaming import StreamClient
-
-        stream_client_factory = StreamClient
-
-    recorder.start()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + request.duration_seconds
-    connection_id = 0
-    last_error: Exception | None = None
-
-    while loop.time() < deadline:
-        connection_id += 1
-        recorder.record_connection_event("connecting", connection_id=connection_id)
-        stream: Any = None
-        try:
-            stream = await bootstrap_stream_under_token_lock(
-                manager,
-                upstream_settings,
-                client_factory,
-                stream_client_factory,
-                login_timeout_seconds=min(
-                    login_timeout_seconds,
-                    max(deadline - loop.time(), 0.001),
-                ),
+    async def attach(stream: Any) -> None:
+        decoder = CapturingEquityJsonDecoder(recorder)
+        stream.set_json_decoder(decoder)
+        stream.add_chart_equity_handler(
+            lambda message: recorder.record_message(
+                "CHART_EQUITY", message, received_at=decoder.last_received_at
             )
-            recorder.record_connection_event("connected", connection_id=connection_id)
-            decoder = CapturingEquityJsonDecoder(recorder)
-            stream.set_json_decoder(decoder)
-            stream.add_chart_equity_handler(
-                lambda message: recorder.record_message(
-                    "CHART_EQUITY", message, received_at=decoder.last_received_at
-                )
-            )
-            stream.add_level_one_equity_handler(
-                lambda message: recorder.record_message(
-                    "LEVELONE_EQUITIES", message, received_at=decoder.last_received_at
-                )
-            )
-            await stream.chart_equity_subs(list(request.symbols))
-            await stream.level_one_equity_subs(list(request.symbols))
-            while (remaining := deadline - loop.time()) > 0:
-                try:
-                    await asyncio.wait_for(stream.handle_message(), timeout=remaining)
-                except TimeoutError:
-                    return
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            last_error = exc
-            recorder.record_connection_event(
-                "connection_failed",
-                connection_id=connection_id,
-                failure_class=type(exc).__name__,
-            )
-        finally:
-            if stream is not None:
-                try:
-                    await stream.logout()
-                except Exception:
-                    pass
-
-        reconnects_used = connection_id - 1
-        if reconnects_used >= max_reconnects:
-            assert last_error is not None
-            raise last_error
-        delay = min(
-            reconnect_base_delay_seconds * (2**reconnects_used),
-            MAX_RECONNECT_DELAY_SECONDS,
         )
-        if deadline - loop.time() <= delay:
-            return
-        recorder.record_connection_event(
-            "reconnect_scheduled",
-            connection_id=connection_id,
-            failure_class=type(last_error).__name__ if last_error else None,
-            retry_delay_seconds=delay,
+        stream.add_level_one_equity_handler(
+            lambda message: recorder.record_message(
+                "LEVELONE_EQUITIES", message, received_at=decoder.last_received_at
+            )
         )
-        await asyncio.sleep(delay)
+        await stream.chart_equity_subs(list(request.symbols))
+        await stream.level_one_equity_subs(list(request.symbols))
+
+    await capture_stream_with_reconnects(
+        manager,
+        upstream_settings,
+        client_factory,
+        recorder,
+        duration_seconds=request.duration_seconds,
+        attach=attach,
+        stream_client_factory=stream_client_factory,
+        login_timeout_seconds=login_timeout_seconds,
+        max_reconnects=max_reconnects,
+        reconnect_base_delay_seconds=reconnect_base_delay_seconds,
+    )
 
 
 def run_equity_stream_capture(

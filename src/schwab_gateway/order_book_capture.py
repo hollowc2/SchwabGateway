@@ -7,14 +7,15 @@ snapshots and the final evidence manifest live beside, never in place of, that r
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import math
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, TextIO
+from typing import Any, BinaryIO, Protocol, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from schwab.contrib.util import StreamJsonDecoder
@@ -390,13 +391,29 @@ async def bootstrap_stream_under_token_lock(
     return await manager.run_access_transaction_async(bootstrap)
 
 
-async def capture_order_book_with_reconnects(
+class StreamEvidenceRecorder(Protocol):
+    """The recorder surface the shared reconnect loop drives."""
+
+    def start(self) -> None: ...
+
+    def record_connection_event(
+        self,
+        event: str,
+        *,
+        connection_id: int,
+        failure_class: str | None = None,
+        retry_delay_seconds: float | None = None,
+    ) -> None: ...
+
+
+async def capture_stream_with_reconnects(
     manager: AtomicTokenManager,
     upstream_settings: GatewayUpstreamSettings,
     client_factory: Callable[..., Any],
-    request: OrderBookCaptureRequest,
-    recorder: OrderBookResearchRecorder,
+    recorder: StreamEvidenceRecorder,
     *,
+    duration_seconds: float,
+    attach: Callable[[Any], Awaitable[None]],
     stream_client_factory: Callable[[Any], Any] | None = None,
     login_timeout_seconds: float = DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
     max_reconnects: int = DEFAULT_MAX_RECONNECTS,
@@ -404,8 +421,9 @@ async def capture_order_book_with_reconnects(
 ) -> None:
     """Capture until the bounded deadline, reconnecting into explicit epochs.
 
-    Only stream login is performed inside the shared token transaction. Subscriptions,
-    message handling, and reconnect backoff all happen after the lock is released.
+    Only stream login is performed inside the shared token transaction. ``attach``
+    installs the decoder, handlers, and subscriptions on each logged-in stream; message
+    handling and reconnect backoff all happen after the lock is released.
     """
 
     if login_timeout_seconds <= 0:
@@ -420,9 +438,8 @@ async def capture_order_book_with_reconnects(
         stream_client_factory = StreamClient
 
     recorder.start()
-    service = BOOK_SERVICE_BY_VENUE[request.venue]
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + request.duration_seconds
+    deadline = loop.time() + duration_seconds
     connection_id = 0
     last_error: Exception | None = None
 
@@ -441,27 +458,7 @@ async def capture_order_book_with_reconnects(
                 ),
             )
             recorder.record_connection_event("connected", connection_id=connection_id)
-            decoder = CapturingBookJsonDecoder(service=service, recorder=recorder)
-
-            def handle_book(message: Any) -> None:
-                if decoder.last_received_at is None:
-                    recorder.record_malformed_snapshot()
-                    return
-                try:
-                    snapshots = normalize_schwab_book_message(
-                        message,
-                        venue=request.venue,
-                        gateway_received_at=decoder.last_received_at,
-                    )
-                except OrderBookMalformedError:
-                    recorder.record_malformed_snapshot()
-                    return
-                for snapshot in snapshots:
-                    recorder.record_snapshot(snapshot)
-
-            stream.set_json_decoder(decoder)
-            await subscribe_venue_book(stream, request.venue, request.symbols, handle_book)
-
+            await attach(stream)
             while (remaining := deadline - loop.time()) > 0:
                 try:
                     await asyncio.wait_for(stream.handle_message(), timeout=remaining)
@@ -478,10 +475,8 @@ async def capture_order_book_with_reconnects(
             )
         finally:
             if stream is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await stream.logout()
-                except Exception:
-                    pass
 
         reconnects_used = connection_id - 1
         if reconnects_used >= max_reconnects:
@@ -491,8 +486,7 @@ async def capture_order_book_with_reconnects(
             reconnect_base_delay_seconds * (2**reconnects_used),
             MAX_RECONNECT_DELAY_SECONDS,
         )
-        remaining = deadline - loop.time()
-        if remaining <= delay:
+        if deadline - loop.time() <= delay:
             return
         recorder.record_connection_event(
             "reconnect_scheduled",
@@ -501,6 +495,58 @@ async def capture_order_book_with_reconnects(
             retry_delay_seconds=delay,
         )
         await asyncio.sleep(delay)
+
+
+async def capture_order_book_with_reconnects(
+    manager: AtomicTokenManager,
+    upstream_settings: GatewayUpstreamSettings,
+    client_factory: Callable[..., Any],
+    request: OrderBookCaptureRequest,
+    recorder: OrderBookResearchRecorder,
+    *,
+    stream_client_factory: Callable[[Any], Any] | None = None,
+    login_timeout_seconds: float = DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
+    max_reconnects: int = DEFAULT_MAX_RECONNECTS,
+    reconnect_base_delay_seconds: float = DEFAULT_RECONNECT_BASE_DELAY_SECONDS,
+) -> None:
+    """Capture one venue's book into reconnect epochs; see ``capture_stream_with_reconnects``."""
+
+    service = BOOK_SERVICE_BY_VENUE[request.venue]
+
+    async def attach(stream: Any) -> None:
+        decoder = CapturingBookJsonDecoder(service=service, recorder=recorder)
+
+        def handle_book(message: Any) -> None:
+            if decoder.last_received_at is None:
+                recorder.record_malformed_snapshot()
+                return
+            try:
+                snapshots = normalize_schwab_book_message(
+                    message,
+                    venue=request.venue,
+                    gateway_received_at=decoder.last_received_at,
+                )
+            except OrderBookMalformedError:
+                recorder.record_malformed_snapshot()
+                return
+            for snapshot in snapshots:
+                recorder.record_snapshot(snapshot)
+
+        stream.set_json_decoder(decoder)
+        await subscribe_venue_book(stream, request.venue, request.symbols, handle_book)
+
+    await capture_stream_with_reconnects(
+        manager,
+        upstream_settings,
+        client_factory,
+        recorder,
+        duration_seconds=request.duration_seconds,
+        attach=attach,
+        stream_client_factory=stream_client_factory,
+        login_timeout_seconds=login_timeout_seconds,
+        max_reconnects=max_reconnects,
+        reconnect_base_delay_seconds=reconnect_base_delay_seconds,
+    )
 
 
 def run_order_book_capture(
