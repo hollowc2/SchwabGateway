@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -32,6 +32,7 @@ from schwab_gateway_sdk.models import (
 
 UTC = dt.timezone.utc
 EASTERN = ZoneInfo("America/New_York")
+FreshnessModelT = TypeVar("FreshnessModelT", OptionContractV1, SessionHistoryV1)
 # Regular session is normally 09:30-16:00 America/New_York and ends at 13:00 on the
 # recurring US-equity early-close dates below. A candle stamped exactly at the close is
 # the first extended (post-market) bar, not the last regular one, so the upper bound is
@@ -417,6 +418,32 @@ def _event_time(payload: dict[str, Any]) -> dt.datetime | None:
     return dt.datetime.fromtimestamp(max(candidates) / 1000, tz=UTC)
 
 
+def _age_seconds(event_timestamp: dt.datetime | None, at: dt.datetime) -> float | None:
+    if event_timestamp is None:
+        return None
+    return max(0.0, (at - event_timestamp).total_seconds())
+
+
+def _freshness(
+    event_timestamp: dt.datetime | None, at: dt.datetime, stale_after_seconds: float
+) -> tuple[float | None, bool]:
+    """Return ``(age_seconds, stale)``; an unknown age is always stale."""
+    age_seconds = _age_seconds(event_timestamp, at)
+    return age_seconds, age_seconds is None or age_seconds > stale_after_seconds
+
+
+def _with_refreshed_freshness(
+    model: FreshnessModelT, *, evaluated_at: dt.datetime, stale_after_seconds: float
+) -> FreshnessModelT:
+    age_seconds, stale = _freshness(model.event_timestamp, evaluated_at, stale_after_seconds)
+    flags = [flag for flag in model.data_quality_flags if flag != "stale"]
+    if stale:
+        flags.append("stale")
+    return model.model_copy(
+        update={"age_seconds": age_seconds, "stale": stale, "data_quality_flags": tuple(flags)}
+    )
+
+
 def normalize_schwab_quote(
     symbol: str,
     payload: dict[str, Any],
@@ -437,11 +464,7 @@ def normalize_schwab_quote(
         event_timestamp = regular_time
         session = "regular" if regular else None
 
-    age_seconds = (
-        max(0.0, (received_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
+    age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
     flags: list[str] = []
     bid = _number(current, "bidPrice")
     ask = _number(current, "askPrice")
@@ -453,8 +476,6 @@ def normalize_schwab_quote(
         flags.append("crossed_market")
     if event_timestamp is None:
         flags.append("missing_event_timestamp")
-
-    stale = age_seconds is None or age_seconds > stale_after_seconds
     if stale:
         flags.append("stale")
     return QuoteV1(
@@ -491,14 +512,9 @@ def normalize_schwab_spot(
     flags: list[str] = []
     if price is None:
         flags.append("missing_price")
-    age_seconds = (
-        max(0.0, (received_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
+    age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
     if event_timestamp is None:
         flags.append("missing_event_timestamp")
-    stale = age_seconds is None or age_seconds > stale_after_seconds
     if stale:
         flags.append("stale")
     return SpotV1(
@@ -522,12 +538,7 @@ def normalize_schwab_chain_metadata(
     stale_after_seconds: float,
 ) -> ChainMetadataV1:
     fields = extract_chain_metadata(payload, expiration)
-    age_seconds = (
-        max(0.0, (received_at - fields.event_timestamp).total_seconds())
-        if fields.event_timestamp is not None
-        else None
-    )
-    stale = age_seconds is None or age_seconds > stale_after_seconds
+    age_seconds, stale = _freshness(fields.event_timestamp, received_at, stale_after_seconds)
     flags = fields.data_quality_flags + (("stale",) if stale else ())
     return ChainMetadataV1(
         symbol=symbol,
@@ -593,10 +604,8 @@ def normalize_schwab_option_chain(
                     if len(contracts) >= MAX_OPTION_CHAIN_CONTRACTS_V1:
                         raise ValueError("option chain exceeded the maximum contract count")
                     event_timestamp = _event_time(option)
-                    age_seconds = (
-                        max(0.0, (received_at - event_timestamp).total_seconds())
-                        if event_timestamp is not None
-                        else None
+                    age_seconds, contract_stale = _freshness(
+                        event_timestamp, received_at, stale_after_seconds
                     )
                     contract_flags: list[str] = []
                     bid, ask, crossed_market_normalized = _normalized_bid_ask(option)
@@ -604,7 +613,6 @@ def normalize_schwab_option_chain(
                         contract_flags.append("crossed_market_normalized")
                     if event_timestamp is None:
                         contract_flags.append("missing_event_timestamp")
-                    contract_stale = age_seconds is None or age_seconds > stale_after_seconds
                     if contract_stale:
                         contract_flags.append("stale")
                     contracts.append(
@@ -645,11 +653,7 @@ def normalize_schwab_option_chain(
     ]
     all_contracts_timestamped = bool(contracts) and len(contract_timestamps) == len(contracts)
     event_timestamp = max(contract_timestamps) if contract_timestamps else None
-    age_seconds = (
-        max(0.0, (received_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
+    age_seconds = _age_seconds(event_timestamp, received_at)
     stale_contract_count = sum(contract.stale for contract in contracts)
     # The aggregate describes the freshest delivered snapshot, while each row retains
     # its own freshness. Consumers validate counts first, then omit stale/unknown rows;
@@ -771,16 +775,10 @@ def normalize_schwab_history(
             ]
 
     event_timestamp = bars[-1].timestamp if bars else None
-    age_seconds = (
-        max(0.0, (received_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
+    age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
     if frequency == "daily" and event_timestamp is not None:
         event_session = event_timestamp.astimezone(EASTERN).date()
         stale = event_session < _latest_completed_session(received_at)
-    else:
-        stale = age_seconds is None or age_seconds > stale_after_seconds
     if stale:
         flags.append("stale")
     return HistoryV1(
@@ -970,12 +968,7 @@ def normalize_schwab_session_history(
         flags.append("no_bars_returned")
 
     event_timestamp = bars[-1].timestamp if bars else None
-    age_seconds = (
-        max(0.0, (received_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
-    stale = age_seconds is None or age_seconds > stale_after_seconds
+    age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
     if stale:
         flags.append("stale")
     return SessionHistoryV1(
@@ -1002,30 +995,6 @@ def _is_completed_session(history: SessionHistoryV1, evaluated_at: dt.datetime) 
         history.date < evaluated_at.astimezone(EASTERN).date()
         and bool(history.candles)
         and "malformed_bars_dropped" not in history.data_quality_flags
-    )
-
-
-def _reevaluate_session_history_freshness(
-    history: SessionHistoryV1,
-    *,
-    evaluated_at: dt.datetime,
-    stale_after_seconds: float,
-) -> SessionHistoryV1:
-    age_seconds = (
-        max(0.0, (evaluated_at - history.event_timestamp).total_seconds())
-        if history.event_timestamp is not None
-        else None
-    )
-    stale = age_seconds is None or age_seconds > stale_after_seconds
-    flags = [flag for flag in history.data_quality_flags if flag != "stale"]
-    if stale:
-        flags.append("stale")
-    return history.model_copy(
-        update={
-            "age_seconds": age_seconds,
-            "stale": stale,
-            "data_quality_flags": tuple(flags),
-        }
     )
 
 
@@ -1075,7 +1044,7 @@ class DirectSchwabSessionHistoryUpstream:
             return None
         self._cache.move_to_end(key)
         session_history_cache_events.labels(outcome="hit").inc()
-        return _reevaluate_session_history_freshness(
+        return _with_refreshed_freshness(
             SessionHistoryV1.model_validate_json(payload),
             evaluated_at=self._utcnow(),
             stale_after_seconds=self._stale_after_seconds,
@@ -1199,33 +1168,13 @@ def _reevaluate_option_chain_freshness(
     evaluated_at: dt.datetime,
     stale_after_seconds: float,
 ) -> OptionChainV1:
-    contracts: list[OptionContractV1] = []
-    for contract in chain.contracts:
-        age_seconds = (
-            max(0.0, (evaluated_at - contract.event_timestamp).total_seconds())
-            if contract.event_timestamp is not None
-            else None
+    contracts = [
+        _with_refreshed_freshness(
+            contract, evaluated_at=evaluated_at, stale_after_seconds=stale_after_seconds
         )
-        stale = age_seconds is None or age_seconds > stale_after_seconds
-        flags = [flag for flag in contract.data_quality_flags if flag != "stale"]
-        if stale:
-            flags.append("stale")
-        contracts.append(
-            contract.model_copy(
-                update={
-                    "age_seconds": age_seconds,
-                    "stale": stale,
-                    "data_quality_flags": tuple(flags),
-                }
-            )
-        )
-
-    event_timestamp = chain.event_timestamp
-    age_seconds = (
-        max(0.0, (evaluated_at - event_timestamp).total_seconds())
-        if event_timestamp is not None
-        else None
-    )
+        for contract in chain.contracts
+    ]
+    age_seconds = _age_seconds(chain.event_timestamp, evaluated_at)
     stale_count = sum(contract.stale for contract in contracts)
     stale = not contracts or stale_count == len(contracts)
     flags = [
@@ -1337,7 +1286,7 @@ class DirectSchwabOptionChainUpstream:
 
         option_chain_cache_events.labels(outcome="miss").inc()
         option_chain_cache_events.labels(outcome="upstream").inc()
-        fetch = asyncio.create_task(self._fetch_option_chain(symbol, expiration, key))
+        fetch = asyncio.create_task(self._fetch_option_chain(symbol, expiration))
         self._inflight[key] = fetch
         option_chain_inflight.set(len(self._inflight))
         fetch.add_done_callback(
@@ -1345,12 +1294,8 @@ class DirectSchwabOptionChainUpstream:
         )
         return await asyncio.shield(fetch)
 
-    async def _fetch_option_chain(
-        self,
-        symbol: str,
-        expiration: dt.date,
-        key: tuple[str, dt.date],
-    ) -> OptionChainV1:
+    async def _fetch_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainV1:
+        key = (symbol, expiration)
         try:
             payload = await self._provider.get_option_chain(symbol, expiration)
         except Exception as exc:
