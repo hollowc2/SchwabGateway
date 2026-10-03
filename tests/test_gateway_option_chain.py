@@ -479,7 +479,6 @@ def test_mixed_age_chain_keeps_rows_and_counts_without_aggregate_stale() -> None
     assert "stale" not in chain.data_quality_flags
 
 
-@pytest.mark.asyncio
 async def test_quiet_contract_remains_fresh_with_bounded_live_policy() -> None:
     """A valid quiet leg must not disappear at the former 90-second boundary."""
     payload = _payload()
@@ -803,7 +802,6 @@ class _Clock:
         self.utc_value += dt.timedelta(seconds=seconds)
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_maps_malformed_chain_to_bounded_failure() -> None:
     provider = _Provider({"callExpDateMap": []})
     upstream = DirectSchwabOptionChainUpstream(provider)
@@ -816,7 +814,6 @@ async def test_direct_upstream_maps_malformed_chain_to_bounded_failure() -> None
     assert provider.calls == [("SPX", EXPIRATION), ("SPX", EXPIRATION)]
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age() -> None:
     clock = _Clock()
     provider = _Provider(_payload())
@@ -840,7 +837,6 @@ async def test_direct_upstream_cache_hit_preserves_evidence_and_recomputes_age()
     assert cached.contracts[0].age_seconds == 4.5
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_negative_time_value_cache_miss_and_hit_are_identical() -> None:
     clock = _Clock()
     payload = _payload()
@@ -864,7 +860,6 @@ async def test_direct_upstream_negative_time_value_cache_miss_and_hit_are_identi
     )
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_cached_contract_can_cross_stale_threshold() -> None:
     clock = _Clock()
     provider = _Provider(_payload())
@@ -893,7 +888,6 @@ class _FailAfterFirstProvider(_Provider):
         return self.payload
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_expiry_fails_closed_without_stale_fallback() -> None:
     clock = _Clock()
     provider = _FailAfterFirstProvider(_payload())
@@ -928,7 +922,6 @@ class _BlockingProvider(_Provider):
         return self.payload
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_coalesces_same_key_and_shields_cancelled_waiter() -> None:
     provider = _BlockingProvider(_payload())
     upstream = DirectSchwabOptionChainUpstream(provider)
@@ -962,7 +955,6 @@ class _DistinctKeyProvider(_Provider):
         return self.payload
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_never_coalesces_distinct_exact_keys() -> None:
     provider = _DistinctKeyProvider(_payload())
     upstream = DirectSchwabOptionChainUpstream(provider)
@@ -977,7 +969,6 @@ async def test_direct_upstream_never_coalesces_distinct_exact_keys() -> None:
     assert set(provider.calls) == {("SPX", EXPIRATION), ("$SPX", EXPIRATION)}
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_bounds_detached_timeouts_and_recovers() -> None:
     provider = _DistinctKeyProvider(_payload())
     upstream = DirectSchwabOptionChainUpstream(provider, max_inflight=2)
@@ -1009,7 +1000,6 @@ async def test_direct_upstream_bounds_detached_timeouts_and_recovers() -> None:
     assert recovered.symbol == "RUT"
 
 
-@pytest.mark.asyncio
 async def test_direct_upstream_prunes_globally_and_enforces_storage_bounds() -> None:
     clock = _Clock()
     provider = _Provider(_payload())
@@ -1054,7 +1044,6 @@ class _OptionChainUpstream:
         )
 
 
-@pytest.mark.asyncio
 async def test_sdk_calls_distinct_full_chain_route_and_returns_typed_contract() -> None:
     upstream = _OptionChainUpstream()
     app = create_app(
@@ -1074,7 +1063,6 @@ async def test_sdk_calls_distinct_full_chain_route_and_returns_typed_contract() 
     assert upstream.calls == [("SPX", EXPIRATION)]
 
 
-@pytest.mark.asyncio
 async def test_negative_time_value_is_null_through_http_and_sdk_contract() -> None:
     payload = _payload()
     payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = -265.57
@@ -1095,7 +1083,6 @@ async def test_negative_time_value_is_null_through_http_and_sdk_contract() -> No
     assert upstream.calls == [("SPX", EXPIRATION)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params",
     [
@@ -1138,7 +1125,6 @@ class _BlockingOptionChainUpstream(_OptionChainUpstream):
         return await super().get_option_chain(symbol, expiration)
 
 
-@pytest.mark.asyncio
 async def test_full_chain_capacity_is_bounded_and_fails_closed_with_429() -> None:
     upstream = _BlockingOptionChainUpstream()
     app = create_app(
@@ -1176,7 +1162,6 @@ async def test_full_chain_capacity_is_bounded_and_fails_closed_with_429() -> Non
     }
 
 
-@pytest.mark.asyncio
 async def test_full_chain_timeout_fails_closed_with_504() -> None:
     upstream = _BlockingOptionChainUpstream()
     app = create_app(
@@ -1224,7 +1209,6 @@ CHAIN_PARAMS = {"symbol": "SPX", "expiration": EXPIRATION.isoformat()}
 HEADERS = {"X-Internal-API-Key": "valid-key"}
 
 
-@pytest.mark.asyncio
 async def test_cache_hit_is_served_without_waiting_for_the_busy_scheduler_slot() -> None:
     clock = _Clock()
     provider = _Provider(_payload())
@@ -1261,7 +1245,6 @@ async def test_cache_hit_is_served_without_waiting_for_the_busy_scheduler_slot()
     )
 
 
-@pytest.mark.asyncio
 async def test_duplicate_request_joins_inflight_fetch_without_a_scheduler_slot() -> None:
     clock = _Clock()
     provider = _BlockingProvider(_payload())
@@ -1295,7 +1278,6 @@ async def test_duplicate_request_joins_inflight_fetch_without_a_scheduler_slot()
     assert provider.calls == [("SPX", EXPIRATION)]
 
 
-@pytest.mark.asyncio
 async def test_joined_inflight_fetch_is_bounded_by_the_upstream_budget() -> None:
     provider = _BlockingProvider(_payload())
     upstream = DirectSchwabOptionChainUpstream(provider)
@@ -1319,7 +1301,6 @@ async def test_joined_inflight_fetch_is_bounded_by_the_upstream_budget() -> None
     assert provider.calls == [("SPX", EXPIRATION)]
 
 
-@pytest.mark.asyncio
 async def test_warm_cache_still_fails_closed_when_gateway_is_not_ready() -> None:
     clock = _Clock()
     provider = _Provider(_payload())

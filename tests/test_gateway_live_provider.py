@@ -240,7 +240,6 @@ def test_provider_signatures_match_the_declared_read_protocols(protocol: Any, me
 # --- Spot ----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_spot_read_runs_in_one_transaction_and_closes_its_session() -> None:
     client = _FakeClient()
     provider, manager = _provider(client)
@@ -262,7 +261,6 @@ def _latency_count(operation: str, status: str) -> float:
     return 0.0
 
 
-@pytest.mark.asyncio
 async def test_execute_records_upstream_latency_by_operation_and_status() -> None:
     client = _FakeClient()
     provider, _ = _provider(client)
@@ -278,7 +276,6 @@ async def test_execute_records_upstream_latency_by_operation_and_status() -> Non
     assert _latency_count("spot", "error") == before_error + 1
 
 
-@pytest.mark.asyncio
 async def test_spot_read_closes_its_session_even_when_the_call_fails() -> None:
     client = _FakeClient()
     client.quote_response = _Response(None, raises=RuntimeError("upstream refused"))
@@ -289,7 +286,6 @@ async def test_spot_read_closes_its_session_even_when_the_call_fails() -> None:
     assert client.session.closed == 1
 
 
-@pytest.mark.asyncio
 async def test_spot_read_raises_bare_value_error_on_a_malformed_payload() -> None:
     """Parsing runs outside the locked transaction, so a malformed payload must raise a
     bare ``ValueError`` from ``extract_spot_price`` rather than the adapter's generic
@@ -303,7 +299,6 @@ async def test_spot_read_raises_bare_value_error_on_a_malformed_payload() -> Non
         await provider.get_spot_price("$SPX")
 
 
-@pytest.mark.asyncio
 async def test_spot_read_does_not_retry() -> None:
     """The direct path retries three times; inside a held token lock this one must not."""
     client = _FakeClient()
@@ -316,7 +311,6 @@ async def test_spot_read_does_not_retry() -> None:
     assert manager.transactions == 1
 
 
-@pytest.mark.asyncio
 async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_thread() -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -360,7 +354,6 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
     assert calls == 2
 
 
-@pytest.mark.asyncio
 async def test_scheduler_timeout_retains_physical_provider_worker_until_thread_exits() -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -418,7 +411,6 @@ async def test_scheduler_timeout_retains_physical_provider_worker_until_thread_e
 # --- Chain ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_chain_read_pins_the_expiration_to_a_single_day() -> None:
     client = _FakeClient()
     provider, _ = _provider(client)
@@ -427,7 +419,6 @@ async def test_chain_read_pins_the_expiration_to_a_single_day() -> None:
     assert client.chain_calls == [("$SPX", EXPIRATION, EXPIRATION)]
 
 
-@pytest.mark.asyncio
 async def test_chain_read_rejects_a_non_object_payload() -> None:
     client = _FakeClient()
     client.chain_response = _Response(["not", "an", "object"])
@@ -440,7 +431,6 @@ async def test_chain_read_rejects_a_non_object_payload() -> None:
 # --- Daily bars ------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_daily_bars_request_shape_and_transaction_bounds() -> None:
     client = _FakeClient()
     client.price_history_response = _Response({"candles": [{"close": 1.0}]})
@@ -461,7 +451,6 @@ async def test_daily_bars_request_shape_and_transaction_bounds() -> None:
     assert client.session.closed == 1
 
 
-@pytest.mark.asyncio
 async def test_daily_bars_rejects_a_non_object_payload() -> None:
     client = _FakeClient()
     client.price_history_response = _Response(["not", "an", "object"])
@@ -471,7 +460,6 @@ async def test_daily_bars_rejects_a_non_object_payload() -> None:
         await provider.get_daily_bars("AAPL")
 
 
-@pytest.mark.asyncio
 async def test_daily_bars_rejects_a_payload_with_no_candle_list() -> None:
     client = _FakeClient()
     client.price_history_response = _Response({"status": "FAILED"})
@@ -484,7 +472,6 @@ async def test_daily_bars_rejects_a_payload_with_no_candle_list() -> None:
 # --- Intraday bars ---------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_intraday_bars_request_shape_bounds_the_date_window() -> None:
     client = _FakeClient()
     client.price_history_response = _Response({"candles": [{"close": 2.0}]})
@@ -510,7 +497,6 @@ async def test_intraday_bars_request_shape_bounds_the_date_window() -> None:
 # --- Market movers ---------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_market_movers_converts_index_and_sort_order_to_real_enums() -> None:
     client = _FakeClient()
     client.movers_response = _Response([{"symbol": "AAPL"}])
@@ -524,7 +510,6 @@ async def test_market_movers_converts_index_and_sort_order_to_real_enums() -> No
     assert client.session.closed == 1
 
 
-@pytest.mark.asyncio
 async def test_market_movers_unwraps_a_screeners_object_payload() -> None:
     client = _FakeClient()
     client.movers_response = _Response({"screeners": [{"symbol": "MSFT"}]})
@@ -533,7 +518,6 @@ async def test_market_movers_unwraps_a_screeners_object_payload() -> None:
     assert await provider.get_market_movers("$SPX") == [{"symbol": "MSFT"}]
 
 
-@pytest.mark.asyncio
 async def test_market_movers_rejects_an_unknown_index() -> None:
     client = _FakeClient()
     provider, _ = _provider(client)
@@ -542,7 +526,6 @@ async def test_market_movers_rejects_an_unknown_index() -> None:
         await provider.get_market_movers("NOT_AN_INDEX")
 
 
-@pytest.mark.asyncio
 async def test_market_movers_rejects_a_non_list_non_object_payload() -> None:
     client = _FakeClient()
     client.movers_response = _Response("not-a-list-or-object")
@@ -555,7 +538,6 @@ async def test_market_movers_rejects_a_non_list_non_object_payload() -> None:
 # --- Session history -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_session_bars_request_shape_spans_the_full_extended_day() -> None:
     from zoneinfo import ZoneInfo
 
@@ -582,7 +564,6 @@ async def test_session_bars_request_shape_spans_the_full_extended_day() -> None:
     assert client.session.closed == 1
 
 
-@pytest.mark.asyncio
 async def test_session_bars_rejects_a_non_object_payload() -> None:
     client = _FakeClient()
     client.price_history_response = _Response(["not", "an", "object"])
@@ -592,7 +573,6 @@ async def test_session_bars_rejects_a_non_object_payload() -> None:
         await provider.get_session_bars("AAPL", dt.date(2026, 8, 12))
 
 
-@pytest.mark.asyncio
 async def test_session_bars_rejects_a_payload_with_no_candle_list() -> None:
     client = _FakeClient()
     client.price_history_response = _Response({"status": "FAILED"})
@@ -605,7 +585,6 @@ async def test_session_bars_rejects_a_payload_with_no_candle_list() -> None:
 # --- Quotes --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_empty_symbol_list_takes_no_transaction_at_all() -> None:
     client = _FakeClient()
     provider, manager = _provider(client)
@@ -614,7 +593,6 @@ async def test_empty_symbol_list_takes_no_transaction_at_all() -> None:
     assert manager.transactions == 0
 
 
-@pytest.mark.asyncio
 async def test_all_quote_batches_share_one_token_transaction() -> None:
     client = _FakeClient()
     client.quotes_responses = [
@@ -632,7 +610,6 @@ async def test_all_quote_batches_share_one_token_transaction() -> None:
     assert client.session.closed == 1
 
 
-@pytest.mark.asyncio
 async def test_quote_batch_size_must_be_positive() -> None:
     client = _FakeClient()
     provider, manager = _provider(client)

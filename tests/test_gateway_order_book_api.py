@@ -32,7 +32,6 @@ def _snapshot(sequence: int) -> OrderBookSnapshotV1:
     )
 
 
-@pytest.mark.asyncio
 async def test_recent_order_book_is_authenticated_bounded_and_venue_specific() -> None:
     store = OrderBookSnapshotStore(history_limit=10)
     store.publish(_snapshot(1))
@@ -66,7 +65,6 @@ async def test_recent_order_book_is_authenticated_bounded_and_venue_specific() -
     assert [item["sequence"] for item in payload["snapshots"]] == [2]
 
 
-@pytest.mark.asyncio
 async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> None:
     store = OrderBookSnapshotStore(history_limit=10)
     store.mark_feed_state("NASDAQ", "connected")
@@ -98,7 +96,6 @@ async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> No
     assert message["snapshot"]["sequence"] == 3
 
 
-@pytest.mark.asyncio
 async def test_failed_websocket_upgrade_does_not_leak_subscription() -> None:
     store = OrderBookSnapshotStore(history_limit=10)
     store.mark_feed_state("NASDAQ", "connected")
@@ -124,7 +121,6 @@ async def test_failed_websocket_upgrade_does_not_leak_subscription() -> None:
     assert store.subscription_count == 0
 
 
-@pytest.mark.asyncio
 async def test_order_book_websocket_capacity_is_bounded_and_released() -> None:
     store = OrderBookSnapshotStore(history_limit=10)
     store.mark_feed_state("NASDAQ", "connected")
@@ -159,7 +155,6 @@ async def test_order_book_websocket_capacity_is_bounded_and_released() -> None:
     assert store.subscription_count == 0
 
 
-@pytest.mark.asyncio
 async def test_recent_order_book_fails_closed_when_snapshot_is_stale() -> None:
     now = [0.0]
     store = OrderBookSnapshotStore(

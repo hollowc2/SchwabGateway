@@ -90,7 +90,6 @@ class BlockingUpstream:
             await self.changed.wait_for(lambda: len(self.calls) >= count)
 
 
-@pytest.mark.asyncio
 async def test_default_policy_admits_five_protected_reads_but_runs_one_at_a_time() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -124,7 +123,6 @@ async def test_default_policy_admits_five_protected_reads_but_runs_one_at_a_time
     assert [response.status_code for response in responses] == [200] * 5
 
 
-@pytest.mark.asyncio
 async def test_protected_request_is_admitted_while_shared_background_pool_is_saturated() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -200,7 +198,6 @@ async def test_protected_request_is_admitted_while_shared_background_pool_is_sat
     } <= {"protected", "background"}
 
 
-@pytest.mark.asyncio
 async def test_queue_wait_timeout_is_503_and_expired_request_never_runs() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -246,7 +243,6 @@ async def test_queue_wait_timeout_is_503_and_expired_request_never_runs() -> Non
     assert "schwab_gateway_scheduler_queue_wait_timeouts_total" in metrics.text
 
 
-@pytest.mark.asyncio
 async def test_upstream_timeout_retains_worker_until_real_completion() -> None:
     class SlowFirstUpstream:
         def __init__(self) -> None:
@@ -310,7 +306,6 @@ async def test_upstream_timeout_retains_worker_until_real_completion() -> None:
     assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_http_disconnect_removes_queued_scheduler_job() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -359,7 +354,6 @@ async def test_http_disconnect_removes_queued_scheduler_job() -> None:
     assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_http_disconnect_does_not_release_running_physical_slot() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -406,7 +400,6 @@ async def test_http_disconnect_does_not_release_running_physical_slot() -> None:
     assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_application_cleanup_waits_for_timed_out_worker_drain() -> None:
     upstream = BlockingUpstream()
     app = create_app(
@@ -442,7 +435,6 @@ async def test_application_cleanup_waits_for_timed_out_worker_drain() -> None:
     assert app[EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_permits_release_after_success_failure_timeout_and_cancellation() -> None:
     controller = AdmissionController(AdmissionPolicy(protected_capacity=1, background_capacity=1))
 
@@ -476,7 +468,6 @@ async def test_permits_release_after_success_failure_timeout_and_cancellation() 
     assert await controller.active_count(PriorityClass.BACKGROUND) == 0
 
 
-@pytest.mark.asyncio
 async def test_normalized_upstream_failure_releases_permit_for_next_request() -> None:
     class FailOnceUpstream:
         calls = 0
@@ -521,7 +512,6 @@ async def test_normalized_upstream_failure_releases_permit_for_next_request() ->
     assert recovered.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_identity_claim_header_cannot_override_authenticated_caller(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 

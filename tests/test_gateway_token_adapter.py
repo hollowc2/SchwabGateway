@@ -319,7 +319,6 @@ def test_read_and_write_callbacks_are_rejected_after_transaction_scope(
     assert json.loads(path.read_text(encoding="utf-8")) == token_document()
 
 
-@pytest.mark.asyncio
 async def test_async_access_transaction_releases_and_invalidates_callbacks(
     tmp_path: Path,
 ) -> None:
@@ -346,7 +345,6 @@ async def test_async_access_transaction_releases_and_invalidates_callbacks(
     assert second_manager.load() == token_document()
 
 
-@pytest.mark.asyncio
 async def test_async_access_transaction_waits_for_file_lock_off_event_loop(
     tmp_path: Path,
 ) -> None:

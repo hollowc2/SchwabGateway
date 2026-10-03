@@ -51,7 +51,6 @@ class FakeQuoteUpstream:
         )
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
     upstream = FakeQuoteUpstream()
     async with serving(
@@ -71,7 +70,6 @@ async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
     assert upstream.calls == [("AAPL", "MSFT")]
 
 
-@pytest.mark.asyncio
 async def test_gateway_authentication_authorization_and_health_contracts() -> None:
     async with serving(
         create_app(FakeQuoteUpstream(), single_principal_authenticator(capability=None))
@@ -99,7 +97,6 @@ async def test_gateway_authentication_authorization_and_health_contracts() -> No
     assert invalid.status_code == 401
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("state", list(TokenManagerState))
 async def test_ready_maps_every_token_manager_state_to_bounded_response(
     state: TokenManagerState,
@@ -127,7 +124,6 @@ async def test_ready_maps_every_token_manager_state_to_bounded_response(
     assert "/private" not in response.text
 
 
-@pytest.mark.asyncio
 async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
     provider = FakeReadiness(TokenManagerState.READY)
     async with serving(
@@ -160,7 +156,6 @@ async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
     ]
 
 
-@pytest.mark.asyncio
 async def test_ready_fails_closed_without_an_injected_provider() -> None:
     async with serving(create_app(FakeQuoteUpstream(), single_principal_authenticator())) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
@@ -171,7 +166,6 @@ async def test_ready_fails_closed_without_an_injected_provider() -> None:
     assert response.json()["reason"] == "token_not_checked"
 
 
-@pytest.mark.asyncio
 async def test_ready_fails_closed_when_provider_fails_without_exposing_its_error() -> None:
     class FailingProvider:
         def health(self) -> TokenManagerHealth:
@@ -194,7 +188,6 @@ async def test_ready_fails_closed_when_provider_fails_without_exposing_its_error
     assert "/private" not in response.text
 
 
-@pytest.mark.asyncio
 async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
     app = create_app(FakeQuoteUpstream(), single_principal_authenticator())
     async with serving(app) as server:
@@ -223,7 +216,6 @@ async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
     assert all(method != "POST" for method, _path in route_shapes)
 
 
-@pytest.mark.asyncio
 async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
     class SlowUpstream:
         async def get_quotes(self, _symbols):
@@ -267,7 +259,6 @@ async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
     assert all("caller=butterfly-guy" in line for line in request_logs)
 
 
-@pytest.mark.asyncio
 async def test_request_log_skips_successful_probes_and_records_query(capfd) -> None:
     readiness = FakeReadiness(TokenManagerState.READY)
     async with serving(
@@ -299,7 +290,6 @@ async def test_request_log_skips_successful_probes_and_records_query(capfd) -> N
     assert "query='symbols=AAPL,MSFT'" in request_logs[1]
 
 
-@pytest.mark.asyncio
 async def test_gateway_surfaces_upstream_timeout() -> None:
     class SlowUpstream:
         async def get_quotes(self, _symbols):
@@ -320,7 +310,6 @@ async def test_gateway_surfaces_upstream_timeout() -> None:
         await client.close()
 
 
-@pytest.mark.asyncio
 async def test_partial_quote_set_fails_closed_and_names_missing_symbols(capfd) -> None:
     class OmittingUpstream(FakeQuoteUpstream):
         async def get_quotes(self, symbols):
@@ -373,7 +362,6 @@ class OmittingQuoteUpstream(FakeQuoteUpstream):
         return tuple(quote for quote in quotes if quote.symbol not in self.omitted)
 
 
-@pytest.mark.asyncio
 async def test_opted_in_partial_quote_set_serves_returned_quotes_and_names_missing(
     capfd,
 ) -> None:
@@ -408,7 +396,6 @@ async def test_opted_in_partial_quote_set_serves_returned_quotes_and_names_missi
     assert "missing_symbols=['ZZZQ']" in partial_logs[0]
 
 
-@pytest.mark.asyncio
 async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> None:
     async with serving(
         create_app(
@@ -467,7 +454,6 @@ def _lag_samples() -> dict[str, float]:
     }
 
 
-@pytest.mark.asyncio
 async def test_event_loop_lag_sampler_records_every_sample_in_a_histogram(
     monkeypatch,
 ) -> None:

@@ -61,7 +61,6 @@ def _envelope(*, symbol: str = "AAPL", venue: str = "NASDAQ") -> dict:
     }
 
 
-@pytest.mark.asyncio
 async def test_stream_authenticates_normalizes_query_and_preserves_contract() -> None:
     seen: dict[str, str] = {}
 
@@ -97,7 +96,6 @@ async def test_stream_authenticates_normalizes_query_and_preserves_contract() ->
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "error_type"),
     [
@@ -120,7 +118,6 @@ async def test_stream_classifies_failed_upgrades(status: int, error_type: type[E
                     pass
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -146,7 +143,6 @@ async def test_stream_rejects_malformed_or_mismatched_payloads(payload: str, mes
                     await anext(snapshots)
 
 
-@pytest.mark.asyncio
 async def test_stream_normal_server_close_ends_iteration() -> None:
     async def stream(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse()
@@ -162,7 +158,6 @@ async def test_stream_normal_server_close_ends_iteration() -> None:
                 assert [snapshot async for snapshot in snapshots] == []
 
 
-@pytest.mark.asyncio
 async def test_stream_partial_iteration_closes_socket() -> None:
     server_saw_close = asyncio.Event()
 
@@ -184,7 +179,6 @@ async def test_stream_partial_iteration_closes_socket() -> None:
         await asyncio.wait_for(server_saw_close.wait(), timeout=1)
 
 
-@pytest.mark.asyncio
 async def test_stream_does_not_reclassify_caller_exceptions() -> None:
     async def stream(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse()
@@ -202,7 +196,6 @@ async def test_stream_does_not_reclassify_caller_exceptions() -> None:
                     raise OSError("caller failure")
 
 
-@pytest.mark.asyncio
 async def test_stream_cancellation_closes_socket() -> None:
     snapshot_received = asyncio.Event()
     server_saw_close = asyncio.Event()
@@ -236,7 +229,6 @@ async def test_stream_cancellation_closes_socket() -> None:
             await asyncio.wait_for(server_saw_close.wait(), timeout=1)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "error_type"),
     [(TimeoutError(), GatewayTimeoutError), (OSError(), GatewayUnavailableError)],
@@ -271,7 +263,6 @@ async def test_stream_classifies_connection_failures(
         (["AAPL"], "ARCA"),
     ],
 )
-@pytest.mark.asyncio
 async def test_stream_rejects_unsafe_or_ambiguous_inputs(symbols: list[str], venue: str) -> None:
     async with GatewayMarketDataClient("http://gateway.invalid", "secret") as client:
         with pytest.raises(ValueError):

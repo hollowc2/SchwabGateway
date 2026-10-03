@@ -81,7 +81,6 @@ def submit(
     )
 
 
-@pytest.mark.asyncio
 async def test_three_protected_requests_get_full_timeout_only_after_dispatch() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -108,7 +107,6 @@ async def test_three_protected_requests_get_full_timeout_only_after_dispatch() -
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_protected_dispatches_before_queued_background_and_fifo_within_class() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=3))
     probe = ConcurrencyProbe()
@@ -164,7 +162,6 @@ async def test_protected_dispatches_before_queued_background_and_fifo_within_cla
     assert probe.maximum == 1
 
 
-@pytest.mark.asyncio
 async def test_mixed_burst_keeps_independent_capacity_and_one_worker() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=4))
     probe = ConcurrencyProbe()
@@ -223,7 +220,6 @@ async def test_mixed_burst_keeps_independent_capacity_and_one_worker() -> None:
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_queue_timeout_removes_job_and_it_never_runs() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -252,7 +248,6 @@ async def test_queue_timeout_removes_job_and_it_never_runs() -> None:
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_dispatch_atomically_rejects_job_expired_during_event_loop_stall() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -284,7 +279,6 @@ async def test_dispatch_atomically_rejects_job_expired_during_event_loop_stall()
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_execution_deadline_uses_completion_time_after_event_loop_stall() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
 
@@ -304,7 +298,6 @@ async def test_execution_deadline_uses_completion_time_after_event_loop_stall() 
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -345,7 +338,6 @@ async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> 
     assert "timeout_drained_success" in outcomes
 
 
-@pytest.mark.asyncio
 async def test_actual_timeout_reports_eventual_drain_error() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
     release = asyncio.Event()
@@ -375,7 +367,6 @@ async def test_actual_timeout_reports_eventual_drain_error() -> None:
     assert outcomes == {"timeout_drained_error"}
 
 
-@pytest.mark.asyncio
 async def test_queued_and_running_cancellation_release_only_the_caller() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -411,7 +402,6 @@ async def test_queued_and_running_cancellation_release_only_the_caller() -> None
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_failure_is_one_attempt_and_releases_capacity() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
     probe = ConcurrencyProbe()
@@ -428,7 +418,6 @@ async def test_failure_is_one_attempt_and_releases_capacity() -> None:
     assert scheduler.snapshot().total == 0
 
 
-@pytest.mark.asyncio
 async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -470,7 +459,6 @@ async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
     }
 
 
-@pytest.mark.asyncio
 async def test_shutdown_removes_queue_and_cannot_release_running_slot_early() -> None:
     scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()

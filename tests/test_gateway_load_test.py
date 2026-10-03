@@ -212,7 +212,6 @@ class _FakeClient:
         )
 
 
-@pytest.mark.asyncio
 async def test_run_load_test_writes_a_complete_manifest(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
@@ -237,7 +236,6 @@ async def test_run_load_test_writes_a_complete_manifest(tmp_path: Path) -> None:
     assert manifest["stage_summaries"]["warmup"]["success_count"] == 3
 
 
-@pytest.mark.asyncio
 async def test_run_load_test_records_every_sdk_failure_class(tmp_path: Path) -> None:
     config = _config(tmp_path, symbols=("SPX",), duration_seconds=0.2)
     client = _FakeClient(fail_option_chain=True)
@@ -257,7 +255,6 @@ def test_gateway_response_error_is_a_schema_failure_class() -> None:
     assert issubclass(GatewayResponseError, Exception)
 
 
-@pytest.mark.asyncio
 async def test_credential_free_scheduler_load_proof() -> None:
     proof = await run_synthetic_scheduler_proof()
 

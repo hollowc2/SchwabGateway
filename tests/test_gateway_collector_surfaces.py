@@ -181,7 +181,6 @@ def app(
 # --- typed success through the real in-process app -------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_spot_upstream_returns_typed_contract() -> None:
     upstream = FakeSpotUpstream(price=5123.5)
     async with serving(app(spot_upstream=upstream)) as server:
@@ -196,7 +195,6 @@ async def test_client_to_http_gateway_to_fake_spot_upstream_returns_typed_contra
     assert upstream.calls == ["$SPX"]
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_only() -> None:
     upstream = FakeChainUpstream()
     async with serving(app(chain_upstream=upstream)) as server:
@@ -222,7 +220,6 @@ async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_on
     )
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_history_upstream_returns_typed_contract() -> None:
     upstream = FakeHistoryUpstream()
     async with serving(app(history_upstream=upstream)) as server:
@@ -237,7 +234,6 @@ async def test_client_to_http_gateway_to_fake_history_upstream_returns_typed_con
     assert upstream.calls == [("AAPL", "daily", 5)]
 
 
-@pytest.mark.asyncio
 async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> None:
     """The default is 20, not the direct wrapper's 10: it must already satisfy
     ButterflyGuy's 20-day rolling-average lookback without the caller overriding it."""
@@ -254,7 +250,6 @@ async def test_history_defaults_frequency_to_daily_and_bounds_days_back() -> Non
     assert upstream.calls == [("AAPL", "daily", 20)]
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_movers_upstream_returns_typed_contract() -> None:
     upstream = FakeMoversUpstream()
     async with serving(app(movers_upstream=upstream)) as server:
@@ -269,7 +264,6 @@ async def test_client_to_http_gateway_to_fake_movers_upstream_returns_typed_cont
     assert upstream.calls == [("$SPX", "down")]
 
 
-@pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_session_history_upstream_returns_typed_contract() -> (
     None
 ):
@@ -292,7 +286,6 @@ async def test_client_to_http_gateway_to_fake_session_history_upstream_returns_t
 # --- authentication, capability, and validation ----------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("path", "params"),
     [
@@ -332,7 +325,6 @@ async def test_missing_key_is_401_and_wrong_capability_is_403(
     assert denied.json()["error"]["code"] == "capability_denied"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("path", "params"),
     [
@@ -402,7 +394,6 @@ async def test_malformed_parameters_are_400_before_any_upstream_call(
 # --- readiness, capacity, and upstream failures ----------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("path", "params"),
     [
@@ -445,7 +436,6 @@ async def test_not_ready_is_503_and_never_reaches_the_upstream(
     assert session_history_upstream.calls == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("path", "params"),
     [
@@ -506,7 +496,6 @@ async def test_exhausted_capacity_is_429(path: str, params: dict[str, str]) -> N
     assert rejected.json()["error"]["code"] == "gateway_capacity_exceeded"
 
 
-@pytest.mark.asyncio
 async def test_active_admitted_gauge_tracks_in_flight_requests() -> None:
     release = asyncio.Event()
 
@@ -534,7 +523,6 @@ async def test_active_admitted_gauge_tracks_in_flight_requests() -> None:
     assert 'gateway_active_admitted_requests{priority_class="protected"} 0.0' in settled.text
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [
@@ -582,7 +570,6 @@ async def test_upstream_failures_map_to_bounded_status_codes(
     assert "upstream down" not in response.text
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
     class SlowUpstream:
@@ -627,7 +614,6 @@ async def test_upstream_timeout_is_504_for_every_surface(surface: str) -> None:
         await client.close()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> None:
     async with serving(app()) as server:
@@ -646,7 +632,6 @@ async def test_undeclared_surfaces_fail_closed_as_unavailable(surface: str) -> N
         await client.close()
 
 
-@pytest.mark.asyncio
 async def test_upstream_returning_a_different_subject_is_rejected_as_malformed() -> None:
     class WrongSymbolUpstream:
         async def get_spot(self, symbol: str) -> SpotV1:
@@ -789,7 +774,6 @@ def test_new_surfaces_add_no_account_or_order_route() -> None:
 # --- client error classification -------------------------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
@@ -827,7 +811,6 @@ async def test_client_maps_every_status_to_a_bounded_error(
                 await client.get_session_history("AAPL", dt.date(2026, 8, 12))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_client_classifies_queue_timeout_separately(surface: str) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -862,7 +845,6 @@ async def test_client_classifies_queue_timeout_separately(surface: str) -> None:
     assert issubclass(GatewayQueueTimeoutError, GatewayUnavailableError)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["spot", "chain", "history", "movers", "session_history"])
 async def test_client_rejects_an_invalid_contract_and_never_retries(surface: str) -> None:
     calls: list[httpx.Request] = []
@@ -892,7 +874,6 @@ async def test_client_rejects_an_invalid_contract_and_never_retries(surface: str
     assert calls[0].headers["X-Internal-API-Key"] == "key"
 
 
-@pytest.mark.asyncio
 async def test_client_transport_failures_do_not_retry() -> None:
     calls: list[httpx.Request] = []
 
@@ -911,7 +892,6 @@ async def test_client_transport_failures_do_not_retry() -> None:
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_client_rejects_empty_symbol_and_non_date_expiration_before_any_request() -> None:
     calls: list[httpx.Request] = []
 
@@ -932,7 +912,6 @@ async def test_client_rejects_empty_symbol_and_non_date_expiration_before_any_re
     assert calls == []
 
 
-@pytest.mark.asyncio
 async def test_client_rejects_empty_symbol_and_empty_index_before_any_request() -> None:
     calls: list[httpx.Request] = []
 
@@ -964,7 +943,6 @@ async def test_client_rejects_empty_symbol_and_empty_index_before_any_request() 
 # --- direct upstream normalization -----------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_direct_spot_upstream_reports_unknown_freshness_honestly() -> None:
     class Provider:
         async def get_spot_price(self, symbol: str = "$SPX") -> float:
@@ -979,7 +957,6 @@ async def test_direct_spot_upstream_reports_unknown_freshness_honestly() -> None
     assert "missing_event_timestamp" in result.data_quality_flags
 
 
-@pytest.mark.asyncio
 async def test_direct_spot_upstream_preserves_timestamped_provider_freshness() -> None:
     event_timestamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
 
@@ -996,7 +973,6 @@ async def test_direct_spot_upstream_preserves_timestamped_provider_freshness() -
     assert "missing_event_timestamp" not in result.data_quality_flags
 
 
-@pytest.mark.asyncio
 async def test_direct_spot_upstream_classifies_provider_failure_as_unavailable() -> None:
     class Failing:
         async def get_spot_price(self, symbol: str = "$SPX") -> float:
@@ -1008,7 +984,6 @@ async def test_direct_spot_upstream_classifies_provider_failure_as_unavailable()
     assert "/private" not in str(excinfo.value)
 
 
-@pytest.mark.asyncio
 async def test_direct_spot_upstream_classifies_malformed_payload_as_malformed_not_unavailable() -> (
     None
 ):
@@ -1024,7 +999,6 @@ async def test_direct_spot_upstream_classifies_malformed_payload_as_malformed_no
         await DirectSchwabSpotUpstream(MalformedPayload()).get_spot("$SPX")
 
 
-@pytest.mark.asyncio
 async def test_direct_spot_upstream_still_classifies_fetch_failure_as_unavailable() -> None:
     """A non-parse failure (network/timeout/adapter error) must still be unavailable."""
 
@@ -1036,7 +1010,6 @@ async def test_direct_spot_upstream_still_classifies_fetch_failure_as_unavailabl
         await DirectSchwabSpotUpstream(FetchFailure()).get_spot("$SPX")
 
 
-@pytest.mark.asyncio
 async def test_direct_chain_upstream_summarizes_without_contract_rows() -> None:
     payload = {
         "underlyingPrice": 5000.25,
@@ -1084,7 +1057,6 @@ async def test_direct_chain_upstream_summarizes_without_contract_rows() -> None:
     }
 
 
-@pytest.mark.asyncio
 async def test_direct_chain_upstream_tolerates_a_payload_with_no_expiration_map() -> None:
     """``extract_chain_metadata`` now matches both live parsers on this shape (a payload
     present but with neither ``callExpDateMap`` nor ``putExpDateMap``): it is a legitimate
@@ -1117,7 +1089,6 @@ async def test_direct_chain_upstream_rejects_a_payload_that_is_not_an_object() -
 # --- direct history/movers upstream normalization -----------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_direct_history_upstream_normalizes_daily_candles() -> None:
     """``DirectSchwabHistoryUpstream`` stamps ``received_at`` with the real clock, so the
     candle must be anchored to it (not a fixed date) for the freshness assertion below."""
@@ -1148,7 +1119,6 @@ async def test_direct_history_upstream_normalizes_daily_candles() -> None:
     assert result.stale is False
 
 
-@pytest.mark.asyncio
 async def test_direct_history_upstream_routes_minute_frequency_to_intraday_bars() -> None:
     class Provider:
         async def get_daily_bars(self, symbol: str, days_back: int = 10):
@@ -1163,7 +1133,6 @@ async def test_direct_history_upstream_routes_minute_frequency_to_intraday_bars(
     assert result.bars == ()
 
 
-@pytest.mark.asyncio
 async def test_direct_history_upstream_classifies_provider_failure_as_unavailable() -> None:
     class Failing:
         async def get_daily_bars(self, symbol: str, days_back: int = 10):
@@ -1177,7 +1146,6 @@ async def test_direct_history_upstream_classifies_provider_failure_as_unavailabl
     assert "/private" not in str(excinfo.value)
 
 
-@pytest.mark.asyncio
 async def test_direct_history_upstream_classifies_non_list_payload_as_malformed() -> None:
     class MalformedPayload:
         async def get_daily_bars(self, symbol: str, days_back: int = 10):
@@ -1190,7 +1158,6 @@ async def test_direct_history_upstream_classifies_non_list_payload_as_malformed(
         await DirectSchwabHistoryUpstream(MalformedPayload()).get_history("AAPL", "daily", 10)
 
 
-@pytest.mark.asyncio
 async def test_direct_movers_upstream_normalizes_and_maps_direction_to_sort_order() -> None:
     class Provider:
         def __init__(self) -> None:
@@ -1211,7 +1178,6 @@ async def test_direct_movers_upstream_normalizes_and_maps_direction_to_sort_orde
     assert result.age_seconds is None
 
 
-@pytest.mark.asyncio
 async def test_direct_movers_upstream_classifies_provider_failure_as_unavailable() -> None:
     class Failing:
         async def get_market_movers(self, index: str, *, sort_order: str = "PERCENT_CHANGE_UP"):
@@ -1222,7 +1188,6 @@ async def test_direct_movers_upstream_classifies_provider_failure_as_unavailable
     assert "/private" not in str(excinfo.value)
 
 
-@pytest.mark.asyncio
 async def test_direct_movers_upstream_classifies_non_list_payload_as_malformed() -> None:
     class MalformedPayload:
         async def get_market_movers(self, index: str, *, sort_order: str = "PERCENT_CHANGE_UP"):
@@ -1235,7 +1200,6 @@ async def test_direct_movers_upstream_classifies_non_list_payload_as_malformed()
 # --- direct session-history upstream normalization ------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_direct_session_history_upstream_splits_by_session() -> None:
     utc = dt.timezone.utc
 
@@ -1281,7 +1245,6 @@ async def test_direct_session_history_upstream_splits_by_session() -> None:
     assert regular.session == "regular"
 
 
-@pytest.mark.asyncio
 async def test_direct_session_history_upstream_classifies_provider_failure_as_unavailable() -> None:
     class Failing:
         async def get_session_bars(self, symbol: str, date: dt.date):
@@ -1294,7 +1257,6 @@ async def test_direct_session_history_upstream_classifies_provider_failure_as_un
     assert "/private" not in str(excinfo.value)
 
 
-@pytest.mark.asyncio
 async def test_direct_session_history_upstream_classifies_non_list_payload_as_malformed() -> None:
     class MalformedPayload:
         async def get_session_bars(self, symbol: str, date: dt.date):
