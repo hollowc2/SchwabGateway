@@ -3,31 +3,24 @@
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import math
 import os
 import statistics
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from schwab_gateway_sdk.models import OrderBookSnapshotV1
+
+from schwab_gateway.evidence_files import sha256_file, write_private_json, write_private_ndjson
 
 UTC = dt.timezone.utc
 
 
 class OrderBookAnalysisError(RuntimeError):
     """A capture could not be verified or derived without ambiguity."""
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _capture_file(manifest_path: Path, relative_name: Any) -> Path:
@@ -221,7 +214,7 @@ def write_derived_dataset(
     output_directory: Path,
     *,
     depth_levels: int = 10,
-    clock: Any = None,
+    clock: Callable[[], dt.datetime] | None = None,
 ) -> Path:
     """Write a new non-overwriting derived dataset and provenance manifest."""
 
@@ -232,12 +225,7 @@ def write_derived_dataset(
     output_directory.mkdir(parents=True, exist_ok=False)
     metrics_path = output_directory / "order_book_metrics.ndjson"
     derived_manifest_path = output_directory / "manifest.json"
-    with metrics_path.open("x", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(metrics_path, 0o600)
+    write_private_ndjson(metrics_path, rows)
     now = (clock or (lambda: dt.datetime.now(UTC)))().astimezone(UTC)
     derived_manifest = {
         "schema_version": "1.0",
@@ -258,10 +246,5 @@ def write_derived_dataset(
         ),
         "summary": summary,
     }
-    with derived_manifest_path.open("x", encoding="utf-8") as handle:
-        json.dump(derived_manifest, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(derived_manifest_path, 0o600)
+    write_private_json(derived_manifest_path, derived_manifest)
     return derived_manifest_path

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import math
 import os
@@ -22,6 +21,7 @@ from schwab.contrib.util import StreamJsonDecoder
 from schwab_gateway_sdk.models import OrderBookSnapshotV1
 from schwab_token_store import AtomicFileTokenStore, AtomicTokenManager
 
+from schwab_gateway.evidence_files import sha256_file, write_private_json
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.order_book import (
     BOOK_SERVICE_BY_VENUE,
@@ -76,14 +76,6 @@ class OrderBookCaptureRequest:
         except ZoneInfoNotFoundError:
             raise ValueError("order-book display timezone is invalid") from None
         object.__setattr__(self, "symbols", normalized_symbols)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class OrderBookResearchRecorder:
@@ -290,9 +282,9 @@ class OrderBookResearchRecorder:
             "raw_path": self.raw_path.name,
             "normalized_path": self.normalized_path.name,
             "connection_events_path": self.connection_events_path.name,
-            "raw_sha256": _sha256(self.raw_path),
-            "normalized_sha256": _sha256(self.normalized_path),
-            "connection_events_sha256": _sha256(self.connection_events_path),
+            "raw_sha256": sha256_file(self.raw_path),
+            "normalized_sha256": sha256_file(self.normalized_path),
+            "connection_events_sha256": sha256_file(self.connection_events_path),
             "raw_frame_count": self.raw_frame_count,
             "normalized_snapshot_count": self.normalized_snapshot_count,
             "malformed_snapshot_count": self.malformed_snapshot_count,
@@ -310,12 +302,7 @@ class OrderBookResearchRecorder:
             "termination_reason": termination_reason,
             "failure_class": failure_class,
         }
-        with self.manifest_path.open("x", encoding="utf-8") as handle:
-            json.dump(manifest, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(self.manifest_path, 0o600)
+        write_private_json(self.manifest_path, manifest)
         self._finalized = True
         return self.manifest_path
 

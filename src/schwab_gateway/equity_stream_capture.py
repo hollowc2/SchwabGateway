@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import math
 import os
@@ -17,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from schwab.contrib.util import StreamJsonDecoder
 from schwab_token_store import AtomicFileTokenStore, AtomicTokenManager
 
+from schwab_gateway.evidence_files import sha256_file, write_private_json
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.order_book_capture import (
     DEFAULT_MAX_RECONNECTS,
@@ -62,14 +62,6 @@ class EquityStreamCaptureRequest:
         except ZoneInfoNotFoundError:
             raise ValueError("equity-stream display timezone is invalid") from None
         object.__setattr__(self, "symbols", symbols)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class EquityStreamRecorder:
@@ -207,9 +199,9 @@ class EquityStreamRecorder:
             "raw_path": self.raw_path.name,
             "messages_path": self.messages_path.name,
             "connection_events_path": self.connection_events_path.name,
-            "raw_sha256": _sha256(self.raw_path),
-            "messages_sha256": _sha256(self.messages_path),
-            "connection_events_sha256": _sha256(self.connection_events_path),
+            "raw_sha256": sha256_file(self.raw_path),
+            "messages_sha256": sha256_file(self.messages_path),
+            "connection_events_sha256": sha256_file(self.connection_events_path),
             "raw_frame_count": self.raw_frame_count,
             "message_counts": self.message_counts,
             "connection_attempt_count": self.connection_attempt_count,
@@ -219,12 +211,7 @@ class EquityStreamRecorder:
             "termination_reason": termination_reason,
             "failure_class": failure_class,
         }
-        with self.manifest_path.open("x", encoding="utf-8") as handle:
-            json.dump(manifest, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(self.manifest_path, 0o600)
+        write_private_json(self.manifest_path, manifest)
         self._finalized = True
         return self.manifest_path
 
