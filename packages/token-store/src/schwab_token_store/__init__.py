@@ -30,6 +30,8 @@ UTC = dt.timezone.utc
 DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_TOKEN_BYTES = 1024 * 1024
+# Never follow a symlink to, or leak a descriptor of, a credential or lock file.
+_SAFE_OPEN_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 token_refresh_total = Counter(
     "schwab_gateway_token_refresh_total",
@@ -201,7 +203,7 @@ class _AtomicFileTokenTransaction:
         self._max_token_bytes = max_token_bytes
 
     def read(self) -> object:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | _SAFE_OPEN_FLAGS
         try:
             token_fd = os.open(self._path, flags)
         except FileNotFoundError:
@@ -311,7 +313,7 @@ class AtomicFileTokenStore:
         lock_fd = -1
         hold_started: float | None = None
         try:
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_RDONLY | _SAFE_OPEN_FLAGS
             try:
                 lock_fd = os.open(self._lock_path, flags)
                 lock_stat = os.fstat(lock_fd)
@@ -373,9 +375,7 @@ class AtomicFileTokenStore:
         lock_fd = -1
         hold_started: float | None = None
         try:
-            flags = (
-                os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            )
+            flags = os.O_RDWR | os.O_CREAT | _SAFE_OPEN_FLAGS
             try:
                 lock_fd = os.open(self._lock_path, flags, 0o600)
                 os.fchmod(lock_fd, 0o600)

@@ -392,7 +392,7 @@ def _parse_order_book_limit(request: web.Request) -> int:
     except ValueError as exc:
         raise ValueError("limit must be an integer") from exc
     if not 1 <= limit <= MAX_RECENT_ORDER_BOOK_SNAPSHOTS:
-        raise ValueError("limit must be between 1 and 1000")
+        raise ValueError(f"limit must be between 1 and {MAX_RECENT_ORDER_BOOK_SNAPSHOTS}")
     return limit
 
 
@@ -879,7 +879,9 @@ async def stream_order_book(request: web.Request) -> web.StreamResponse:
     try:
         symbols = _parse_symbols(request)
         if len(symbols) > MAX_STREAM_ORDER_BOOK_SYMBOLS:
-            raise ValueError("at most 25 order-book stream symbols are allowed")
+            raise ValueError(
+                f"at most {MAX_STREAM_ORDER_BOOK_SYMBOLS} order-book stream symbols are allowed"
+            )
         venue = _parse_order_book_venue(request)
     except ValueError as exc:
         return _error("invalid_request", str(exc), 400)

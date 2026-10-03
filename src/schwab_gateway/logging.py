@@ -20,14 +20,11 @@ def setup_logging(log_level: str = "INFO", json_output: bool = True) -> None:
     renderer: structlog.types.Processor = (
         structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
     )
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=getattr(logging, log_level.upper()),
-    )
+    level = getattr(logging, log_level.upper())
+    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
     structlog.configure(
         processors=[*processors, renderer],
-        wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, log_level.upper())),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )

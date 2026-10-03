@@ -8,6 +8,8 @@ from pathlib import Path
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.logging import get_logger, setup_logging
 from schwab_gateway.order_book_capture import (
+    DEFAULT_MAX_RECONNECTS,
+    DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
     OrderBookCaptureRequest,
     OrderBookResearchRecorder,
     parse_symbols,
@@ -54,8 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm a short exclusive token transaction only while each stream logs in",
     )
-    parser.add_argument("--max-reconnects", type=int, default=3)
-    parser.add_argument("--login-timeout-seconds", type=float, default=8.0)
+    parser.add_argument("--max-reconnects", type=int, default=DEFAULT_MAX_RECONNECTS)
+    parser.add_argument(
+        "--login-timeout-seconds", type=float, default=DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS
+    )
     return parser
 
 
