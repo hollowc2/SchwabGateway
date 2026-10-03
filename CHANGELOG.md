@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.0 - 2026-10-03
+
+Internal refactor from the 2026-10 code-quality review (`docs/code-review-2026-10.md`).
+The HTTP contract, response bodies, status codes, metric names and labels, log events,
+CLI entry points, configuration keys and the token file format are unchanged.
+
+- Cache the year-keyed US-equity market calendar. Normalizing one 960-candle
+  `/v1/session-history` day took 43.6 ms on the event loop, most of it rebuilding the
+  holiday set for every candle; it now takes 4.9 ms. The calendar moved to
+  `schwab_gateway.market_calendar`.
+- SDK: the repeated timezone-aware and non-negative-age field validators are now the
+  shared `GatewayTimestamp`, `NonNegativeAge` and `FiniteNonNegativeAge` annotated types.
+  Validation errors (type, location, message) and every model's JSON schema are
+  identical, but the per-class `*_must_be_*` validator methods no longer exist.
+- SDK: quote reads share the typed request path; exception classes and messages are
+  unchanged.
+- Remove the superseded whole-stream token-lock order-book capture path
+  (`capture_order_book_stream`, `run_exclusive_order_book_capture`); the
+  `schwab-gateway-capture-order-books` CLI already used short bootstrap transactions.
+- Share duplicated logic across upstream normalization, API handlers, evidence-file
+  writers, stream capture and reconnects, the scheduler, the runner, the live provider
+  and the token store, each pinned first by a characterization test.
+- Apply `ruff format` to the whole workspace.
+
 ## 0.7.1 - 2026-10-01
 
 - Normalize a negative Schwab `theoreticalOptionValue` to `null`, the same way a negative
