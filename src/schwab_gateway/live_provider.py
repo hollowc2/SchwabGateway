@@ -199,12 +199,8 @@ class LockedSchwabMarketDataProvider:
                         completion.set_exception(error)
 
             def consume_unobserved_result(future: asyncio.Future[Any]) -> None:
-                if future.cancelled():
-                    return
-                try:
+                if not future.cancelled():
                     future.exception()
-                except Exception:
-                    pass
 
             completion.add_done_callback(consume_unobserved_result)
 

@@ -12,7 +12,6 @@ import hashlib
 import json
 import math
 import os
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,9 +29,9 @@ from schwab_gateway.order_book import (
     OrderBookVenue,
     normalize_schwab_book_message,
 )
+from schwab_gateway.symbols import SYMBOL_PATTERN
 
 UTC = dt.timezone.utc
-SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 MAX_CAPTURE_SYMBOLS = 25
 MAX_CAPTURE_DURATION_SECONDS = 86_400.0
 DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS = 8.0

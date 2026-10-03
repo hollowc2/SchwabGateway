@@ -117,12 +117,8 @@ class _Job:
 
 
 def _consume_future_exception(future: asyncio.Future[Any]) -> None:
-    if future.cancelled():
-        return
-    try:
+    if not future.cancelled():
         future.exception()
-    except (Exception, asyncio.CancelledError):
-        pass
 
 
 class ExecutionScheduler:

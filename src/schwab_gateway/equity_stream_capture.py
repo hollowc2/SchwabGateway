@@ -25,9 +25,9 @@ from schwab_gateway.order_book_capture import (
     MAX_CAPTURE_DURATION_SECONDS,
     MAX_CAPTURE_SYMBOLS,
     MAX_RECONNECT_DELAY_SECONDS,
-    SYMBOL_PATTERN,
     bootstrap_stream_under_token_lock,
 )
+from schwab_gateway.symbols import SYMBOL_PATTERN
 
 UTC = dt.timezone.utc
 SERVICES = ("CHART_EQUITY", "LEVELONE_EQUITIES")

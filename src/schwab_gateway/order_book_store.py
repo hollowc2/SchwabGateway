@@ -11,7 +11,8 @@ from typing import Callable, Literal
 from prometheus_client import Counter
 from schwab_gateway_sdk.models import OrderBookSnapshotV1
 
-OrderBookVenue = Literal["NASDAQ", "NYSE"]
+from schwab_gateway.order_book import OrderBookVenue
+
 OrderBookFeedState = Literal["unconfigured", "connecting", "connected", "disconnected"]
 
 order_book_subscriber_drops = Counter(
