@@ -15,16 +15,17 @@ from schwab_gateway_sdk.models import (
     OptionChainV1,
     OptionContractV1,
 )
-from schwab_token_store import TokenManagerHealth, TokenManagerState
+from schwab_token_store import TokenManagerState
+from support import (
+    BlockingSpotUpstream,
+    EmptyQuoteUpstream,
+    FakeReadiness,
+    serving,
+    single_principal_authenticator,
+)
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import create_app
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
-)
 from schwab_gateway.upstream import (
     OPTION_CHAIN_CACHE_AGE_BUCKETS,
     DirectSchwabOptionChainUpstream,
@@ -1037,20 +1038,6 @@ async def test_direct_upstream_prunes_globally_and_enforces_storage_bounds() -> 
     assert uncached._cache_bytes == 0
 
 
-class _Readiness:
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(
-            state=TokenManagerState.READY,
-            reason="test",
-            updated_at=RECEIVED_AT,
-        )
-
-
-class _Quotes:
-    async def get_quotes(self, _symbols: tuple[str, ...]) -> tuple:
-        return ()
-
-
 class _OptionChainUpstream:
     def __init__(self, payload: dict[str, object] | None = None) -> None:
         self.calls: list[tuple[str, dt.date]] = []
@@ -1067,36 +1054,19 @@ class _OptionChainUpstream:
         )
 
 
-def _authenticator() -> InternalKeyAuthenticator:
-    return InternalKeyAuthenticator(
-        (
-            InternalPrincipal(
-                client_id="butterfly-guy",
-                key_sha256=hash_api_key("valid-key"),
-                capabilities=frozenset({"market_data:read"}),
-                priority_class=PriorityClass.PROTECTED,
-            ),
-        )
-    )
-
-
 @pytest.mark.asyncio
 async def test_sdk_calls_distinct_full_chain_route_and_returns_typed_contract() -> None:
     upstream = _OptionChainUpstream()
     app = create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=_Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(),
         option_chain_upstream=upstream,
     )
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_option_chain("SPX", EXPIRATION)
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert response.option_chain.symbol == "SPX"
@@ -1110,19 +1080,15 @@ async def test_negative_time_value_is_null_through_http_and_sdk_contract() -> No
     payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = -265.57
     upstream = _OptionChainUpstream(payload)
     app = create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=_Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(),
         option_chain_upstream=upstream,
     )
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_option_chain("SPX", EXPIRATION)
         await client.close()
-    finally:
-        await server.close()
 
     assert response.option_chain.contracts[0].time_value is None
     assert response.option_chain.contracts[0].mark == 1.2
@@ -1142,22 +1108,18 @@ async def test_negative_time_value_is_null_through_http_and_sdk_contract() -> No
 async def test_full_chain_route_validates_before_calling_upstream(params) -> None:
     upstream = _OptionChainUpstream()
     app = create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=_Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(),
         option_chain_upstream=upstream,
     )
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             response = await client.get(
                 "/v1/option-chain",
                 params=params,
                 headers={"X-Internal-API-Key": "valid-key"},
             )
-    finally:
-        await server.close()
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
@@ -1180,9 +1142,9 @@ class _BlockingOptionChainUpstream(_OptionChainUpstream):
 async def test_full_chain_capacity_is_bounded_and_fails_closed_with_429() -> None:
     upstream = _BlockingOptionChainUpstream()
     app = create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=_Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(),
         option_chain_upstream=upstream,
         admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
     )
@@ -1218,9 +1180,9 @@ async def test_full_chain_capacity_is_bounded_and_fails_closed_with_429() -> Non
 async def test_full_chain_timeout_fails_closed_with_504() -> None:
     upstream = _BlockingOptionChainUpstream()
     app = create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=_Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(),
         option_chain_upstream=upstream,
         upstream_timeout_seconds=0.01,
     )
@@ -1244,34 +1206,13 @@ async def test_full_chain_timeout_fails_closed_with_504() -> None:
     }
 
 
-class _BlockingSpotUpstream:
-    """Hold the single scheduler slot until released."""
-
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def get_spot(self, symbol: str):
-        self.entered.set()
-        await self.release.wait()
-        raise UpstreamUnavailableError("test spot upstream")
-
-
-class _SwitchableReadiness(_Readiness):
-    def __init__(self) -> None:
-        self.state = TokenManagerState.READY
-
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(state=self.state, reason="test", updated_at=RECEIVED_AT)
-
-
 def _one_slot_app(upstream, readiness=None, spot=None, **kwargs):
     # Capacity 1 means any request that reaches the scheduler while the slot is
     # occupied is rejected with 429: a 200 proves the scheduler was bypassed.
     return create_app(
-        _Quotes(),
-        _authenticator(),
-        token_readiness_provider=readiness or _Readiness(),
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(),
+        token_readiness_provider=readiness or FakeReadiness(),
         option_chain_upstream=upstream,
         spot_upstream=spot,
         admission_policy=AdmissionPolicy(protected_capacity=1, background_capacity=1),
@@ -1290,7 +1231,7 @@ async def test_cache_hit_is_served_without_waiting_for_the_busy_scheduler_slot()
     upstream = DirectSchwabOptionChainUpstream(
         provider, monotonic_clock=clock.monotonic, utcnow=clock.utcnow
     )
-    spot = _BlockingSpotUpstream()
+    spot = BlockingSpotUpstream()
     server = TestServer(_one_slot_app(upstream, spot=spot))
     await server.start_server()
     try:
@@ -1385,16 +1326,12 @@ async def test_warm_cache_still_fails_closed_when_gateway_is_not_ready() -> None
     upstream = DirectSchwabOptionChainUpstream(
         provider, monotonic_clock=clock.monotonic, utcnow=clock.utcnow
     )
-    readiness = _SwitchableReadiness()
-    server = TestServer(_one_slot_app(upstream, readiness=readiness))
-    await server.start_server()
-    try:
+    readiness = FakeReadiness()
+    async with serving(_one_slot_app(upstream, readiness=readiness)) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             warm = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
             readiness.state = TokenManagerState.REFRESH_FAILED
             refused = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
-    finally:
-        await server.close()
 
     assert warm.status_code == 200
     assert refused.status_code == 503

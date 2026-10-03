@@ -9,36 +9,13 @@ import pytest
 from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 from schwab_gateway_sdk.models import OrderBookLevelV1, OrderBookSnapshotV1
+from support import EmptyQuoteUpstream, single_principal_authenticator
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import create_app
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
-)
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
 
 UTC = dt.timezone.utc
-
-
-class _UnusedQuoteUpstream:
-    async def get_quotes(self, _symbols):
-        return ()
-
-
-def _authenticator() -> InternalKeyAuthenticator:
-    return InternalKeyAuthenticator(
-        (
-            InternalPrincipal(
-                client_id="butterfly-guy",
-                key_sha256=hash_api_key("valid-key"),
-                capabilities=frozenset({"market_data:read"}),
-                priority_class=PriorityClass.PROTECTED,
-            ),
-        )
-    )
 
 
 def _snapshot(sequence: int) -> OrderBookSnapshotV1:
@@ -63,8 +40,8 @@ async def test_recent_order_book_is_authenticated_bounded_and_venue_specific() -
     client = TestClient(
         TestServer(
             create_app(
-                _UnusedQuoteUpstream(),
-                _authenticator(),
+                EmptyQuoteUpstream(),
+                single_principal_authenticator(),
                 order_book_store=store,
             )
         )
@@ -96,8 +73,8 @@ async def test_order_book_websocket_requires_auth_and_fans_out_snapshots() -> No
     client = TestClient(
         TestServer(
             create_app(
-                _UnusedQuoteUpstream(),
-                _authenticator(),
+                EmptyQuoteUpstream(),
+                single_principal_authenticator(),
                 order_book_store=store,
             )
         )
@@ -128,8 +105,8 @@ async def test_failed_websocket_upgrade_does_not_leak_subscription() -> None:
     client = TestClient(
         TestServer(
             create_app(
-                _UnusedQuoteUpstream(),
-                _authenticator(),
+                EmptyQuoteUpstream(),
+                single_principal_authenticator(),
                 order_book_store=store,
             )
         )
@@ -154,8 +131,8 @@ async def test_order_book_websocket_capacity_is_bounded_and_released() -> None:
     client = TestClient(
         TestServer(
             create_app(
-                _UnusedQuoteUpstream(),
-                _authenticator(),
+                EmptyQuoteUpstream(),
+                single_principal_authenticator(),
                 order_book_store=store,
                 order_book_stream_policy=AdmissionPolicy(
                     protected_capacity=1,
@@ -194,8 +171,8 @@ async def test_recent_order_book_fails_closed_when_snapshot_is_stale() -> None:
     client = TestClient(
         TestServer(
             create_app(
-                _UnusedQuoteUpstream(),
-                _authenticator(),
+                EmptyQuoteUpstream(),
+                single_principal_authenticator(),
                 order_book_store=store,
                 order_book_max_age_seconds=15,
             )

@@ -6,20 +6,12 @@ route; validation failures return the exact parser message as ``invalid_request`
 
 from __future__ import annotations
 
-import datetime as dt
-
 import httpx
 import pytest
-from aiohttp.test_utils import TestServer
-from schwab_token_store import TokenManagerHealth, TokenManagerState
+from schwab_token_store import TokenManagerState
+from support import EmptyQuoteUpstream, FakeReadiness, serving, single_principal_authenticator
 
 from schwab_gateway.api import create_app
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
-)
 
 # (path, invalid query, exact invalid_request message)
 INVALID_REQUESTS = [
@@ -66,42 +58,20 @@ INVALID_REQUESTS = [
 ]
 
 
-class _Quotes:
-    async def get_quotes(self, _symbols: tuple[str, ...]) -> tuple:
-        return ()
-
-
-class _NotReady:
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(
-            state=TokenManagerState.REFRESHING,
-            reason="test",
-            updated_at=dt.datetime.now(dt.UTC),
-        )
-
-
 def _app(*, capability: bool):
-    principal = InternalPrincipal(
-        client_id="butterfly-guy",
-        key_sha256=hash_api_key("valid-key"),
-        capabilities=frozenset({"market_data:read"} if capability else set()),
-        priority_class=PriorityClass.PROTECTED,
-    )
     return create_app(
-        _Quotes(), InternalKeyAuthenticator((principal,)), token_readiness_provider=_NotReady()
+        EmptyQuoteUpstream(),
+        single_principal_authenticator(capability="market_data:read" if capability else None),
+        token_readiness_provider=FakeReadiness(TokenManagerState.REFRESHING),
     )
 
 
 async def _get(app, path: str, params: dict[str, str]) -> httpx.Response:
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             return await client.get(
                 path, params=params, headers={"X-Internal-API-Key": "valid-key"}
             )
-    finally:
-        await server.close()
 
 
 @pytest.mark.parametrize(("path", "params", "message"), INVALID_REQUESTS)

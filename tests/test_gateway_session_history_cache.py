@@ -11,16 +11,11 @@ import datetime as dt
 import httpx
 import pytest
 from aiohttp.test_utils import TestServer
-from schwab_token_store import TokenManagerHealth, TokenManagerState
+from schwab_token_store import TokenManagerState
+from support import BlockingSpotUpstream, FakeReadiness, serving, single_principal_authenticator
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.api import create_app
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
-)
 from schwab_gateway.upstream import (
     DirectSchwabSessionHistoryUpstream,
     UpstreamUnavailableError,
@@ -215,52 +210,17 @@ def test_cache_bounds_must_be_positive() -> None:
 # --- API fast path ---------------------------------------------------------------------
 
 
-class _Readiness:
-    def __init__(self) -> None:
-        self.state = TokenManagerState.READY
-
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(
-            state=self.state,
-            reason="test",
-            updated_at=dt.datetime.now(UTC),
-        )
-
-
 class _Quotes:
     async def get_quotes(self, symbols):
         raise UpstreamUnavailableError("unused")
 
 
-class _BlockingSpotUpstream:
-    """Hold the single scheduler slot until released."""
-
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def get_spot(self, symbol: str):
-        self.entered.set()
-        await self.release.wait()
-        raise UpstreamUnavailableError("test spot upstream")
-
-
-def _one_slot_app(upstream, readiness: _Readiness, spot=None):
+def _one_slot_app(upstream, readiness: FakeReadiness, spot=None):
     # Capacity 1 means a request that reaches the scheduler while the slot is occupied
     # is rejected with 429, so a 200 proves the scheduler was bypassed.
-    authenticator = InternalKeyAuthenticator(
-        (
-            InternalPrincipal(
-                client_id="butterfly-guy",
-                key_sha256=hash_api_key("valid-key"),
-                capabilities=frozenset({"market_data:read"}),
-                priority_class=PriorityClass.PROTECTED,
-            ),
-        )
-    )
     return create_app(
         _Quotes(),
-        authenticator,
+        single_principal_authenticator(),
         token_readiness_provider=readiness,
         session_history_upstream=upstream,
         spot_upstream=spot,
@@ -276,8 +236,8 @@ async def test_cached_session_is_served_without_waiting_for_the_busy_scheduler_s
     clock = _Clock()
     provider = _Provider()
     upstream = DirectSchwabSessionHistoryUpstream(provider, utcnow=clock.utcnow)
-    spot = _BlockingSpotUpstream()
-    server = TestServer(_one_slot_app(upstream, _Readiness(), spot=spot))
+    spot = BlockingSpotUpstream()
+    server = TestServer(_one_slot_app(upstream, FakeReadiness(), spot=spot))
     await server.start_server()
     try:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
@@ -310,18 +270,14 @@ async def test_cached_session_is_served_without_waiting_for_the_busy_scheduler_s
 async def test_warm_session_cache_still_fails_closed_when_gateway_is_not_ready() -> None:
     provider = _Provider()
     upstream = DirectSchwabSessionHistoryUpstream(provider, utcnow=_Clock().utcnow)
-    readiness = _Readiness()
-    server = TestServer(_one_slot_app(upstream, readiness))
-    await server.start_server()
-    try:
+    readiness = FakeReadiness()
+    async with serving(_one_slot_app(upstream, readiness)) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             warm = await client.get("/v1/session-history", params=SESSION_PARAMS, headers=HEADERS)
             readiness.state = TokenManagerState.EXPIRED
             refused = await client.get(
                 "/v1/session-history", params=SESSION_PARAMS, headers=HEADERS
             )
-    finally:
-        await server.close()
 
     assert warm.status_code == 200
     assert refused.status_code == 503

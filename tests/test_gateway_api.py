@@ -17,6 +17,7 @@ from schwab_token_store import (
     TokenManagerHealth,
     TokenManagerState,
 )
+from support import FakeReadiness, serving, single_principal_authenticator
 
 from schwab_gateway import api
 from schwab_gateway.api import (
@@ -24,12 +25,6 @@ from schwab_gateway.api import (
     gateway_event_loop_lag_distribution,
     gateway_quote_partial_responses,
     gateway_requests,
-)
-from schwab_gateway.auth import (
-    InternalKeyAuthenticator,
-    InternalPrincipal,
-    PriorityClass,
-    hash_api_key,
 )
 
 
@@ -56,49 +51,19 @@ class FakeQuoteUpstream:
         )
 
 
-def authenticator(*, capability: str | None = "market_data:read") -> InternalKeyAuthenticator:
-    return InternalKeyAuthenticator(
-        (
-            InternalPrincipal(
-                client_id="butterfly-guy",
-                key_sha256=hash_api_key("valid-key"),
-                capabilities=frozenset({capability} if capability else set()),
-                priority_class=PriorityClass.PROTECTED,
-            ),
-        )
-    )
-
-
-class FakeTokenReadinessProvider:
-    def __init__(self, state: TokenManagerState, reason: str = "fake reason") -> None:
-        self.state = state
-        self.reason = reason
-
-    def health(self) -> TokenManagerHealth:
-        return TokenManagerHealth(
-            state=self.state,
-            reason=self.reason,
-            updated_at=dt.datetime.now(dt.timezone.utc),
-        )
-
-
 @pytest.mark.asyncio
 async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
     upstream = FakeQuoteUpstream()
-    server = TestServer(
+    async with serving(
         create_app(
             upstream,
-            authenticator(),
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         response = await client.get_quotes(["AAPL", "MSFT"])
         await client.close()
-    finally:
-        await server.close()
 
     assert response.schema_version == "1.0"
     assert [quote.symbol for quote in response.quotes] == ["AAPL", "MSFT"]
@@ -108,9 +73,9 @@ async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_authentication_authorization_and_health_contracts() -> None:
-    server = TestServer(create_app(FakeQuoteUpstream(), authenticator(capability=None)))
-    await server.start_server()
-    try:
+    async with serving(
+        create_app(FakeQuoteUpstream(), single_principal_authenticator(capability=None))
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             health = await http.get("/health")
             missing = await http.get("/v1/quotes", params={"symbols": "AAPL"})
@@ -126,8 +91,6 @@ async def test_gateway_authentication_authorization_and_health_contracts() -> No
             )
             with pytest.raises(GatewayAuthorizationError):
                 await client.get_quotes(["AAPL"])
-    finally:
-        await server.close()
 
     assert health.status_code == 200
     assert health.json()["service"] == "schwab-gateway"
@@ -141,23 +104,19 @@ async def test_gateway_authentication_authorization_and_health_contracts() -> No
 async def test_ready_maps_every_token_manager_state_to_bounded_response(
     state: TokenManagerState,
 ) -> None:
-    provider = FakeTokenReadinessProvider(
+    provider = FakeReadiness(
         state,
         reason="access-secret and /private/token/path must never be exposed",
     )
-    server = TestServer(
+    async with serving(
         create_app(
             FakeQuoteUpstream(),
-            authenticator(),
+            single_principal_authenticator(),
             token_readiness_provider=provider,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get("/ready")
-    finally:
-        await server.close()
 
     payload = response.json()
     assert response.status_code == (200 if state is TokenManagerState.READY else 503)
@@ -170,16 +129,14 @@ async def test_ready_maps_every_token_manager_state_to_bounded_response(
 
 @pytest.mark.asyncio
 async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
-    provider = FakeTokenReadinessProvider(TokenManagerState.READY)
-    server = TestServer(
+    provider = FakeReadiness(TokenManagerState.READY)
+    async with serving(
         create_app(
             FakeQuoteUpstream(),
-            authenticator(),
+            single_principal_authenticator(),
             token_readiness_provider=provider,
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             ready = await http.get("/ready")
             provider.state = TokenManagerState.REFRESHING
@@ -188,8 +145,6 @@ async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
             failed = await http.get("/ready")
             provider.state = TokenManagerState.READY
             recovered = await http.get("/ready")
-    finally:
-        await server.close()
 
     assert [response.status_code for response in (ready, refreshing, failed, recovered)] == [
         200,
@@ -207,13 +162,9 @@ async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
 
 @pytest.mark.asyncio
 async def test_ready_fails_closed_without_an_injected_provider() -> None:
-    server = TestServer(create_app(FakeQuoteUpstream(), authenticator()))
-    await server.start_server()
-    try:
+    async with serving(create_app(FakeQuoteUpstream(), single_principal_authenticator())) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get("/ready")
-    finally:
-        await server.close()
 
     assert response.status_code == 503
     assert response.json()["token_state"] == TokenManagerState.UNINITIALIZED.value
@@ -226,19 +177,15 @@ async def test_ready_fails_closed_when_provider_fails_without_exposing_its_error
         def health(self) -> TokenManagerHealth:
             raise RuntimeError("access-secret at /private/token/path")
 
-    server = TestServer(
+    async with serving(
         create_app(
             FakeQuoteUpstream(),
-            authenticator(),
+            single_principal_authenticator(),
             token_readiness_provider=FailingProvider(),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get("/ready")
-    finally:
-        await server.close()
 
     assert response.status_code == 503
     assert response.json()["token_state"] == TokenManagerState.UNINITIALIZED.value
@@ -249,10 +196,8 @@ async def test_ready_fails_closed_when_provider_fails_without_exposing_its_error
 
 @pytest.mark.asyncio
 async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
-    app = create_app(FakeQuoteUpstream(), authenticator())
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    app = create_app(FakeQuoteUpstream(), single_principal_authenticator())
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
             response = await http.get(
                 "/v1/quotes",
@@ -264,8 +209,6 @@ async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
                 headers={"X-Internal-API-Key": "valid-key"},
             )
             metrics = await http.get("/metrics")
-    finally:
-        await server.close()
 
     route_shapes = {(route.method, route.resource.canonical) for route in app.router.routes()}
     assert response.status_code == 400
@@ -290,8 +233,8 @@ async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
     server = TestServer(
         create_app(
             SlowUpstream(),
-            authenticator(),
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
     )
     await server.start_server()
@@ -326,12 +269,14 @@ async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
 
 @pytest.mark.asyncio
 async def test_request_log_skips_successful_probes_and_records_query(capfd) -> None:
-    readiness = FakeTokenReadinessProvider(TokenManagerState.READY)
-    server = TestServer(
-        create_app(FakeQuoteUpstream(), authenticator(), token_readiness_provider=readiness)
-    )
-    await server.start_server()
-    try:
+    readiness = FakeReadiness(TokenManagerState.READY)
+    async with serving(
+        create_app(
+            FakeQuoteUpstream(),
+            single_principal_authenticator(),
+            token_readiness_provider=readiness,
+        )
+    ) as server:
         async with httpx.AsyncClient() as http:
             for path in ("/health", "/ready", "/metrics"):
                 assert (await http.get(str(server.make_url(path)))).status_code == 200
@@ -342,8 +287,6 @@ async def test_request_log_skips_successful_probes_and_records_query(capfd) -> N
                 str(server.make_url("/v1/quotes?symbols=AAPL,MSFT")),
                 headers={"X-Internal-API-Key": "valid-key"},
             )
-    finally:
-        await server.close()
 
     assert quote.status_code == 200
     request_logs = [
@@ -363,22 +306,18 @@ async def test_gateway_surfaces_upstream_timeout() -> None:
             await asyncio.sleep(0.05)
             return ()
 
-    server = TestServer(
+    async with serving(
         create_app(
             SlowUpstream(),
-            authenticator(),
+            single_principal_authenticator(),
             upstream_timeout_seconds=0.001,
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         client = GatewayMarketDataClient(str(server.make_url("/")), "valid-key")
         with pytest.raises(GatewayTimeoutError):
             await client.get_quotes(["AAPL"])
         await client.close()
-    finally:
-        await server.close()
 
 
 @pytest.mark.asyncio
@@ -391,8 +330,8 @@ async def test_partial_quote_set_fails_closed_and_names_missing_symbols(capfd) -
     server = TestServer(
         create_app(
             OmittingUpstream(),
-            authenticator(),
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
     )
     await server.start_server()
@@ -441,8 +380,8 @@ async def test_opted_in_partial_quote_set_serves_returned_quotes_and_names_missi
     server = TestServer(
         create_app(
             OmittingQuoteUpstream({"ZZZQ"}),
-            authenticator(),
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
     )
     await server.start_server()
@@ -471,15 +410,13 @@ async def test_opted_in_partial_quote_set_serves_returned_quotes_and_names_missi
 
 @pytest.mark.asyncio
 async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> None:
-    server = TestServer(
+    async with serving(
         create_app(
             OmittingQuoteUpstream({"ZZZQ"}),
-            authenticator(),
-            token_readiness_provider=FakeTokenReadinessProvider(TokenManagerState.READY),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
         )
-    )
-    await server.start_server()
-    try:
+    ) as server:
         async with httpx.AsyncClient(
             base_url=str(server.make_url("/")),
             headers={"X-Internal-API-Key": "valid-key"},
@@ -494,8 +431,6 @@ async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> Non
             invalid = await http.get(
                 "/v1/quotes", params={"symbols": "AAPL", "allow_partial": "yes"}
             )
-    finally:
-        await server.close()
 
     assert complete.status_code == 200
     assert complete.json()["missing_symbols"] == []

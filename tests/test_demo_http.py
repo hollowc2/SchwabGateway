@@ -4,7 +4,7 @@ import json
 
 import httpx
 import pytest
-from aiohttp.test_utils import TestServer
+from support import serving
 
 from schwab_gateway.auth import hash_api_key
 from schwab_gateway.config import GatewaySettings
@@ -31,9 +31,7 @@ async def test_demo_mode_over_real_http(tmp_path) -> None:
     )
     keys.chmod(0o600)
     app = build_demo_app(GatewaySettings(internal_keys_path=keys))
-    server = TestServer(app)
-    await server.start_server()
-    try:
+    async with serving(app) as server:
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             health = await client.get("/health")
             ready = await client.get("/ready")
@@ -43,8 +41,6 @@ async def test_demo_mode_over_real_http(tmp_path) -> None:
                 params={"symbols": "AAPL"},
                 headers={"X-Internal-API-Key": "synthetic-demo-key"},
             )
-    finally:
-        await server.close()
 
     assert (health.status_code, ready.status_code, unauthorized.status_code) == (200, 200, 401)
     assert quotes.status_code == 200
