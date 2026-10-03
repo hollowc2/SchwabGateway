@@ -6,8 +6,8 @@ import asyncio
 import datetime as dt
 import math
 import time
-from collections.abc import AsyncIterator
-from typing import Literal, Protocol, cast, get_args
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Literal, NoReturn, Protocol, cast, get_args
 
 from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -17,13 +17,16 @@ from schwab_gateway_sdk.models import (
     GatewayHealthV1,
     GatewayReadinessV1,
     HistoryResponseV1,
+    MoverIndex,
     MoversResponseV1,
     OptionChainResponseV1,
+    OptionChainV1,
     OrderBookRecentResponseV1,
     OrderBookStreamEnvelopeV1,
     PartialQuoteResponseV1,
     QuoteResponseV1,
     SessionHistoryResponseV1,
+    SessionHistoryV1,
     SpotResponseV1,
 )
 from schwab_token_store import (
@@ -144,6 +147,12 @@ gateway_quote_partial_responses = Counter(
     ["outcome"],
 )
 
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+ResponseBuilder = Callable[[], Awaitable[BaseModel]]
+UPSTREAM_TIMEOUT_MESSAGE = "market data upstream timed out"
+UPSTREAM_UNAVAILABLE_MESSAGE = "market data upstream is unavailable"
+UPSTREAM_MALFORMED_MESSAGE = "market data upstream returned invalid data"
+
 UPSTREAM_KEY = web.AppKey("gateway_quote_upstream", QuoteUpstream)
 SPOT_UPSTREAM_KEY = web.AppKey("gateway_spot_upstream", SpotUpstream)
 CHAIN_UPSTREAM_KEY = web.AppKey("gateway_chain_upstream", ChainMetadataUpstream)
@@ -190,42 +199,42 @@ class StaticTokenReadinessProvider:
 class _UnavailableSpotUpstream:
     """Fail closed when an app declares no spot surface."""
 
-    async def get_spot(self, _symbol: str):
+    async def get_spot(self, _symbol: str) -> NoReturn:
         raise UpstreamUnavailableError("spot upstream is not configured")
 
 
 class _UnavailableChainMetadataUpstream:
     """Fail closed when an app declares no chain-metadata surface."""
 
-    async def get_chain_metadata(self, _symbol: str, _expiration: dt.date):
+    async def get_chain_metadata(self, _symbol: str, _expiration: dt.date) -> NoReturn:
         raise UpstreamUnavailableError("chain upstream is not configured")
 
 
 class _UnavailableOptionChainUpstream:
     """Fail closed when an app declares no full option-chain surface."""
 
-    async def get_option_chain(self, _symbol: str, _expiration: dt.date):
+    async def get_option_chain(self, _symbol: str, _expiration: dt.date) -> NoReturn:
         raise UpstreamUnavailableError("option-chain upstream is not configured")
 
 
 class _UnavailableHistoryUpstream:
     """Fail closed when an app declares no history surface."""
 
-    async def get_history(self, _symbol: str, _frequency: str, _days_back: int):
+    async def get_history(self, _symbol: str, _frequency: str, _days_back: int) -> NoReturn:
         raise UpstreamUnavailableError("history upstream is not configured")
 
 
 class _UnavailableMoversUpstream:
     """Fail closed when an app declares no movers surface."""
 
-    async def get_movers(self, _index: str, _direction: str):
+    async def get_movers(self, _index: str, _direction: str) -> NoReturn:
         raise UpstreamUnavailableError("movers upstream is not configured")
 
 
 class _UnavailableSessionHistoryUpstream:
     """Fail closed when an app declares no session-history surface."""
 
-    async def get_session_history(self, _symbol: str, _date: dt.date, _session: str):
+    async def get_session_history(self, _symbol: str, _date: dt.date, _session: str) -> NoReturn:
         raise UpstreamUnavailableError("session history upstream is not configured")
 
 
@@ -256,7 +265,7 @@ READINESS_REASON_BY_STATE = {
 READINESS_UNAVAILABLE_REASON = "token_readiness_unavailable"
 
 
-def _json(model, *, status: int = 200) -> web.Response:
+def _json(model: BaseModel, *, status: int = 200) -> web.Response:
     # Pydantic's native encoder is ~2.5x faster than model_dump + json.dumps on a large
     # option chain, and emits the same JSON document.
     return web.Response(
@@ -364,11 +373,11 @@ def _parse_days_back(request: web.Request, frequency: Literal["daily", "minute"]
     return days_back
 
 
-def _parse_index(request: web.Request):
+def _parse_index(request: web.Request) -> MoverIndex:
     value = request.query.get("index", "").strip().upper()
     if value not in MOVER_INDEXES:
         raise ValueError("index must be one of the supported Schwab mover indexes")
-    return value
+    return cast(MoverIndex, value)
 
 
 def _parse_direction(request: web.Request) -> Literal["up", "down"]:
@@ -397,7 +406,7 @@ def _parse_order_book_limit(request: web.Request) -> int:
 
 
 @web.middleware
-async def audit_middleware(request: web.Request, handler) -> web.StreamResponse:
+async def audit_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     started = time.perf_counter()
     status = 500
     operation = request.match_info.route.name or "unknown"
@@ -444,6 +453,14 @@ async def health(_request: web.Request) -> web.Response:
     )
 
 
+def _not_ready_response(app: web.Application) -> web.Response | None:
+    """Fail closed with 503 unless the token manager reports READY."""
+    state, _reason = _token_readiness(app)
+    if state is TokenManagerState.READY:
+        return None
+    return _error("gateway_not_ready", "gateway is not ready", 503)
+
+
 def _token_readiness(app: web.Application) -> tuple[TokenManagerState, str]:
     try:
         manager_health = app[TOKEN_READINESS_PROVIDER_KEY].health()
@@ -459,8 +476,8 @@ def _token_readiness(app: web.Application) -> tuple[TokenManagerState, str]:
     return state, reason
 
 
-async def ready(_request: web.Request) -> web.Response:
-    state, reason = _token_readiness(_request.app)
+async def ready(request: web.Request) -> web.Response:
+    state, reason = _token_readiness(request.app)
     is_ready = state is TokenManagerState.READY
     return _json(
         GatewayReadinessV1(
@@ -577,11 +594,11 @@ def _log_partial_quote_response(
 async def _serve_upstream(
     request: web.Request,
     operation_name: str,
-    build_response,
+    build_response: ResponseBuilder,
     *,
-    timeout_message: str = "market data upstream timed out",
-    unavailable_message: str = "market data upstream is unavailable",
-    malformed_message: str = "market data upstream returned invalid data",
+    timeout_message: str = UPSTREAM_TIMEOUT_MESSAGE,
+    unavailable_message: str = UPSTREAM_UNAVAILABLE_MESSAGE,
+    malformed_message: str = UPSTREAM_MALFORMED_MESSAGE,
 ) -> web.Response:
     """Readiness, admission, timeout, and upstream classification for a market-data read.
 
@@ -593,9 +610,9 @@ async def _serve_upstream(
     scheduler releases the single Schwab execution slot, so encoding a large payload
     neither holds that slot nor counts against the upstream execution budget.
     """
-    state, _reason = _token_readiness(request.app)
-    if state is not TokenManagerState.READY:
-        return _error("gateway_not_ready", "gateway is not ready", 503)
+    not_ready = _not_ready_response(request.app)
+    if not_ready is not None:
+        return not_ready
 
     principal = request[PRINCIPAL_KEY]
     priority = principal.priority_class
@@ -708,7 +725,9 @@ async def option_chain(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "option_chain", build_response)
 
 
-def _option_chain_response(result, symbol: str, expiration: dt.date) -> OptionChainResponseV1:
+def _option_chain_response(
+    result: OptionChainV1, symbol: str, expiration: dt.date
+) -> OptionChainResponseV1:
     if result.symbol != symbol or result.expiration != expiration:
         raise UpstreamMalformedError("upstream returned a different option chain")
     return OptionChainResponseV1(option_chain=result)
@@ -731,9 +750,9 @@ async def _serve_option_chain_without_worker(
     join_inflight = getattr(upstream, "join_inflight_option_chain", None)
     if not callable(read_cached) or not callable(join_inflight):
         return None
-    state, _reason = _token_readiness(request.app)
-    if state is not TokenManagerState.READY:
-        return _error("gateway_not_ready", "gateway is not ready", 503)
+    not_ready = _not_ready_response(request.app)
+    if not_ready is not None:
+        return not_ready
     try:
         result = read_cached(symbol, expiration)
         if result is None:
@@ -746,11 +765,11 @@ async def _serve_option_chain_without_worker(
                 result = await pending
         response = _option_chain_response(result, symbol, expiration)
     except TimeoutError:
-        return _error("upstream_timeout", "market data upstream timed out", 504)
+        return _error("upstream_timeout", UPSTREAM_TIMEOUT_MESSAGE, 504)
     except UpstreamUnavailableError:
-        return _error("upstream_unavailable", "market data upstream is unavailable", 503)
+        return _error("upstream_unavailable", UPSTREAM_UNAVAILABLE_MESSAGE, 503)
     except (UpstreamMalformedError, ValueError):
-        return _error("upstream_malformed", "market data upstream returned invalid data", 502)
+        return _error("upstream_malformed", UPSTREAM_MALFORMED_MESSAGE, 502)
     return _json(response)
 
 
@@ -809,15 +828,15 @@ async def session_history(request: web.Request) -> web.Response:
     if callable(read_cached):
         # A completed session is answered from the cache without a scheduler slot, the
         # same way option-chain hits are. Readiness still gates it.
-        state, _reason = _token_readiness(request.app)
-        if state is not TokenManagerState.READY:
-            return _error("gateway_not_ready", "gateway is not ready", 503)
+        not_ready = _not_ready_response(request.app)
+        if not_ready is not None:
+            return not_ready
         try:
             cached = read_cached(symbol, date, session)
             if cached is not None:
                 return _json(_session_history_response(cached, symbol, date, session))
         except (UpstreamMalformedError, ValueError):
-            return _error("upstream_malformed", "market data upstream returned invalid data", 502)
+            return _error("upstream_malformed", UPSTREAM_MALFORMED_MESSAGE, 502)
 
     async def build_response() -> BaseModel:
         result = await upstream.get_session_history(symbol, date, session)
@@ -827,7 +846,7 @@ async def session_history(request: web.Request) -> web.Response:
 
 
 def _session_history_response(
-    result, symbol: str, date: dt.date, session: str
+    result: SessionHistoryV1, symbol: str, date: dt.date, session: Literal["regular", "extended"]
 ) -> SessionHistoryResponseV1:
     if result.symbol != symbol or result.date != date or result.session != session:
         raise UpstreamMalformedError("upstream returned a different session history")
