@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -9,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from schwab_gateway.order_book_analysis import sha256_file
+from schwab_gateway.evidence_files import sha256_file
 
 UTC = dt.timezone.utc
 
@@ -135,8 +136,6 @@ def write_catalog(
         os.chmod(temporary_name, 0o600)
         os.replace(temporary_name, output_path)
     finally:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
     return output_path

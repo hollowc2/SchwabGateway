@@ -5,21 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-import hashlib
-import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from schwab_gateway_sdk import GatewayMarketDataClient
 
+from schwab_gateway.evidence_files import sha256_file, write_private_json
 from schwab_gateway.symbols import SYMBOL_PATTERN
 
 UTC = dt.timezone.utc
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 async def export_session_history(
@@ -28,7 +23,7 @@ async def export_session_history(
     symbol: str,
     date: dt.date,
     output_root: Path,
-    clock: Any = None,
+    clock: Callable[[], dt.datetime] | None = None,
 ) -> Path:
     normalized_symbol = symbol.strip().upper()
     if not SYMBOL_PATTERN.fullmatch(normalized_symbol):
@@ -70,12 +65,7 @@ async def export_session_history(
             for candle in sorted(candles_by_timestamp.values(), key=lambda item: item.timestamp)
         ],
     }
-    with candles_path.open("x", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(candles_path, 0o600)
+    write_private_json(candles_path, payload)
     manifest = {
         "schema_version": "1.0",
         "purpose": "equity_session_history",
@@ -85,19 +75,14 @@ async def export_session_history(
         "retrieved_at": now.isoformat(),
         "path_scope": "relative_to_manifest",
         "candles_path": candles_path.name,
-        "candles_sha256": _sha256(candles_path),
+        "candles_sha256": sha256_file(candles_path),
         "candle_count": len(candles_by_timestamp),
         "regular_candle_count": len(responses[0].candles),
         "extended_candle_count": len(responses[1].candles),
         "regular_quality_flags": list(responses[0].data_quality_flags),
         "extended_quality_flags": list(responses[1].data_quality_flags),
     }
-    with manifest_path.open("x", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(manifest_path, 0o600)
+    write_private_json(manifest_path, manifest)
     return manifest_path
 
 
