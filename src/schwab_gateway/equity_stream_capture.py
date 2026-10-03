@@ -7,10 +7,10 @@ import datetime as dt
 import json
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from schwab.contrib.util import StreamJsonDecoder
@@ -26,6 +26,7 @@ from schwab_gateway.order_book_capture import (
     MAX_CAPTURE_SYMBOLS,
     MAX_RECONNECT_DELAY_SECONDS,
     bootstrap_stream_under_token_lock,
+    frame_has_service,
 )
 from schwab_gateway.symbols import SYMBOL_PATTERN
 
@@ -87,9 +88,9 @@ class EquityStreamRecorder:
         self.successful_connection_count = 0
         self.connection_failure_count = 0
         self.reconnect_count = 0
-        self._raw_handle: Any = None
-        self._messages_handle: Any = None
-        self._connection_events_handle: Any = None
+        self._raw_handle: BinaryIO | None = None
+        self._messages_handle: TextIO | None = None
+        self._connection_events_handle: TextIO | None = None
         self._finalized = False
 
     def start(self) -> None:
@@ -223,18 +224,9 @@ class CapturingEquityJsonDecoder(StreamJsonDecoder):
 
     def decode_json_string(self, raw: str) -> Any:
         payload = json.loads(raw)
-        if self._contains_target_service(payload):
+        if frame_has_service(payload, SERVICES):
             self.last_received_at = self._recorder.record_raw_frame(raw)
         return payload
-
-    @staticmethod
-    def _contains_target_service(payload: Any) -> bool:
-        if not isinstance(payload, Mapping):
-            return False
-        data = payload.get("data")
-        return isinstance(data, list) and any(
-            isinstance(item, Mapping) and item.get("service") in SERVICES for item in data
-        )
 
 
 async def capture_equity_stream_with_reconnects(
