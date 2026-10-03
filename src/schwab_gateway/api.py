@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import functools
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -287,22 +288,22 @@ def _parse_symbols(request: web.Request) -> tuple[str, ...]:
     value = request.query.get("symbols", "")
     symbols = tuple(part.strip().upper() for part in value.split(",") if part.strip())
     if not symbols:
-        raise ValueError("at least one symbol is required")
+        raise _InvalidRequestError("at least one symbol is required")
     if len(symbols) > MAX_SYMBOLS:
-        raise ValueError(f"at most {MAX_SYMBOLS} symbols are allowed")
+        raise _InvalidRequestError(f"at most {MAX_SYMBOLS} symbols are allowed")
     if len(set(symbols)) != len(symbols):
-        raise ValueError("symbols must be unique")
+        raise _InvalidRequestError("symbols must be unique")
     if any(not SYMBOL_PATTERN.fullmatch(symbol) for symbol in symbols):
-        raise ValueError("one or more symbols are invalid")
+        raise _InvalidRequestError("one or more symbols are invalid")
     return symbols
 
 
 def _parse_symbol(request: web.Request) -> str:
     symbol = request.query.get("symbol", "").strip().upper()
     if not symbol:
-        raise ValueError("a symbol is required")
+        raise _InvalidRequestError("a symbol is required")
     if not SYMBOL_PATTERN.fullmatch(symbol):
-        raise ValueError("the symbol is invalid")
+        raise _InvalidRequestError("the symbol is invalid")
     return symbol
 
 
@@ -311,13 +312,13 @@ def _parse_iso_date(
 ) -> dt.date:
     value = request.query.get(name, "").strip()
     if not value:
-        raise ValueError(required_message)
+        raise _InvalidRequestError(required_message)
     if len(value) != 10:
-        raise ValueError(format_message)
+        raise _InvalidRequestError(format_message)
     try:
         return dt.date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(format_message) from exc
+        raise _InvalidRequestError(format_message) from exc
 
 
 def _parse_expiration(request: web.Request) -> dt.date:
@@ -341,21 +342,21 @@ def _parse_session_date(request: web.Request) -> dt.date:
 def _parse_session(request: web.Request) -> Literal["regular", "extended"]:
     value = request.query.get("session", "").strip().lower()
     if value not in SESSION_TYPES:
-        raise ValueError("session must be 'regular' or 'extended'")
+        raise _InvalidRequestError("session must be 'regular' or 'extended'")
     return value  # type: ignore[return-value]
 
 
 def _parse_allow_partial(request: web.Request) -> bool:
     value = request.query.get("allow_partial", "false").strip().lower()
     if value not in ("true", "false"):
-        raise ValueError("allow_partial must be 'true' or 'false'")
+        raise _InvalidRequestError("allow_partial must be 'true' or 'false'")
     return value == "true"
 
 
 def _parse_frequency(request: web.Request) -> Literal["daily", "minute"]:
     value = request.query.get("frequency", "daily").strip().lower()
     if value not in HISTORY_FREQUENCIES:
-        raise ValueError("frequency must be 'daily' or 'minute'")
+        raise _InvalidRequestError("frequency must be 'daily' or 'minute'")
     return value  # type: ignore[return-value]
 
 
@@ -367,30 +368,30 @@ def _parse_days_back(request: web.Request, frequency: Literal["daily", "minute"]
     try:
         days_back = int(value)
     except ValueError as exc:
-        raise ValueError("days_back must be an integer") from exc
+        raise _InvalidRequestError("days_back must be an integer") from exc
     if not minimum <= days_back <= maximum:
-        raise ValueError(f"days_back must be between {minimum} and {maximum}")
+        raise _InvalidRequestError(f"days_back must be between {minimum} and {maximum}")
     return days_back
 
 
 def _parse_index(request: web.Request) -> MoverIndex:
     value = request.query.get("index", "").strip().upper()
     if value not in MOVER_INDEXES:
-        raise ValueError("index must be one of the supported Schwab mover indexes")
+        raise _InvalidRequestError("index must be one of the supported Schwab mover indexes")
     return cast(MoverIndex, value)
 
 
 def _parse_direction(request: web.Request) -> Literal["up", "down"]:
     value = request.query.get("direction", "up").strip().lower()
     if value not in MOVER_DIRECTIONS:
-        raise ValueError("direction must be 'up' or 'down'")
+        raise _InvalidRequestError("direction must be 'up' or 'down'")
     return value  # type: ignore[return-value]
 
 
 def _parse_order_book_venue(request: web.Request) -> OrderBookVenue:
     value = request.query.get("venue", "").strip().upper()
     if value not in ORDER_BOOK_VENUES:
-        raise ValueError("venue must be 'NASDAQ' or 'NYSE'")
+        raise _InvalidRequestError("venue must be 'NASDAQ' or 'NYSE'")
     return cast(OrderBookVenue, value)
 
 
@@ -399,10 +400,35 @@ def _parse_order_book_limit(request: web.Request) -> int:
     try:
         limit = int(raw)
     except ValueError as exc:
-        raise ValueError("limit must be an integer") from exc
+        raise _InvalidRequestError("limit must be an integer") from exc
     if not 1 <= limit <= MAX_RECENT_ORDER_BOOK_SNAPSHOTS:
-        raise ValueError(f"limit must be between 1 and {MAX_RECENT_ORDER_BOOK_SNAPSHOTS}")
+        raise _InvalidRequestError(f"limit must be between 1 and {MAX_RECENT_ORDER_BOOK_SNAPSHOTS}")
     return limit
+
+
+class _InvalidRequestError(ValueError):
+    """A query parameter failed validation; answered with 400 ``invalid_request``."""
+
+
+def _market_data_handler(handler: Handler) -> Handler:
+    """Require ``market_data:read``, then answer parameter validation failures with 400.
+
+    Handlers parse their parameters before anything else, so the fixed order stays
+    capability, validation, readiness, admission, upstream. Only the parsers raise
+    ``_InvalidRequestError``; an upstream ``ValueError`` is never reported as a 400.
+    """
+
+    @functools.wraps(handler)
+    async def checked(request: web.Request) -> web.StreamResponse:
+        denied = require_capability(request, "market_data:read")
+        if denied is not None:
+            return denied
+        try:
+            return await handler(request)
+        except _InvalidRequestError as exc:
+            return _error("invalid_request", str(exc), 400)
+
+    return checked
 
 
 @web.middleware
@@ -527,15 +553,10 @@ async def execution_scheduler_context(app: web.Application) -> AsyncIterator[Non
     await app[EXECUTION_SCHEDULER_KEY].shutdown()
 
 
+@_market_data_handler
 async def quotes(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbols = _parse_symbols(request)
-        allow_partial = _parse_allow_partial(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbols = _parse_symbols(request)
+    allow_partial = _parse_allow_partial(request)
 
     async def build_response() -> BaseModel:
         result = await request.app[UPSTREAM_KEY].get_quotes(symbols)
@@ -666,14 +687,9 @@ async def _serve_upstream(
             ).inc()
 
 
+@_market_data_handler
 async def spot(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
 
     async def build_response() -> BaseModel:
         result = await request.app[SPOT_UPSTREAM_KEY].get_spot(symbol)
@@ -684,15 +700,10 @@ async def spot(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "spot", build_response)
 
 
+@_market_data_handler
 async def chain_metadata(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-        expiration = _parse_expiration(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
+    expiration = _parse_expiration(request)
 
     async def build_response() -> BaseModel:
         result = await request.app[CHAIN_UPSTREAM_KEY].get_chain_metadata(symbol, expiration)
@@ -703,15 +714,10 @@ async def chain_metadata(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "chain_metadata", build_response)
 
 
+@_market_data_handler
 async def option_chain(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-        expiration = _parse_expiration(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
+    expiration = _parse_expiration(request)
 
     upstream = request.app[OPTION_CHAIN_UPSTREAM_KEY]
     served = await _serve_option_chain_without_worker(request, upstream, symbol, expiration)
@@ -773,16 +779,11 @@ async def _serve_option_chain_without_worker(
     return _json(response)
 
 
+@_market_data_handler
 async def history(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-        frequency = _parse_frequency(request)
-        days_back = _parse_days_back(request, frequency)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
+    frequency = _parse_frequency(request)
+    days_back = _parse_days_back(request, frequency)
 
     async def build_response() -> BaseModel:
         result = await request.app[HISTORY_UPSTREAM_KEY].get_history(symbol, frequency, days_back)
@@ -793,15 +794,10 @@ async def history(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "history", build_response)
 
 
+@_market_data_handler
 async def movers(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        index = _parse_index(request)
-        direction = _parse_direction(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    index = _parse_index(request)
+    direction = _parse_direction(request)
 
     async def build_response() -> BaseModel:
         result = await request.app[MOVERS_UPSTREAM_KEY].get_movers(index, direction)
@@ -812,16 +808,11 @@ async def movers(request: web.Request) -> web.Response:
     return await _serve_upstream(request, "movers", build_response)
 
 
+@_market_data_handler
 async def session_history(request: web.Request) -> web.Response:
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-        date = _parse_session_date(request)
-        session = _parse_session(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
+    date = _parse_session_date(request)
+    session = _parse_session(request)
 
     upstream = request.app[SESSION_HISTORY_UPSTREAM_KEY]
     read_cached = getattr(upstream, "cached_session_history", None)
@@ -853,18 +844,13 @@ def _session_history_response(
     return SessionHistoryResponseV1(session_history=result)
 
 
+@_market_data_handler
 async def recent_order_book(request: web.Request) -> web.Response:
     """Return bounded recent venue depth without implying a consolidated book."""
 
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbol = _parse_symbol(request)
-        venue = _parse_order_book_venue(request)
-        limit = _parse_order_book_limit(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbol = _parse_symbol(request)
+    venue = _parse_order_book_venue(request)
+    limit = _parse_order_book_limit(request)
     store = request.app[ORDER_BOOK_STORE_KEY]
     fresh, age_seconds, reason = store.snapshot_health(
         symbol,
@@ -889,21 +875,16 @@ async def recent_order_book(request: web.Request) -> web.Response:
     )
 
 
+@_market_data_handler
 async def stream_order_book(request: web.Request) -> web.StreamResponse:
     """Stream authenticated snapshots through a bounded slow-consumer queue."""
 
-    denied = require_capability(request, "market_data:read")
-    if denied is not None:
-        return denied
-    try:
-        symbols = _parse_symbols(request)
-        if len(symbols) > MAX_STREAM_ORDER_BOOK_SYMBOLS:
-            raise ValueError(
-                f"at most {MAX_STREAM_ORDER_BOOK_SYMBOLS} order-book stream symbols are allowed"
-            )
-        venue = _parse_order_book_venue(request)
-    except ValueError as exc:
-        return _error("invalid_request", str(exc), 400)
+    symbols = _parse_symbols(request)
+    if len(symbols) > MAX_STREAM_ORDER_BOOK_SYMBOLS:
+        raise _InvalidRequestError(
+            f"at most {MAX_STREAM_ORDER_BOOK_SYMBOLS} order-book stream symbols are allowed"
+        )
+    venue = _parse_order_book_venue(request)
 
     store = request.app[ORDER_BOOK_STORE_KEY]
     if store.feed_state(venue) != "connected":
