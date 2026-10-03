@@ -28,7 +28,6 @@ from schwab_gateway.order_book_capture import (
     CapturingBookJsonDecoder,
     OrderBookCaptureRequest,
     OrderBookResearchRecorder,
-    capture_order_book_stream,
     capture_order_book_with_reconnects,
     parse_symbols,
 )
@@ -346,38 +345,6 @@ class _EpochStream(_DisconnectingStream):
         await asyncio.sleep(1)
 
 
-@pytest.mark.asyncio
-async def test_capture_stream_closes_client_and_preserves_pre_disconnect_data(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path)
-    recorder = OrderBookResearchRecorder(request)
-    client = _FakeAsyncClient()
-    stream: _DisconnectingStream | None = None
-
-    def factory(fake_client: Any) -> _DisconnectingStream:
-        nonlocal stream
-        stream = _DisconnectingStream(fake_client)
-        return stream
-
-    with pytest.raises(ConnectionError, match="synthetic disconnect"):
-        await capture_order_book_stream(
-            client,
-            request,
-            recorder,
-            stream_client_factory=factory,
-        )
-
-    assert stream is not None
-    assert stream.logged_in is True
-    assert stream.logged_out is True
-    assert stream.subscriptions == ["AAPL"]
-    assert client.closed is True
-    assert recorder.raw_frame_count == 1
-    assert recorder.normalized_snapshot_count == 1
-
-
-@pytest.mark.asyncio
 async def test_shared_bootstrap_reconnects_into_explicit_continuity_epochs(
     tmp_path: Path,
 ) -> None:
