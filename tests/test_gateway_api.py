@@ -270,15 +270,11 @@ async def test_gateway_validates_symbols_and_exposes_no_order_routes() -> None:
     route_shapes = {(route.method, route.resource.canonical) for route in app.router.routes()}
     assert response.status_code == 400
     assert missing_order.status_code == 404
-    assert (
-        'gateway_client_requests_total{operation="unknown",status="404"} 1.0'
-        in metrics.text
-    )
+    assert 'gateway_client_requests_total{operation="unknown",status="404"} 1.0' in metrics.text
     for operation in ("spot_v1", "option_chain_v1", "history_v1"):
         for status in ("503", "504"):
             assert (
-                f'gateway_client_requests_total{{operation="{operation}",'
-                f'status="{status}"}}'
+                f'gateway_client_requests_total{{operation="{operation}",status="{status}"}}'
             ) in metrics.text
     assert all(path != "/v1/orders" for _method, path in route_shapes)
     assert all(method != "POST" for method, _path in route_shapes)
@@ -301,9 +297,7 @@ async def test_client_disconnect_is_recorded_as_499_not_500(capfd) -> None:
     await server.start_server()
 
     def _count(status: str) -> float:
-        return (
-            gateway_requests.labels(operation="quotes_v1", status=status)._value.get()
-        )
+        return gateway_requests.labels(operation="quotes_v1", status=status)._value.get()
 
     before_499 = _count("499")
     before_500 = _count("500")
@@ -353,9 +347,7 @@ async def test_request_log_skips_successful_probes_and_records_query(capfd) -> N
 
     assert quote.status_code == 200
     request_logs = [
-        line
-        for line in capfd.readouterr().out.splitlines()
-        if "gateway_request " in line
+        line for line in capfd.readouterr().out.splitlines() if "gateway_request " in line
     ]
     assert len(request_logs) == 2
     assert "operation=ready" in request_logs[0]

@@ -48,6 +48,4 @@ async def test_demo_mode_over_real_http(tmp_path) -> None:
 
     assert (health.status_code, ready.status_code, unauthorized.status_code) == (200, 200, 401)
     assert quotes.status_code == 200
-    assert quotes.json()["quotes"][0]["data_quality_flags"] == [
-        "demo_data_not_for_trading"
-    ]
+    assert quotes.json()["quotes"][0]["data_quality_flags"] == ["demo_data_not_for_trading"]

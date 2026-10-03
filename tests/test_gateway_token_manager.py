@@ -146,9 +146,7 @@ def test_lock_acquisition_and_hold_are_observed_per_mode(tmp_path: Path) -> None
 
     read_wait = _histogram_count(token_lock_wait_seconds, mode="shared", outcome="acquired")
     read_hold = _histogram_count(token_lock_hold_seconds, mode="shared")
-    write_wait = _histogram_count(
-        token_lock_wait_seconds, mode="exclusive", outcome="acquired"
-    )
+    write_wait = _histogram_count(token_lock_wait_seconds, mode="exclusive", outcome="acquired")
     write_hold = _histogram_count(token_lock_hold_seconds, mode="exclusive")
 
     with store.read_locked(1.0):
@@ -156,13 +154,15 @@ def test_lock_acquisition_and_hold_are_observed_per_mode(tmp_path: Path) -> None
     with store.locked(1.0):
         pass
 
-    assert _histogram_count(
-        token_lock_wait_seconds, mode="shared", outcome="acquired"
-    ) == read_wait + 1
+    assert (
+        _histogram_count(token_lock_wait_seconds, mode="shared", outcome="acquired")
+        == read_wait + 1
+    )
     assert _histogram_count(token_lock_hold_seconds, mode="shared") == read_hold + 1
-    assert _histogram_count(
-        token_lock_wait_seconds, mode="exclusive", outcome="acquired"
-    ) == write_wait + 1
+    assert (
+        _histogram_count(token_lock_wait_seconds, mode="exclusive", outcome="acquired")
+        == write_wait + 1
+    )
     assert _histogram_count(token_lock_hold_seconds, mode="exclusive") == write_hold + 1
 
 
@@ -173,18 +173,17 @@ def test_lock_wait_timeout_is_observed_without_a_hold_sample(tmp_path: Path) -> 
 
     blocker = AtomicFileTokenStore(path)
     with blocker.locked(1.0):
-        timeouts = _histogram_count(
-            token_lock_wait_seconds, mode="exclusive", outcome="timeout"
-        )
+        timeouts = _histogram_count(token_lock_wait_seconds, mode="exclusive", outcome="timeout")
         holds = _histogram_count(token_lock_hold_seconds, mode="exclusive")
 
         with pytest.raises(TokenLockTimeoutError):
             with store.locked(0.01):
                 pass
 
-        assert _histogram_count(
-            token_lock_wait_seconds, mode="exclusive", outcome="timeout"
-        ) == timeouts + 1
+        assert (
+            _histogram_count(token_lock_wait_seconds, mode="exclusive", outcome="timeout")
+            == timeouts + 1
+        )
         assert _histogram_count(token_lock_hold_seconds, mode="exclusive") == holds
 
 
@@ -439,8 +438,7 @@ def test_process_lock_prevents_lost_refresh_updates(tmp_path: Path) -> None:
     start = context.Event()
     results = context.Queue()
     processes = [
-        context.Process(target=_process_refresh, args=(str(path), start, results))
-        for _ in range(2)
+        context.Process(target=_process_refresh, args=(str(path), start, results)) for _ in range(2)
     ]
     for process in processes:
         process.start()

@@ -93,8 +93,7 @@ class InternalKeyAuthenticator:
                 )
                 for item in payload["clients"]
                 if isinstance(item, dict)
-                and set(item)
-                == {"id", "key_sha256", "capabilities", "priority_class"}
+                and set(item) == {"id", "key_sha256", "capabilities", "priority_class"}
                 and isinstance(item["id"], str)
                 and isinstance(item["key_sha256"], str)
                 and isinstance(item["capabilities"], list)
@@ -152,9 +151,7 @@ async def authentication_middleware(
     if not request.path.startswith("/v1/"):
         return await handler(request)
     authenticator = request.app[AUTHENTICATOR_KEY]
-    principal = authenticator.authenticate(
-        request.headers.get("X-Internal-API-Key", "")
-    )
+    principal = authenticator.authenticate(request.headers.get("X-Internal-API-Key", ""))
     if principal is None:
         return web.json_response(
             {

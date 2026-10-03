@@ -59,9 +59,7 @@ class FakeResponse:
 
 
 class FakeClient:
-    Quote = SimpleNamespace(
-        Fields=SimpleNamespace(QUOTE="QUOTE", EXTENDED="EXTENDED")
-    )
+    Quote = SimpleNamespace(Fields=SimpleNamespace(QUOTE="QUOTE", EXTENDED="EXTENDED"))
 
     def __init__(self, *, malformed: bool = False) -> None:
         self.calls: list[tuple[list[str], list[str]]] = []
@@ -353,9 +351,7 @@ def test_probe_command_failure_codes_are_a_closed_set() -> None:
     assert set(probe_command.PROBE_NO_TOKEN_READ_CODES).isdisjoint(
         probe_command.PROBE_TOKEN_READ_CODES
     )
-    assert set(probe_command._REASON_CODES.values()) == set(
-        probe_command.PROBE_TOKEN_READ_CODES
-    )
+    assert set(probe_command._REASON_CODES.values()) == set(probe_command.PROBE_TOKEN_READ_CODES)
 
 
 def test_probe_command_emits_only_bounded_success_json(

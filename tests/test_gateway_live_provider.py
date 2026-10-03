@@ -230,9 +230,7 @@ def test_provider_exposes_only_read_only_market_data_methods() -> None:
         (SessionHistoryProvider, "get_session_bars"),
     ],
 )
-def test_provider_signatures_match_the_declared_read_protocols(
-    protocol: Any, method: str
-) -> None:
+def test_provider_signatures_match_the_declared_read_protocols(protocol: Any, method: str) -> None:
     """The protocols are not runtime-checkable, so match signatures explicitly."""
     expected = inspect.signature(getattr(protocol, method))
     actual = inspect.signature(getattr(LockedSchwabMarketDataProvider, method))
@@ -256,10 +254,10 @@ async def test_spot_read_runs_in_one_transaction_and_closes_its_session() -> Non
 def _latency_count(operation: str, status: str) -> float:
     for metric in upstream_operation_latency.collect():
         for sample in metric.samples:
-            if (
-                sample.name.endswith("_count")
-                and sample.labels == {"operation": operation, "status": status}
-            ):
+            if sample.name.endswith("_count") and sample.labels == {
+                "operation": operation,
+                "status": status,
+            }:
                 return sample.value
     return 0.0
 
@@ -342,9 +340,7 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
     started = loop.time()
     try:
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(
-                provider._execute("spot", blocking_operation), timeout=0.02
-            )
+            await asyncio.wait_for(provider._execute("spot", blocking_operation), timeout=0.02)
         assert loop.time() - started < 0.2
         assert entered.is_set()
         assert calls == 1
@@ -352,16 +348,15 @@ async def test_timeout_returns_promptly_and_worker_lease_prevents_a_second_threa
         # This request times out waiting for the provider lease. It must not create a
         # second daemon thread while the first synchronous transaction is still blocked.
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(
-                provider._execute("spot", blocking_operation), timeout=0.02
-            )
+            await asyncio.wait_for(provider._execute("spot", blocking_operation), timeout=0.02)
         assert calls == 1
     finally:
         release.set()
 
-    assert await asyncio.wait_for(
-        provider._execute("spot", blocking_operation), timeout=0.5
-    ) == "complete"
+    assert (
+        await asyncio.wait_for(provider._execute("spot", blocking_operation), timeout=0.5)
+        == "complete"
+    )
     assert calls == 2
 
 
@@ -385,9 +380,7 @@ async def test_scheduler_timeout_retains_physical_provider_worker_until_thread_e
         return "complete"
 
     provider = LockedSchwabMarketDataProvider(BlockingAdapter())
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     timed_out = asyncio.create_task(
         scheduler.execute(
             PriorityClass.PROTECTED,
@@ -526,9 +519,7 @@ async def test_market_movers_converts_index_and_sort_order_to_real_enums() -> No
     result = await provider.get_market_movers("$SPX", sort_order="PERCENT_CHANGE_DOWN")
 
     assert result == [{"symbol": "AAPL"}]
-    assert client.movers_calls == [
-        (_FakeMoversIndex.SPX, _FakeMoversSortOrder.PERCENT_CHANGE_DOWN)
-    ]
+    assert client.movers_calls == [(_FakeMoversIndex.SPX, _FakeMoversSortOrder.PERCENT_CHANGE_DOWN)]
     assert manager.transactions == 1
     assert client.session.closed == 1
 

@@ -50,9 +50,7 @@ def test_cli_writes_private_digest_only_configuration_driven_key(
 
 def test_cli_requires_explicit_capability_and_priority(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
-        issue_keys.main(
-            ["--output", str(tmp_path / "keys.json"), "--application-id", "consumer"]
-        )
+        issue_keys.main(["--output", str(tmp_path / "keys.json"), "--application-id", "consumer"])
     assert exc.value.code == 2
 
 
@@ -76,9 +74,7 @@ def test_append_preserves_existing_digest_and_rejects_duplicate_id(
 
     duplicate = tmp_path / "duplicate.json"
     with pytest.raises(SystemExit) as exc:
-        issue_keys.main(
-            ["--existing-input", str(existing), *args(duplicate, "butterfly-guy")]
-        )
+        issue_keys.main(["--existing-input", str(existing), *args(duplicate, "butterfly-guy")])
     assert exc.value.code == 2
     assert not duplicate.exists()
 
@@ -97,9 +93,7 @@ def test_cli_can_write_plaintext_to_private_file_without_printing_it(
     output = tmp_path / "keys.json"
     plaintext_output = tmp_path / "load-test.key"
 
-    issue_keys.main(
-        [*args(output), "--plaintext-output", str(plaintext_output)]
-    )
+    issue_keys.main([*args(output), "--plaintext-output", str(plaintext_output)])
 
     printed = capsys.readouterr().out
     plaintext = plaintext_output.read_text().strip()
@@ -119,9 +113,7 @@ def test_cli_never_overwrites_plaintext_output(tmp_path: Path) -> None:
     plaintext_output.write_text("preserve")
 
     with pytest.raises(SystemExit):
-        issue_keys.main(
-            [*args(output), "--plaintext-output", str(plaintext_output)]
-        )
+        issue_keys.main([*args(output), "--plaintext-output", str(plaintext_output)])
 
     assert not output.exists()
     assert plaintext_output.read_text() == "preserve"

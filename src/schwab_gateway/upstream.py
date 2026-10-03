@@ -143,11 +143,7 @@ def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> dt.dat
 
 
 def _last_weekday(year: int, month: int, weekday: int) -> dt.date:
-    next_month = (
-        dt.date(year + 1, 1, 1)
-        if month == 12
-        else dt.date(year, month + 1, 1)
-    )
+    next_month = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
     last = next_month - dt.timedelta(days=1)
     return last - dt.timedelta(days=(last.weekday() - weekday) % 7)
 
@@ -238,9 +234,7 @@ class EquityQuoteProvider(Protocol):
 
 
 class OptionChainProvider(Protocol):
-    async def get_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> dict[str, Any]: ...
+    async def get_option_chain(self, symbol: str, expiration: dt.date) -> dict[str, Any]: ...
 
 
 class SpotPriceProvider(Protocol):
@@ -248,13 +242,9 @@ class SpotPriceProvider(Protocol):
 
 
 class PriceHistoryProvider(Protocol):
-    async def get_daily_bars(
-        self, symbol: str, days_back: int = 10
-    ) -> list[dict[str, Any]]: ...
+    async def get_daily_bars(self, symbol: str, days_back: int = 10) -> list[dict[str, Any]]: ...
 
-    async def get_intraday_bars(
-        self, symbol: str, days_back: int = 1
-    ) -> list[dict[str, Any]]: ...
+    async def get_intraday_bars(self, symbol: str, days_back: int = 1) -> list[dict[str, Any]]: ...
 
 
 class MarketMoversProvider(Protocol):
@@ -264,9 +254,7 @@ class MarketMoversProvider(Protocol):
 
 
 class SessionHistoryProvider(Protocol):
-    async def get_session_bars(
-        self, symbol: str, date: dt.date
-    ) -> list[dict[str, Any]]: ...
+    async def get_session_bars(self, symbol: str, date: dt.date) -> list[dict[str, Any]]: ...
 
 
 class QuoteUpstream(Protocol):
@@ -278,15 +266,11 @@ class SpotUpstream(Protocol):
 
 
 class ChainMetadataUpstream(Protocol):
-    async def get_chain_metadata(
-        self, symbol: str, expiration: dt.date
-    ) -> ChainMetadataV1: ...
+    async def get_chain_metadata(self, symbol: str, expiration: dt.date) -> ChainMetadataV1: ...
 
 
 class OptionChainUpstream(Protocol):
-    async def get_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> OptionChainV1: ...
+    async def get_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainV1: ...
 
 
 class HistoryUpstream(Protocol):
@@ -296,9 +280,7 @@ class HistoryUpstream(Protocol):
 
 
 class MoversUpstream(Protocol):
-    async def get_movers(
-        self, index: MoverIndex, direction: Literal["up", "down"]
-    ) -> MoversV1: ...
+    async def get_movers(self, index: MoverIndex, direction: Literal["up", "down"]) -> MoversV1: ...
 
 
 class SessionHistoryUpstream(Protocol):
@@ -606,9 +588,7 @@ def normalize_schwab_option_chain(
                     if not isinstance(option, dict):
                         raise ValueError("option-chain contract was not an object")
                     if len(contracts) >= MAX_OPTION_CHAIN_CONTRACTS_V1:
-                        raise ValueError(
-                            "option chain exceeded the maximum contract count"
-                        )
+                        raise ValueError("option chain exceeded the maximum contract count")
                     event_timestamp = _event_time(option)
                     age_seconds = (
                         max(0.0, (received_at - event_timestamp).total_seconds())
@@ -621,9 +601,7 @@ def normalize_schwab_option_chain(
                         contract_flags.append("crossed_market_normalized")
                     if event_timestamp is None:
                         contract_flags.append("missing_event_timestamp")
-                    contract_stale = (
-                        age_seconds is None or age_seconds > stale_after_seconds
-                    )
+                    contract_stale = age_seconds is None or age_seconds > stale_after_seconds
                     if contract_stale:
                         contract_flags.append("stale")
                     contracts.append(
@@ -660,9 +638,7 @@ def normalize_schwab_option_chain(
                     )
 
     contract_timestamps = [
-        contract.event_timestamp
-        for contract in contracts
-        if contract.event_timestamp is not None
+        contract.event_timestamp for contract in contracts if contract.event_timestamp is not None
     ]
     all_contracts_timestamped = bool(contracts) and len(contract_timestamps) == len(contracts)
     event_timestamp = max(contract_timestamps) if contract_timestamps else None
@@ -676,23 +652,16 @@ def normalize_schwab_option_chain(
     # its own freshness. Consumers validate counts first, then omit stale/unknown rows;
     # one stale deep contract must not invalidate otherwise fresh strikes.
     stale = not contracts or stale_contract_count == len(contracts)
-    flags = [
-        flag for flag in fields.data_quality_flags if flag != "missing_event_timestamp"
-    ]
+    flags = [flag for flag in fields.data_quality_flags if flag != "missing_event_timestamp"]
     if not all_contracts_timestamped:
         flags.append("missing_contract_event_timestamp")
-    if any(
-        "crossed_market_normalized" in contract.data_quality_flags
-        for contract in contracts
-    ):
+    if any("crossed_market_normalized" in contract.data_quality_flags for contract in contracts):
         flags.append("crossed_markets_normalized")
     if stale_contract_count and not stale:
         flags.append("stale_contracts_present")
     if stale:
         flags.append("stale")
-    call_contract_count = sum(
-        contract.option_type == "CALL" for contract in contracts
-    )
+    call_contract_count = sum(contract.option_type == "CALL" for contract in contracts)
     put_contract_count = sum(contract.option_type == "PUT" for contract in contracts)
     return OptionChainV1(
         symbol=symbol,
@@ -795,9 +764,7 @@ def normalize_schwab_history(
             bars = [
                 bar
                 for bar in bars
-                if first_date
-                <= bar.timestamp.astimezone(EASTERN).date()
-                <= anchor_date
+                if first_date <= bar.timestamp.astimezone(EASTERN).date() <= anchor_date
             ]
 
     event_timestamp = bars[-1].timestamp if bars else None
@@ -941,9 +908,7 @@ class DirectSchwabMoversUpstream:
     def __init__(self, provider: MarketMoversProvider) -> None:
         self._provider = provider
 
-    async def get_movers(
-        self, index: MoverIndex, direction: Literal["up", "down"]
-    ) -> MoversV1:
+    async def get_movers(self, index: MoverIndex, direction: Literal["up", "down"]) -> MoversV1:
         try:
             items = await self._provider.get_market_movers(
                 index, sort_order=SORT_ORDER_BY_DIRECTION[direction]
@@ -1163,8 +1128,7 @@ class DirectSchwabSessionHistoryUpstream:
         self._cache_bytes += len(payload)
         session_history_cache_events.labels(outcome="stored").inc()
         while (
-            len(self._cache) > self._cache_max_entries
-            or self._cache_bytes > self._cache_max_bytes
+            len(self._cache) > self._cache_max_entries or self._cache_bytes > self._cache_max_bytes
         ):
             _, evicted = self._cache.popitem(last=False)
             self._cache_bytes -= len(evicted)
@@ -1217,9 +1181,7 @@ class DirectSchwabChainMetadataUpstream:
         self._provider = provider
         self._stale_after_seconds = stale_after_seconds
 
-    async def get_chain_metadata(
-        self, symbol: str, expiration: dt.date
-    ) -> ChainMetadataV1:
+    async def get_chain_metadata(self, symbol: str, expiration: dt.date) -> ChainMetadataV1:
         try:
             payload = await self._provider.get_option_chain(symbol, expiration)
         except Exception as exc:
@@ -1328,9 +1290,7 @@ class DirectSchwabOptionChainUpstream:
         self._cache: OrderedDict[tuple[str, dt.date], _CachedOptionChain] = OrderedDict()
         self._inflight: dict[tuple[str, dt.date], asyncio.Task[OptionChainV1]] = {}
 
-    def cached_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> OptionChainV1 | None:
+    def cached_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainV1 | None:
         """Return an unexpired cached chain with recomputed freshness, or ``None``.
 
         Synchronous on purpose: the API calls this before scheduler admission so a hit
@@ -1366,9 +1326,7 @@ class DirectSchwabOptionChainUpstream:
         option_chain_cache_events.labels(outcome="coalesced").inc()
         return asyncio.shield(fetch)
 
-    async def get_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> OptionChainV1:
+    async def get_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainV1:
         key = (symbol, expiration)
         cached = self.cached_option_chain(symbol, expiration)
         if cached is not None:
@@ -1439,8 +1397,7 @@ class DirectSchwabOptionChainUpstream:
 
     def _evict_to_bounds(self) -> None:
         while (
-            len(self._cache) > self._cache_max_entries
-            or self._cache_bytes > self._cache_max_bytes
+            len(self._cache) > self._cache_max_entries or self._cache_bytes > self._cache_max_bytes
         ):
             _, value = self._cache.popitem(last=False)
             self._cache_bytes -= value.payload_bytes

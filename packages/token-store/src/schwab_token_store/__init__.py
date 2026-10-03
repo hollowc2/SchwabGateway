@@ -311,26 +311,17 @@ class AtomicFileTokenStore:
         lock_fd = -1
         hold_started: float | None = None
         try:
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-            )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             try:
                 lock_fd = os.open(self._lock_path, flags)
                 lock_stat = os.fstat(lock_fd)
-                if (
-                    not stat.S_ISREG(lock_stat.st_mode)
-                    or stat.S_IMODE(lock_stat.st_mode) != 0o600
-                ):
+                if not stat.S_ISREG(lock_stat.st_mode) or stat.S_IMODE(lock_stat.st_mode) != 0o600:
                     raise OSError
             except OSError:
                 if lock_fd >= 0:
                     os.close(lock_fd)
                     lock_fd = -1
-                raise TokenPersistenceError(
-                    "token lock file cannot be opened read-only"
-                ) from None
+                raise TokenPersistenceError("token lock file cannot be opened read-only") from None
 
             while True:
                 try:
@@ -339,9 +330,9 @@ class AtomicFileTokenStore:
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        token_lock_wait_seconds.labels(
-                            mode="shared", outcome="timeout"
-                        ).observe(time.monotonic() - wait_started)
+                        token_lock_wait_seconds.labels(mode="shared", outcome="timeout").observe(
+                            time.monotonic() - wait_started
+                        )
                         raise TokenLockTimeoutError("timed out waiting for the token lock")
                     time.sleep(min(0.01, remaining))
                 except OSError:
@@ -383,10 +374,7 @@ class AtomicFileTokenStore:
         hold_started: float | None = None
         try:
             flags = (
-                os.O_RDWR
-                | os.O_CREAT
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             )
             try:
                 lock_fd = os.open(self._lock_path, flags, 0o600)
@@ -401,17 +389,17 @@ class AtomicFileTokenStore:
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        token_lock_wait_seconds.labels(
-                            mode="exclusive", outcome="timeout"
-                        ).observe(time.monotonic() - wait_started)
+                        token_lock_wait_seconds.labels(mode="exclusive", outcome="timeout").observe(
+                            time.monotonic() - wait_started
+                        )
                         raise TokenLockTimeoutError("timed out waiting for the token lock")
                     time.sleep(min(0.01, remaining))
                 except OSError:
                     raise TokenPersistenceError("token lock could not be acquired") from None
 
-            token_lock_wait_seconds.labels(
-                mode="exclusive", outcome="acquired"
-            ).observe(time.monotonic() - wait_started)
+            token_lock_wait_seconds.labels(mode="exclusive", outcome="acquired").observe(
+                time.monotonic() - wait_started
+            )
             hold_started = time.monotonic()
             yield _AtomicFileTokenTransaction(self.path, self._max_token_bytes)
         finally:
@@ -445,8 +433,7 @@ def validate_token_document(value: object) -> TokenDocument:
             raise TokenCorruptError("token payload must be an object")
         required_fields = ("access_token", "refresh_token")
         if any(
-            not isinstance(payload.get(name), str) or not payload[name]
-            for name in required_fields
+            not isinstance(payload.get(name), str) or not payload[name] for name in required_fields
         ):
             raise TokenCorruptError("token payload is missing required OAuth fields")
 
@@ -731,9 +718,7 @@ class _ScopedTokenCallbacks:
                     TokenManagerState.REFRESH_FAILED,
                     "invalid_refresh_result",
                 )
-                raise TokenRefreshError(
-                    "token write callback received invalid data"
-                ) from None
+                raise TokenRefreshError("token write callback received invalid data") from None
 
             try:
                 self._transaction.write(refreshed)
@@ -751,6 +736,4 @@ class _ScopedTokenCallbacks:
 
     def _require_active(self) -> None:
         if not self._active:
-            raise TokenCallbackScopeError(
-                "token callback is outside its transaction scope"
-            )
+            raise TokenCallbackScopeError("token callback is outside its transaction scope")

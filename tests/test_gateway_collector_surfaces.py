@@ -263,8 +263,7 @@ async def test_client_to_http_gateway_to_fake_chain_upstream_returns_metadata_on
     body = raw.json()
     assert set(body) == {"schema_version", "chain"}
     assert not any(
-        key in raw.text
-        for key in ("callExpDateMap", "putExpDateMap", "strikePrice", "bid", "ask")
+        key in raw.text for key in ("callExpDateMap", "putExpDateMap", "strikePrice", "bid", "ask")
     )
 
 
@@ -643,11 +642,14 @@ async def test_upstream_failures_map_to_bounded_status_codes(
         path, params = "/v1/movers", {"index": "$SPX"}
     else:
         kwargs = {"session_history_upstream": FakeSessionHistoryUpstream(error=error)}
-        path, params = "/v1/session-history", {
-            "symbol": "AAPL",
-            "date": "2026-08-12",
-            "session": "regular",
-        }
+        path, params = (
+            "/v1/session-history",
+            {
+                "symbol": "AAPL",
+                "date": "2026-08-12",
+                "session": "regular",
+            },
+        )
 
     server = TestServer(app(**kwargs))
     await server.start_server()
@@ -1206,9 +1208,7 @@ async def test_direct_chain_upstream_rejects_a_payload_that_is_not_an_object() -
             return "not-a-chain-payload"
 
     with pytest.raises(UpstreamMalformedError):
-        await DirectSchwabChainMetadataUpstream(Provider()).get_chain_metadata(
-            "SPX", EXPIRATION
-        )
+        await DirectSchwabChainMetadataUpstream(Provider()).get_chain_metadata("SPX", EXPIRATION)
 
 
 # --- direct history/movers upstream normalization -----------------------------------------
@@ -1218,9 +1218,7 @@ async def test_direct_chain_upstream_rejects_a_payload_that_is_not_an_object() -
 async def test_direct_history_upstream_normalizes_daily_candles() -> None:
     """``DirectSchwabHistoryUpstream`` stamps ``received_at`` with the real clock, so the
     candle must be anchored to it (not a fixed date) for the freshness assertion below."""
-    candle_ms = int(
-        (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).timestamp() * 1000
-    )
+    candle_ms = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).timestamp() * 1000)
 
     class Provider:
         async def get_daily_bars(self, symbol: str, days_back: int = 10):
@@ -1381,9 +1379,7 @@ async def test_direct_session_history_upstream_splits_by_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_direct_session_history_upstream_classifies_provider_failure_as_unavailable() -> (
-    None
-):
+async def test_direct_session_history_upstream_classifies_provider_failure_as_unavailable() -> None:
     class Failing:
         async def get_session_bars(self, symbol: str, date: dt.date):
             raise RuntimeError("/private/token/path leaked")
@@ -1396,9 +1392,7 @@ async def test_direct_session_history_upstream_classifies_provider_failure_as_un
 
 
 @pytest.mark.asyncio
-async def test_direct_session_history_upstream_classifies_non_list_payload_as_malformed() -> (
-    None
-):
+async def test_direct_session_history_upstream_classifies_non_list_payload_as_malformed() -> None:
     class MalformedPayload:
         async def get_session_bars(self, symbol: str, date: dt.date):
             return {"candles": []}

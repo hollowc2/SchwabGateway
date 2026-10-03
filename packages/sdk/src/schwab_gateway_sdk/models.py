@@ -37,9 +37,7 @@ class QuoteV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -92,9 +90,7 @@ class SpotV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -130,9 +126,7 @@ class ChainMetadataV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -218,9 +212,7 @@ class OptionContractV1(GatewayModel):
 
     @field_validator("bid", "ask", "mark", "last")
     @classmethod
-    def prices_must_be_finite_and_nonnegative(
-        cls, value: float | None
-    ) -> float | None:
+    def prices_must_be_finite_and_nonnegative(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value < 0):
             raise ValueError("option contract prices must be finite and nonnegative")
         return value
@@ -243,38 +235,28 @@ class OptionContractV1(GatewayModel):
 
     @field_validator("intrinsic_value")
     @classmethod
-    def intrinsic_value_must_be_finite_and_nonnegative(
-        cls, value: float | None
-    ) -> float | None:
+    def intrinsic_value_must_be_finite_and_nonnegative(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value < 0):
-            raise ValueError(
-                "option contract intrinsic value must be finite and nonnegative"
-            )
+            raise ValueError("option contract intrinsic value must be finite and nonnegative")
         return value
 
     @field_validator("time_value")
     @classmethod
-    def time_value_must_be_finite_and_nonnegative(
-        cls, value: float | None
-    ) -> float | None:
+    def time_value_must_be_finite_and_nonnegative(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value < 0):
             raise ValueError("option contract time value must be finite and nonnegative")
         return value
 
     @field_validator("event_timestamp")
     @classmethod
-    def timestamp_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamp_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
 
     @field_validator("age_seconds")
     @classmethod
-    def age_must_be_finite_and_nonnegative(
-        cls, value: float | None
-    ) -> float | None:
+    def age_must_be_finite_and_nonnegative(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value < 0):
             raise ValueError("age_seconds must be finite and nonnegative")
         return value
@@ -333,18 +315,14 @@ class OptionChainV1(GatewayModel):
 
     @field_validator("underlying_price")
     @classmethod
-    def underlying_price_must_be_finite_and_positive(
-        cls, value: float | None
-    ) -> float | None:
+    def underlying_price_must_be_finite_and_positive(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value <= 0):
             raise ValueError("underlying price must be finite and positive")
         return value
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -414,9 +392,7 @@ class HistoryV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -456,9 +432,7 @@ class SessionHistoryV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -519,9 +493,7 @@ class MoversV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("gateway timestamps must be timezone-aware")
         return value
@@ -618,9 +590,7 @@ class OrderBookSnapshotV1(GatewayModel):
 
     @field_validator("event_timestamp", "gateway_received_at")
     @classmethod
-    def timestamps_must_be_timezone_aware(
-        cls, value: dt.datetime | None
-    ) -> dt.datetime | None:
+    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("order-book timestamps must be timezone-aware")
         return value
@@ -694,15 +664,31 @@ class GatewayReadinessV1(GatewayHealthV1):
     """Bounded token-readiness detail for gateway operators."""
 
     token_state: Literal[
-        "uninitialized", "ready", "refreshing", "missing", "corrupt", "expired",
-        "revoked", "reauthorization_required", "lock_timeout", "refresh_failed",
+        "uninitialized",
+        "ready",
+        "refreshing",
+        "missing",
+        "corrupt",
+        "expired",
+        "revoked",
+        "reauthorization_required",
+        "lock_timeout",
+        "refresh_failed",
         "persistence_failed",
     ]
     reason: Literal[
-        "token_not_checked", "token_ready", "token_refreshing", "token_missing",
-        "token_corrupt", "refresh_token_expired", "token_revoked",
-        "token_reauthorization_required", "token_lock_timeout", "token_refresh_failed",
-        "token_persistence_failed", "token_readiness_unavailable",
+        "token_not_checked",
+        "token_ready",
+        "token_refreshing",
+        "token_missing",
+        "token_corrupt",
+        "refresh_token_expired",
+        "token_revoked",
+        "token_reauthorization_required",
+        "token_lock_timeout",
+        "token_refresh_failed",
+        "token_persistence_failed",
+        "token_readiness_unavailable",
     ]
 
 

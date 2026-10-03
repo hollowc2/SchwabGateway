@@ -111,9 +111,7 @@ def test_candidate_overlay_is_retired_and_cannot_define_an_8012_service() -> Non
     candidate = yaml.safe_load(candidate_path.read_text())
 
     assert "services" not in candidate
-    assert candidate["x-schwab-gateway-retired-candidate"] == {
-        "reason": "single-live-gateway-only"
-    }
+    assert candidate["x-schwab-gateway-retired-candidate"] == {"reason": "single-live-gateway-only"}
     assert "8012" not in candidate_path.read_text()
 
 
@@ -147,9 +145,7 @@ def test_production_layer_requires_an_explicit_image() -> None:
 
 
 def test_production_layer_disables_builds_and_registry_fallback() -> None:
-    live = rendered_compose(
-        "compose.production.yml", production_image=IMAGE_ID
-    )["services"]["live"]
+    live = rendered_compose("compose.production.yml", production_image=IMAGE_ID)["services"]["live"]
 
     assert "build" not in live
     assert live["image"] == IMAGE_ID
@@ -164,9 +160,9 @@ def test_production_layer_disables_builds_and_registry_fallback() -> None:
 def test_production_layer_preserves_supported_immutable_references() -> None:
     for reference in (IMAGE_ID, REPOSITORY_DIGEST):
         assert is_immutable_image_reference(reference)
-        live = rendered_compose(
-            "compose.production.yml", production_image=reference
-        )["services"]["live"]
+        live = rendered_compose("compose.production.yml", production_image=reference)["services"][
+            "live"
+        ]
         assert live["image"] == reference
 
     assert not is_immutable_image_reference("schwab_gateway_live:v0.1.0")
@@ -204,11 +200,7 @@ def test_alert_rules_keep_gateway_metric_names() -> None:
     alerts_path = Path("infra/alerts.yml")
     alerts = alerts_path.read_text()
     parsed = yaml.safe_load(alerts)
-    rules = {
-        rule["alert"]: rule
-        for group in parsed["groups"]
-        for rule in group["rules"]
-    }
+    rules = {rule["alert"]: rule for group in parsed["groups"] for rule in group["rules"]}
 
     assert "schwab_gateway_token_state" in alerts
     assert 'job="schwab_gateway"' in alerts

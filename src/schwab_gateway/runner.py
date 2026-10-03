@@ -194,9 +194,7 @@ def build_live_app(
             symbol for symbol in settings.order_book_stream_symbols.split(",") if symbol
         )
         if not symbols:
-            raise ValueError(
-                "live order-book streaming is enabled but no symbols are configured"
-            )
+            raise ValueError("live order-book streaming is enabled but no symbols are configured")
         app.cleanup_ctx.append(
             _order_book_feed_ctx(
                 OrderBookLiveFeed(
@@ -247,9 +245,7 @@ def _upstream_warmup_ctx(
 
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
         with suppress(TimeoutError):
-            await asyncio.wait_for(
-                warmup.attempt_once(), timeout=startup_timeout_seconds
-            )
+            await asyncio.wait_for(warmup.attempt_once(), timeout=startup_timeout_seconds)
         if not warmup.is_warm:
             log.warning("gateway_upstream_warmup_startup_incomplete")
         task = asyncio.create_task(warmup.run_until_warm())
@@ -286,8 +282,7 @@ def main(argv: list[str] | None = None) -> None:
         args.authorize_real_credential_read and args.confirm_single_token_writer
     ):
         parser.error(
-            "live serving requires explicit real-credential and single-token-writer "
-            "confirmations"
+            "live serving requires explicit real-credential and single-token-writer confirmations"
         )
 
     settings = GatewaySettings()

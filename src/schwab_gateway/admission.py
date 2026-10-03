@@ -26,9 +26,7 @@ class AdmissionPolicy:
             if not isinstance(value, int) or isinstance(value, bool):
                 raise ValueError("gateway capacity must be an integer")
             if not 1 <= value <= MAX_CAPACITY_PER_CLASS:
-                raise ValueError(
-                    f"gateway capacity must be between 1 and {MAX_CAPACITY_PER_CLASS}"
-                )
+                raise ValueError(f"gateway capacity must be between 1 and {MAX_CAPACITY_PER_CLASS}")
 
 
 class AdmissionController:

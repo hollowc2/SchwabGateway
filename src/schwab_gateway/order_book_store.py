@@ -44,8 +44,8 @@ class OrderBookSnapshotStore:
         self._history_limit = history_limit
         self._subscriber_queue_limit = subscriber_queue_limit
         self._clock = monotonic_clock
-        self._history: dict[tuple[str, OrderBookVenue], deque[OrderBookSnapshotV1]] = (
-            defaultdict(lambda: deque(maxlen=self._history_limit))
+        self._history: dict[tuple[str, OrderBookVenue], deque[OrderBookSnapshotV1]] = defaultdict(
+            lambda: deque(maxlen=self._history_limit)
         )
         self._subscriptions: set[OrderBookSubscription] = set()
         self._feed_state: dict[OrderBookVenue, OrderBookFeedState] = {
@@ -61,10 +61,7 @@ class OrderBookSnapshotStore:
         self._last_publish[key] = self._clock()
         self._feed_state[snapshot.venue] = "connected"
         for subscription in tuple(self._subscriptions):
-            if (
-                subscription.venue != snapshot.venue
-                or snapshot.symbol not in subscription.symbols
-            ):
+            if subscription.venue != snapshot.venue or snapshot.symbol not in subscription.symbols:
                 continue
             if subscription.queue.full():
                 try:
@@ -83,9 +80,7 @@ class OrderBookSnapshotStore:
         values = self._history.get((symbol, venue), ())
         return tuple(values)[-limit:]
 
-    def subscribe(
-        self, symbols: frozenset[str], venue: OrderBookVenue
-    ) -> OrderBookSubscription:
+    def subscribe(self, symbols: frozenset[str], venue: OrderBookVenue) -> OrderBookSubscription:
         if not symbols:
             raise ValueError("at least one order-book subscription symbol is required")
         subscription = OrderBookSubscription(
@@ -99,9 +94,7 @@ class OrderBookSnapshotStore:
     def unsubscribe(self, subscription: OrderBookSubscription) -> None:
         self._subscriptions.discard(subscription)
 
-    def mark_feed_state(
-        self, venue: OrderBookVenue, state: OrderBookFeedState
-    ) -> None:
+    def mark_feed_state(self, venue: OrderBookVenue, state: OrderBookFeedState) -> None:
         self._feed_state[venue] = state
 
     def feed_state(self, venue: OrderBookVenue) -> OrderBookFeedState:

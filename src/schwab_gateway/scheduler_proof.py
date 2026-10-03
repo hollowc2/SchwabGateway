@@ -84,9 +84,7 @@ def _submit(
 
 async def run_synthetic_scheduler_proof() -> SyntheticSchedulerProof:
     """Exercise protected bursts, background pressure, and detached timeout drain."""
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=3, background_capacity=4)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=4))
     provider = _FakeProvider()
     background_release = asyncio.Event()
     first_background = _submit(
@@ -120,8 +118,7 @@ async def run_synthetic_scheduler_proof() -> SyntheticSchedulerProof:
         for symbol in ("SPX", "NDX", "XSP")
     ]
     await _until(
-        lambda: scheduler.snapshot().background == 4
-        and scheduler.snapshot().protected == 3
+        lambda: scheduler.snapshot().background == 4 and scheduler.snapshot().protected == 3
     )
     try:
         await scheduler.execute(
@@ -182,9 +179,7 @@ async def run_synthetic_scheduler_proof() -> SyntheticSchedulerProof:
         three_wide_protected_completed=protected_completed,
         protected_precedence_proven=protected_precedence,
         background_capacity_shed=background_shed,
-        execution_timeout_drained=(
-            retained and provider.started[-1] == "protected-after-timeout"
-        ),
+        execution_timeout_drained=(retained and provider.started[-1] == "protected-after-timeout"),
         final_allocated=snapshot.total,
         final_queued=snapshot.queued_protected + snapshot.queued_background,
         final_lifecycle_tasks=snapshot.task_count,

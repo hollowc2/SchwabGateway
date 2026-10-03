@@ -83,9 +83,7 @@ def submit(
 
 @pytest.mark.asyncio
 async def test_three_protected_requests_get_full_timeout_only_after_dispatch() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=3, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=1))
     probe = ConcurrencyProbe()
 
     tasks = [
@@ -112,9 +110,7 @@ async def test_three_protected_requests_get_full_timeout_only_after_dispatch() -
 
 @pytest.mark.asyncio
 async def test_protected_dispatches_before_queued_background_and_fifo_within_class() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=3, background_capacity=3)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=3))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
 
@@ -170,9 +166,7 @@ async def test_protected_dispatches_before_queued_background_and_fifo_within_cla
 
 @pytest.mark.asyncio
 async def test_mixed_burst_keeps_independent_capacity_and_one_worker() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=3, background_capacity=4)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=4))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
 
@@ -202,8 +196,7 @@ async def test_mixed_burst_keeps_independent_capacity_and_one_worker() -> None:
         for index in range(3)
     ]
     await wait_for(
-        lambda: scheduler.snapshot().background == 4
-        and scheduler.snapshot().protected == 3
+        lambda: scheduler.snapshot().background == 4 and scheduler.snapshot().protected == 3
     )
     with pytest.raises(SchedulerCapacityError):
         await scheduler.execute(
@@ -232,9 +225,7 @@ async def test_mixed_burst_keeps_independent_capacity_and_one_worker() -> None:
 
 @pytest.mark.asyncio
 async def test_queue_timeout_removes_job_and_it_never_runs() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
     active = submit(
@@ -263,9 +254,7 @@ async def test_queue_timeout_removes_job_and_it_never_runs() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_atomically_rejects_job_expired_during_event_loop_stall() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
     active_entered = asyncio.Event()
     block_loop = asyncio.Event()
@@ -297,9 +286,7 @@ async def test_dispatch_atomically_rejects_job_expired_during_event_loop_stall()
 
 @pytest.mark.asyncio
 async def test_execution_deadline_uses_completion_time_after_event_loop_stall() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=1, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
 
     async def late_operation() -> str:
         time.sleep(0.03)
@@ -319,9 +306,7 @@ async def test_execution_deadline_uses_completion_time_after_event_loop_stall() 
 
 @pytest.mark.asyncio
 async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
     timed_out = submit(
@@ -362,9 +347,7 @@ async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> 
 
 @pytest.mark.asyncio
 async def test_actual_timeout_reports_eventual_drain_error() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=1, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
     release = asyncio.Event()
 
     async def fails_after_timeout() -> str:
@@ -387,17 +370,14 @@ async def test_actual_timeout_reports_eventual_drain_error() -> None:
         sample.labels["outcome"]
         for metric in scheduler_execution.collect()
         for sample in metric.samples
-        if sample.name.endswith("_count")
-        and sample.labels.get("operation") == "timeout-then-error"
+        if sample.name.endswith("_count") and sample.labels.get("operation") == "timeout-then-error"
     }
     assert outcomes == {"timeout_drained_error"}
 
 
 @pytest.mark.asyncio
 async def test_queued_and_running_cancellation_release_only_the_caller() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=3, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=3, background_capacity=1))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
     running = submit(
@@ -433,9 +413,7 @@ async def test_queued_and_running_cancellation_release_only_the_caller() -> None
 
 @pytest.mark.asyncio
 async def test_failure_is_one_attempt_and_releases_capacity() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=1, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=1, background_capacity=1))
     probe = ConcurrencyProbe()
 
     with pytest.raises(RuntimeError, match="synthetic upstream failure"):
@@ -467,9 +445,7 @@ async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
             records.append(("warning", event, fields))
 
     monkeypatch.setattr(scheduler_module, "log", RecordingLog())
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
 
@@ -480,9 +456,7 @@ async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
         lambda: probe.call("first", release=release),
     )
     await wait_for(lambda: probe.started == ["first"])
-    second = submit(
-        scheduler, PriorityClass.PROTECTED, "second", lambda: probe.call("second")
-    )
+    second = submit(scheduler, PriorityClass.PROTECTED, "second", lambda: probe.call("second"))
     await asyncio.sleep(0.02)
     release.set()
     assert await asyncio.gather(first, second) == ["first", "second"]
@@ -498,9 +472,7 @@ async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
 
 @pytest.mark.asyncio
 async def test_shutdown_removes_queue_and_cannot_release_running_slot_early() -> None:
-    scheduler = ExecutionScheduler(
-        AdmissionPolicy(protected_capacity=2, background_capacity=1)
-    )
+    scheduler = ExecutionScheduler(AdmissionPolicy(protected_capacity=2, background_capacity=1))
     probe = ConcurrencyProbe()
     release = asyncio.Event()
     running = submit(

@@ -101,15 +101,9 @@ def derive_metrics(
         ask_levels = snapshot.asks[:depth_levels]
         best_bid = bid_levels[0].price if bid_levels else None
         best_ask = ask_levels[0].price if ask_levels else None
-        spread = (
-            best_ask - best_bid
-            if best_bid is not None and best_ask is not None
-            else None
-        )
+        spread = best_ask - best_bid if best_bid is not None and best_ask is not None else None
         midpoint = (
-            (best_bid + best_ask) / 2
-            if best_bid is not None and best_ask is not None
-            else None
+            (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
         )
         bid_depth = sum(level.total_size for level in bid_levels)
         ask_depth = sum(level.total_size for level in ask_levels)
@@ -135,14 +129,11 @@ def derive_metrics(
         if prior is not None:
             prices = set(depth_map) | set(prior["depth_map"])
             deltas = [
-                depth_map.get(price, 0) - prior["depth_map"].get(price, 0)
-                for price in prices
+                depth_map.get(price, 0) - prior["depth_map"].get(price, 0) for price in prices
             ]
             inferred_added = sum(delta for delta in deltas if delta > 0)
             inferred_removed = -sum(delta for delta in deltas if delta < 0)
-            interval_seconds = (
-                snapshot.gateway_received_at - prior["received_at"]
-            ).total_seconds()
+            interval_seconds = (snapshot.gateway_received_at - prior["received_at"]).total_seconds()
             prior_midpoint = prior["midpoint"]
             if midpoint is not None and prior_midpoint is not None:
                 midpoint_change = midpoint - prior_midpoint
@@ -199,13 +190,9 @@ def derive_metrics(
 
     grouped_rows: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        grouped_rows[
-            (row["symbol"], row["venue"], row["continuity_epoch"])
-        ].append(row)
+        grouped_rows[(row["symbol"], row["venue"], row["continuity_epoch"])].append(row)
     next_pairs = [
-        pair
-        for group in grouped_rows.values()
-        for pair in zip(group, group[1:], strict=False)
+        pair for group in grouped_rows.values() for pair in zip(group, group[1:], strict=False)
     ]
     summary = {
         "row_count": len(rows),
@@ -260,9 +247,7 @@ def write_derived_dataset(
         "is_consolidated": False,
         "symbols": manifest["symbols"],
         "generated_at": now.isoformat(),
-        "source_manifest_path": os.path.relpath(
-            capture_manifest_path, output_directory
-        ),
+        "source_manifest_path": os.path.relpath(capture_manifest_path, output_directory),
         "source_manifest_sha256": sha256_file(capture_manifest_path),
         "source_normalized_sha256": manifest["normalized_sha256"],
         "metrics_path": metrics_path.name,

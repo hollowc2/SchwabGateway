@@ -206,9 +206,9 @@ def test_normalizer_clamps_finite_negative_intrinsic_value_to_zero(
     negative_intrinsic_value: float,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "intrinsicValue"
-    ] = negative_intrinsic_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["intrinsicValue"] = (
+        negative_intrinsic_value
+    )
     before = option_chain_negative_intrinsic_value_normalizations._value.get()
 
     chain = normalize_schwab_option_chain(
@@ -230,9 +230,7 @@ def test_normalizer_preserves_zero_and_positive_intrinsic_value(
     intrinsic_value: float,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "intrinsicValue"
-    ] = intrinsic_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["intrinsicValue"] = intrinsic_value
 
     chain = normalize_schwab_option_chain(
         "SPX",
@@ -253,9 +251,7 @@ def test_normalizer_rejects_malformed_or_nonfinite_intrinsic_value(
     intrinsic_value: object,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "intrinsicValue"
-    ] = intrinsic_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["intrinsicValue"] = intrinsic_value
 
     with pytest.raises(ValueError, match="intrinsicValue"):
         normalize_schwab_option_chain(
@@ -288,9 +284,7 @@ def test_normalizer_maps_negative_schwab_time_value_to_null_with_observability(
     negative_time_value: float,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "timeValue"
-    ] = negative_time_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["timeValue"] = negative_time_value
     before = option_chain_negative_time_value_normalizations._value.get()
 
     chain = normalize_schwab_option_chain(
@@ -319,9 +313,9 @@ def test_normalizer_maps_negative_schwab_theoretical_value_to_null_with_observab
     negative_theoretical_value: float,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "theoreticalOptionValue"
-    ] = negative_theoretical_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["theoreticalOptionValue"] = (
+        negative_theoretical_value
+    )
     before = option_chain_negative_theoretical_value_normalizations._value.get()
 
     chain = normalize_schwab_option_chain(
@@ -337,10 +331,7 @@ def test_normalizer_maps_negative_schwab_theoretical_value_to_null_with_observab
     assert chain.contracts[0].ask == 1.3
     assert chain.contracts[0].mark == 1.2
     assert len(chain.contracts) == 4
-    assert (
-        option_chain_negative_theoretical_value_normalizations._value.get()
-        == before + 1
-    )
+    assert option_chain_negative_theoretical_value_normalizations._value.get() == before + 1
 
 
 @pytest.mark.parametrize(
@@ -352,9 +343,9 @@ def test_normalizer_preserves_nonnegative_or_null_theoretical_value(
     expected: float | None,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "theoreticalOptionValue"
-    ] = theoretical_value
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["theoreticalOptionValue"] = (
+        theoretical_value
+    )
     before = option_chain_negative_theoretical_value_normalizations._value.get()
 
     chain = normalize_schwab_option_chain(
@@ -449,9 +440,7 @@ def test_normalizer_does_not_repair_unsafe_crossed_prices(
     ask: float,
 ) -> None:
     payload = _payload()
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0].update(
-        {"bid": bid, "ask": ask}
-    )
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0].update({"bid": bid, "ask": ask})
 
     with pytest.raises(ValidationError, match="prices"):
         normalize_schwab_option_chain(
@@ -466,9 +455,7 @@ def test_normalizer_does_not_repair_unsafe_crossed_prices(
 def test_mixed_age_chain_keeps_rows_and_counts_without_aggregate_stale() -> None:
     payload = _payload()
     stale_millis = int((RECEIVED_AT - dt.timedelta(minutes=2)).timestamp() * 1000)
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "quoteTimeInLong"
-    ] = stale_millis
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["quoteTimeInLong"] = stale_millis
 
     chain = normalize_schwab_option_chain(
         "SPX",
@@ -496,9 +483,7 @@ async def test_quiet_contract_remains_fresh_with_bounded_live_policy() -> None:
     """A valid quiet leg must not disappear at the former 90-second boundary."""
     payload = _payload()
     quiet_millis = int((RECEIVED_AT - dt.timedelta(seconds=120)).timestamp() * 1000)
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "quoteTimeInLong"
-    ] = quiet_millis
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["quoteTimeInLong"] = quiet_millis
     clock = _Clock()
     upstream = DirectSchwabOptionChainUpstream(
         _Provider(payload),
@@ -516,9 +501,7 @@ async def test_quiet_contract_remains_fresh_with_bounded_live_policy() -> None:
 def test_quiet_contract_policy_remains_fail_closed_after_five_minutes() -> None:
     payload = _payload()
     stale_millis = int((RECEIVED_AT - dt.timedelta(seconds=301)).timestamp() * 1000)
-    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0][
-        "quoteTimeInLong"
-    ] = stale_millis
+    payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["quoteTimeInLong"] = stale_millis
 
     chain = normalize_schwab_option_chain(
         "XSP",
@@ -539,9 +522,7 @@ def test_quiet_contract_policy_remains_fail_closed_after_five_minutes() -> None:
         {"underlyingPrice": 645.0},
         {
             "underlyingPrice": 645.0,
-            "callExpDateMap": {
-                "2026-08-24:0": {"645": [_contract("XSP CALL")]}
-            },
+            "callExpDateMap": {"2026-08-24:0": {"645": [_contract("XSP CALL")]}},
         },
     ],
 )
@@ -950,13 +931,9 @@ class _BlockingProvider(_Provider):
 async def test_direct_upstream_coalesces_same_key_and_shields_cancelled_waiter() -> None:
     provider = _BlockingProvider(_payload())
     upstream = DirectSchwabOptionChainUpstream(provider)
-    cancelled_waiter = asyncio.create_task(
-        upstream.get_option_chain("SPX", EXPIRATION)
-    )
+    cancelled_waiter = asyncio.create_task(upstream.get_option_chain("SPX", EXPIRATION))
     await provider.entered.wait()
-    surviving_waiter = asyncio.create_task(
-        upstream.get_option_chain("SPX", EXPIRATION)
-    )
+    surviving_waiter = asyncio.create_task(upstream.get_option_chain("SPX", EXPIRATION))
 
     cancelled_waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1220,9 +1197,7 @@ async def test_full_chain_capacity_is_bounded_and_fails_closed_with_429() -> Non
                 client.get("/v1/option-chain", params=params, headers=headers)
             )
             await upstream.entered.wait()
-            rejected = await client.get(
-                "/v1/option-chain", params=params, headers=headers
-            )
+            rejected = await client.get("/v1/option-chain", params=params, headers=headers)
             upstream.release.set()
             admitted = await first
     finally:
@@ -1340,9 +1315,9 @@ async def test_cache_hit_is_served_without_waiting_for_the_busy_scheduler_slot()
     assert hit.status_code == 200
     assert hit.headers["Content-Type"] == "application/json; charset=utf-8"
     assert provider.calls == [("SPX", EXPIRATION)]
-    assert hit.json()["option_chain"]["age_seconds"] == warm.json()["option_chain"][
-        "age_seconds"
-    ] + 1
+    assert (
+        hit.json()["option_chain"]["age_seconds"] == warm.json()["option_chain"]["age_seconds"] + 1
+    )
 
 
 @pytest.mark.asyncio
@@ -1391,9 +1366,7 @@ async def test_joined_inflight_fetch_is_bounded_by_the_upstream_budget() -> None
                 client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
             )
             await provider.entered.wait()
-            joined = await client.get(
-                "/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS
-            )
+            joined = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
             provider.release.set()
             await owner
     finally:
@@ -1419,9 +1392,7 @@ async def test_warm_cache_still_fails_closed_when_gateway_is_not_ready() -> None
         async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as client:
             warm = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
             readiness.state = TokenManagerState.REFRESH_FAILED
-            refused = await client.get(
-                "/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS
-            )
+            refused = await client.get("/v1/option-chain", params=CHAIN_PARAMS, headers=HEADERS)
     finally:
         await server.close()
 

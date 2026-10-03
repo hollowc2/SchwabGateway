@@ -16,9 +16,7 @@ def test_standalone_has_zero_butterfly_imports() -> None:
     for path in python_files():
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "butterfly_guy"
-            ):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("butterfly_guy"):
                 offenders.append(str(path))
             if isinstance(node, ast.Import) and any(
                 alias.name.startswith("butterfly_guy") for alias in node.names
@@ -79,9 +77,7 @@ def test_contract_contains_only_parity_routes() -> None:
 
 def test_golden_fixture_is_redacted_and_pinned() -> None:
     fixture = json.loads(Path("tests/fixtures/schwab_gateway_http_v1.json").read_text())
-    assert fixture["captured_from_commit"] == (
-        "122c4ba9451a5349d4edd99024342ba9673637a9"
-    )
+    assert fixture["captured_from_commit"] == ("122c4ba9451a5349d4edd99024342ba9673637a9")
     serialized = json.dumps(fixture).lower()
     assert "schema_version" in serialized
     assert "authentication_required" in serialized

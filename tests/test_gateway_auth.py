@@ -26,9 +26,7 @@ def principal(client_id: str, *, key: str | None = None) -> InternalPrincipal:
         key_sha256=hash_api_key(key or SYNTHETIC_KEYS[client_id]),
         capabilities=frozenset({"market_data:read"}),
         priority_class=(
-            PriorityClass.PROTECTED
-            if client_id == "butterfly-guy"
-            else PriorityClass.BACKGROUND
+            PriorityClass.PROTECTED if client_id == "butterfly-guy" else PriorityClass.BACKGROUND
         ),
     )
 

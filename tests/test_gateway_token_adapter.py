@@ -361,9 +361,7 @@ async def test_async_access_transaction_waits_for_file_lock_off_event_loop(
         raise AssertionError("operation must not run without the file lock")
 
     with store.locked(1):
-        waiting = asyncio.create_task(
-            competing_manager.run_access_transaction_async(operation)
-        )
+        waiting = asyncio.create_task(competing_manager.run_access_transaction_async(operation))
         await asyncio.sleep(0.01)
         assert waiting.done() is False
         with pytest.raises(TokenLockTimeoutError):
@@ -428,9 +426,7 @@ def test_factory_exception_text_and_fake_credentials_are_not_exposed(
     )
 
     def failing_factory(*_args, **_kwargs):
-        raise RuntimeError(
-            "factory failure with access-secret-0 fake-api-key fake-app-secret"
-        )
+        raise RuntimeError("factory failure with access-secret-0 fake-api-key fake-app-secret")
 
     with pytest.raises(SchwabClientConstructionError) as exc:
         adapter(path, failing_factory).execute(lambda _client: None)

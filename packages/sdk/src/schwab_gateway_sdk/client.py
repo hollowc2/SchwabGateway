@@ -89,9 +89,7 @@ def _normalize_order_book_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
     if not normalized or any(not symbol for symbol in normalized):
         raise ValueError("at least one non-empty order-book symbol is required")
     if len(normalized) > _MAX_ORDER_BOOK_SYMBOLS:
-        raise ValueError(
-            f"at most {_MAX_ORDER_BOOK_SYMBOLS} order-book symbols are allowed"
-        )
+        raise ValueError(f"at most {_MAX_ORDER_BOOK_SYMBOLS} order-book symbols are allowed")
     if len(set(normalized)) != len(normalized):
         raise ValueError("order-book symbols must be unique")
     if any(not _ORDER_BOOK_SYMBOL_PATTERN.fullmatch(symbol) for symbol in normalized):
@@ -223,9 +221,7 @@ class GatewayMarketDataClient:
             raise ValueError("a symbol is required")
         return await self._get_typed("/v1/spot", {"symbol": requested}, SpotResponseV1)
 
-    async def get_chain_metadata(
-        self, symbol: str, expiration: dt.date
-    ) -> ChainMetadataResponseV1:
+    async def get_chain_metadata(self, symbol: str, expiration: dt.date) -> ChainMetadataResponseV1:
         requested = symbol.strip()
         if not requested:
             raise ValueError("a symbol is required")
@@ -237,9 +233,7 @@ class GatewayMarketDataClient:
             ChainMetadataResponseV1,
         )
 
-    async def get_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> OptionChainResponseV1:
+    async def get_option_chain(self, symbol: str, expiration: dt.date) -> OptionChainResponseV1:
         """Fetch a complete normalized chain for one expiration. No retries."""
         requested = symbol.strip()
         if not requested:
@@ -316,9 +310,7 @@ class GatewayMarketDataClient:
             OrderBookRecentResponseV1,
         )
 
-    def _order_book_stream_url(
-        self, symbols: tuple[str, ...], venue: OrderBookVenue
-    ) -> str:
+    def _order_book_stream_url(self, symbols: tuple[str, ...], venue: OrderBookVenue) -> str:
         parsed = urlsplit(self._base_url)
         websocket_scheme = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}.get(
             parsed.scheme.lower()
@@ -326,9 +318,7 @@ class GatewayMarketDataClient:
         if websocket_scheme is None or not parsed.netloc:
             raise ValueError("gateway base URL must use http, https, ws, or wss")
         query = urlencode({"symbols": ",".join(symbols), "venue": venue})
-        return urlunsplit(
-            (websocket_scheme, parsed.netloc, "/v1/order-book/stream", query, "")
-        )
+        return urlunsplit((websocket_scheme, parsed.netloc, "/v1/order-book/stream", query, ""))
 
     @staticmethod
     def _raise_websocket_status(exc: InvalidStatus) -> None:
@@ -338,17 +328,13 @@ class GatewayMarketDataClient:
         if status == 403:
             raise GatewayAuthorizationError("gateway capability denied") from exc
         if status == 429:
-            raise GatewayCapacityError(
-                "gateway request capacity is unavailable"
-            ) from exc
+            raise GatewayCapacityError("gateway request capacity is unavailable") from exc
         if status == 503 and _websocket_error_code(exc) == "gateway_queue_timeout":
             raise GatewayQueueTimeoutError("gateway worker queue wait timed out") from exc
         if status == 504:
             raise GatewayTimeoutError("gateway order-book stream timed out") from exc
         if status in {502, 503}:
-            raise GatewayUnavailableError(
-                "gateway order-book stream is unavailable"
-            ) from exc
+            raise GatewayUnavailableError("gateway order-book stream is unavailable") from exc
         raise GatewayResponseError(
             f"gateway WebSocket upgrade failed with status {status}"
         ) from exc
@@ -401,9 +387,7 @@ class GatewayMarketDataClient:
                         ) from exc
                     snapshot = envelope.snapshot
                     if snapshot.venue != normalized_venue:
-                        raise GatewayResponseError(
-                            "gateway streamed a mismatched order-book venue"
-                        )
+                        raise GatewayResponseError("gateway streamed a mismatched order-book venue")
                     if snapshot.symbol not in requested:
                         raise GatewayResponseError(
                             "gateway streamed an unrequested order-book symbol"

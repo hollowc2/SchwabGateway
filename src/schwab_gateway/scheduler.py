@@ -166,9 +166,7 @@ class ExecutionScheduler:
             self._update_class_metrics(priority)
         # Seed failure counters before the first event so Prometheus ``increase()``
         # alerts can detect the first protected failure after process start.
-        scheduler_capacity_rejections.labels(
-            priority_class=PriorityClass.PROTECTED.value
-        ).inc(0)
+        scheduler_capacity_rejections.labels(priority_class=PriorityClass.PROTECTED.value).inc(0)
         for operation in ("spot", "option_chain", "history"):
             scheduler_queue_timeouts.labels(
                 priority_class=PriorityClass.PROTECTED.value,
@@ -317,15 +315,9 @@ class ExecutionScheduler:
         await waiter
 
     def _update_class_metrics(self, priority: PriorityClass) -> None:
-        scheduler_queue_depth.labels(priority_class=priority.value).set(
-            len(self._queues[priority])
-        )
-        scheduler_allocated.labels(priority_class=priority.value).set(
-            self._allocated[priority]
-        )
-        gateway_active_admitted.labels(priority_class=priority.value).set(
-            self._allocated[priority]
-        )
+        scheduler_queue_depth.labels(priority_class=priority.value).set(len(self._queues[priority]))
+        scheduler_allocated.labels(priority_class=priority.value).set(self._allocated[priority])
+        gateway_active_admitted.labels(priority_class=priority.value).set(self._allocated[priority])
 
     def _remove_queued_locked(self, job: _Job) -> None:
         self._queues[job.priority].remove(job)
@@ -431,9 +423,7 @@ class ExecutionScheduler:
                 if remaining <= 0:
                     break
                 try:
-                    done, _pending = await asyncio.wait(
-                        {operation_task}, timeout=remaining
-                    )
+                    done, _pending = await asyncio.wait({operation_task}, timeout=remaining)
                 except asyncio.CancelledError:
                     # The scheduler lifecycle is internal and non-preemptible. Defer its
                     # cancellation exactly as we defer an HTTP caller's cancellation.
@@ -443,8 +433,7 @@ class ExecutionScheduler:
                         break
 
             completed_in_budget = (
-                operation_completed_at is not None
-                and operation_completed_at <= execution_deadline
+                operation_completed_at is not None and operation_completed_at <= execution_deadline
             )
             if not completed_in_budget:
                 scheduler_upstream_timeouts.labels(

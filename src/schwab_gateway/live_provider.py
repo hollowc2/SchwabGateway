@@ -91,9 +91,7 @@ class GatewayUpstreamSettings(BaseSettings):
         return value
 
 
-def extract_spot_price_and_timestamp(
-    payload: Any, symbol: str
-) -> tuple[float, dt.datetime | None]:
+def extract_spot_price_and_timestamp(payload: Any, symbol: str) -> tuple[float, dt.datetime | None]:
     """Pull a spot price and freshest quote/trade timestamp from a Schwab response.
 
     This mirrors ``SchwabClientWrapper.get_spot_price`` (``data/schwab_client.py:122-130``)
@@ -247,9 +245,7 @@ class LockedSchwabMarketDataProvider:
         price, _timestamp = await self.get_spot_snapshot(symbol)
         return price
 
-    async def get_spot_snapshot(
-        self, symbol: str = "$SPX"
-    ) -> tuple[float, dt.datetime | None]:
+    async def get_spot_snapshot(self, symbol: str = "$SPX") -> tuple[float, dt.datetime | None]:
         def operation(client: Any) -> Any:
             with _closing_session(client):
                 response = client.get_quote(symbol)
@@ -265,9 +261,7 @@ class LockedSchwabMarketDataProvider:
         payload = await self._execute("spot", operation)
         return extract_spot_price_and_timestamp(payload, symbol)
 
-    async def get_option_chain(
-        self, symbol: str, expiration: dt.date
-    ) -> dict[str, Any]:
+    async def get_option_chain(self, symbol: str, expiration: dt.date) -> dict[str, Any]:
         def operation(client: Any) -> dict[str, Any]:
             with _closing_session(client):
                 response = client.get_option_chain(
