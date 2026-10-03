@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import math
-import re
 import time
 from collections.abc import AsyncIterator
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, get_args
 
 from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -53,6 +52,7 @@ from schwab_gateway.scheduler import (
     SchedulerQueueTimeoutError,
     SchedulerUpstreamTimeoutError,
 )
+from schwab_gateway.symbols import SYMBOL_PATTERN
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
@@ -67,7 +67,6 @@ from schwab_gateway.upstream import (
 
 log = get_logger(__name__)
 UTC = dt.timezone.utc
-SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 MAX_SYMBOLS = 100
 HISTORY_FREQUENCIES = ("daily", "minute")
 # (minimum, maximum, default) bars-back bounds per history frequency. The daily default
@@ -99,7 +98,7 @@ MOVER_INDEXES = frozenset(
 )
 MOVER_DIRECTIONS = ("up", "down")
 SESSION_TYPES = ("regular", "extended")
-ORDER_BOOK_VENUES = ("NASDAQ", "NYSE")
+ORDER_BOOK_VENUES = get_args(OrderBookVenue)
 MAX_RECENT_ORDER_BOOK_SNAPSHOTS = 1000
 MAX_STREAM_ORDER_BOOK_SYMBOLS = 25
 # Prometheus scrapes and the Docker healthcheck were ~70% of all log lines. Their

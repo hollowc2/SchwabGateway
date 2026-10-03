@@ -8,14 +8,14 @@ import datetime as dt
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 
 from schwab_gateway_sdk import GatewayMarketDataClient
 
+from schwab_gateway.symbols import SYMBOL_PATTERN
+
 UTC = dt.timezone.utc
-SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
 
 
 def _sha256(path: Path) -> str:

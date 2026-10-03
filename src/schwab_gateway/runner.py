@@ -116,7 +116,7 @@ def build_live_app(
     upstream_settings: GatewayUpstreamSettings,
     client_factory: Any,
 ) -> web.Application:
-    """Real application: three read surfaces over one locked token manager.
+    """Real application: every read surface over one locked token manager.
 
     The manager is loaded once here, before the application is returned, and a failure
     propagates so the process refuses to start. That startup load is not optional
@@ -149,9 +149,6 @@ def build_live_app(
     # One token read, no Schwab request. Fails closed.
     manager.load()
 
-    # ``manager.load()`` reaches READY without contacting Schwab, so gate readiness on
-    # one real round-trip: a redeploy then serves not-ready until the client is warm
-    # instead of dropping the first in-flight protected reads on a cold worker.
     warmup_readiness = UpstreamWarmupReadiness(
         manager,
         lambda: provider.get_spot_price("$SPX"),

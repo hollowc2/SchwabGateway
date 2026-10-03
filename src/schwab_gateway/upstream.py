@@ -1253,12 +1253,9 @@ class DirectSchwabOptionChainUpstream:
         if self._inflight.get(key) is completed:
             del self._inflight[key]
             option_chain_inflight.set(len(self._inflight))
-        if completed.cancelled():
-            return
-        try:
+        if not completed.cancelled():
+            # Retrieve any failure so a fetch every waiter abandoned is not logged as unhandled.
             completed.exception()
-        except Exception:
-            pass
 
 
 class DirectSchwabQuoteUpstream:
