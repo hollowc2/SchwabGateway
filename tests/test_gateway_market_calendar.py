@@ -10,7 +10,7 @@ import datetime as dt
 
 import pytest
 
-from schwab_gateway import upstream
+from schwab_gateway import market_calendar
 
 HOLIDAYS = {
     2021: "01-01 01-18 02-15 04-02 05-31 07-05 09-06 11-25 12-24",
@@ -44,8 +44,8 @@ def _dates(year: int, spec: str) -> frozenset[dt.date]:
 
 @pytest.mark.parametrize("year", sorted(HOLIDAYS))
 def test_recurring_holidays_and_early_closes_are_pinned(year: int) -> None:
-    assert upstream._market_holidays(year) == _dates(year, HOLIDAYS[year])
-    assert upstream._early_close_sessions(year) == _dates(year, EARLY_CLOSES[year])
+    assert market_calendar.market_holidays(year) == _dates(year, HOLIDAYS[year])
+    assert market_calendar.early_close_sessions(year) == _dates(year, EARLY_CLOSES[year])
 
 
 @pytest.mark.parametrize(
@@ -59,7 +59,7 @@ def test_recurring_holidays_and_early_closes_are_pinned(year: int) -> None:
     ],
 )
 def test_regular_session_end_is_pinned(date: dt.date, expected: dt.time | None) -> None:
-    assert upstream._regular_session_end(date) == expected
+    assert market_calendar.regular_session_end(date) == expected
 
 
 @pytest.mark.parametrize(
@@ -76,4 +76,4 @@ def test_regular_session_end_is_pinned(date: dt.date, expected: dt.time | None) 
     ],
 )
 def test_latest_completed_session_is_pinned(at: dt.datetime, expected: dt.date) -> None:
-    assert upstream._latest_completed_session(at) == expected
+    assert market_calendar.latest_completed_session(at) == expected

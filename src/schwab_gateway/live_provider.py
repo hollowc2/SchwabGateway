@@ -33,7 +33,6 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from prometheus_client import Histogram
 from pydantic import Field, SecretStr, field_validator
@@ -46,6 +45,7 @@ from schwab_token_store import (
 )
 
 from schwab_gateway.logging import get_logger
+from schwab_gateway.market_calendar import EASTERN
 from schwab_gateway.token_adapter import LockedSchwabClientAdapter
 
 log = get_logger(__name__)
@@ -54,7 +54,6 @@ DEFAULT_QUOTE_BATCH_SIZE = 150
 DEFAULT_READINESS_RECOVERY_SECONDS = 30.0
 DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS = 6.0
 DEFAULT_WARMUP_RETRY_SECONDS = 3.0
-EASTERN = ZoneInfo("America/New_York")
 # Schwab's standard full extended-hours window: pre-market open through after-hours
 # close. Wide enough to capture both the regular and extended segments of one calendar
 # date in a single fetch; the upstream normalizer does the actual session split.
