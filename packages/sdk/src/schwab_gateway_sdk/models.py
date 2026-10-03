@@ -4,11 +4,34 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, field_validator, model_validator
 
 MAX_OPTION_CHAIN_CONTRACTS_V1 = 5000
+
+
+def _require_timezone_aware(value: dt.datetime) -> dt.datetime:
+    if value.utcoffset() is None:
+        raise ValueError("gateway timestamps must be timezone-aware")
+    return value
+
+
+def _require_nonnegative_age(value: float) -> float:
+    if value < 0:
+        raise ValueError("age_seconds must be nonnegative")
+    return value
+
+
+def _require_finite_nonnegative_age(value: float) -> float:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("age_seconds must be finite and nonnegative")
+    return value
+
+
+GatewayTimestamp = Annotated[dt.datetime, AfterValidator(_require_timezone_aware)]
+NonNegativeAge = Annotated[float, AfterValidator(_require_nonnegative_age)]
+FiniteNonNegativeAge = Annotated[float, AfterValidator(_require_finite_nonnegative_age)]
 
 
 class GatewayModel(BaseModel):
@@ -17,8 +40,8 @@ class GatewayModel(BaseModel):
 
 class QuoteV1(GatewayModel):
     symbol: str
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     session: str | None = None
     bid: float | None = None
@@ -32,22 +55,8 @@ class QuoteV1(GatewayModel):
     close: float | None = None
     net_percent_change: float | None = None
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
 
 class QuoteResponseV1(GatewayModel):
@@ -81,26 +90,12 @@ class PartialQuoteResponseV1(GatewayModel):
 class SpotV1(GatewayModel):
     symbol: str
     price: float | None = None
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
 
 class SpotResponseV1(GatewayModel):
@@ -117,26 +112,12 @@ class ChainMetadataV1(GatewayModel):
     call_contract_count: int
     put_contract_count: int
     strike_count: int
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
     @field_validator("call_contract_count", "put_contract_count", "strike_count")
     @classmethod
@@ -178,9 +159,9 @@ class OptionContractV1(GatewayModel):
     days_to_expiration: int | None = None
     multiplier: float | None = None
     theoretical_option_value: float | None = None
-    event_timestamp: dt.datetime | None = None
+    event_timestamp: GatewayTimestamp | None = None
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: FiniteNonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
 
     @field_validator("symbol")
@@ -247,20 +228,6 @@ class OptionContractV1(GatewayModel):
             raise ValueError("option contract time value must be finite and nonnegative")
         return value
 
-    @field_validator("event_timestamp")
-    @classmethod
-    def timestamp_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_finite_and_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and (not math.isfinite(value) or value < 0):
-            raise ValueError("age_seconds must be finite and nonnegative")
-        return value
-
     @model_validator(mode="after")
     def bid_must_not_exceed_ask(self) -> OptionContractV1:
         if self.bid is not None and self.ask is not None and self.bid > self.ask:
@@ -283,11 +250,11 @@ class OptionChainV1(GatewayModel):
     put_contract_count: int
     strike_count: int
     contracts: tuple[OptionContractV1, ...]
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: FiniteNonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
 
     @field_validator("contracts")
@@ -320,20 +287,6 @@ class OptionChainV1(GatewayModel):
             raise ValueError("underlying price must be finite and positive")
         return value
 
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and (not math.isfinite(value) or value < 0):
-            raise ValueError("age_seconds must be finite and nonnegative")
-        return value
-
     @model_validator(mode="after")
     def counts_must_match_delivered_contracts(self) -> OptionChainV1:
         calls = sum(contract.option_type == "CALL" for contract in self.contracts)
@@ -357,19 +310,12 @@ class OptionChainResponseV1(GatewayModel):
 
 
 class PriceBarV1(GatewayModel):
-    timestamp: dt.datetime
+    timestamp: GatewayTimestamp
     open: float
     high: float
     low: float
     close: float
     volume: int
-
-    @field_validator("timestamp")
-    @classmethod
-    def timestamp_must_be_timezone_aware(cls, value: dt.datetime) -> dt.datetime:
-        if value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
 
     @field_validator("volume")
     @classmethod
@@ -383,26 +329,12 @@ class HistoryV1(GatewayModel):
     symbol: str
     frequency: Literal["daily", "minute"]
     bars: tuple[PriceBarV1, ...]
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
 
 class HistoryResponseV1(GatewayModel):
@@ -423,26 +355,12 @@ class SessionHistoryV1(GatewayModel):
     date: dt.date
     session: Literal["regular", "extended"]
     candles: tuple[PriceBarV1, ...]
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
 
 class SessionHistoryResponseV1(GatewayModel):
@@ -484,26 +402,12 @@ class MoversV1(GatewayModel):
     index: MoverIndex
     direction: Literal["up", "down"]
     movers: tuple[MoverV1, ...]
-    event_timestamp: dt.datetime | None = None
-    gateway_received_at: dt.datetime
+    event_timestamp: GatewayTimestamp | None = None
+    gateway_received_at: GatewayTimestamp
     source: str
     stale: bool
-    age_seconds: float | None = None
+    age_seconds: NonNegativeAge | None = None
     data_quality_flags: tuple[str, ...] = ()
-
-    @field_validator("event_timestamp", "gateway_received_at")
-    @classmethod
-    def timestamps_must_be_timezone_aware(cls, value: dt.datetime | None) -> dt.datetime | None:
-        if value is not None and value.utcoffset() is None:
-            raise ValueError("gateway timestamps must be timezone-aware")
-        return value
-
-    @field_validator("age_seconds")
-    @classmethod
-    def age_must_be_nonnegative(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("age_seconds must be nonnegative")
-        return value
 
 
 class MoversResponseV1(GatewayModel):
