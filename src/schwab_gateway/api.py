@@ -479,9 +479,27 @@ async def health(_request: web.Request) -> web.Response:
     )
 
 
-def _not_ready_response(app: web.Application) -> web.Response | None:
-    """Fail closed with 503 unless the token manager reports READY."""
+TOKEN_REFRESH_GRACE_SECONDS = 0.25
+
+
+async def _not_ready_response(app: web.Application) -> web.Response | None:
+    """Allow a brief atomic token write to finish, then require READY.
+
+    schwab-py's write callback marks REFRESHING during token persistence. Rejecting
+    that short transition caused otherwise healthy protected reads to return 503.
+    Wait asynchronously only for REFRESHING; failures still fail closed and /ready
+    continues to report the actual state immediately.
+    """
     state, _reason = _token_readiness(app)
+    if state is TokenManagerState.REFRESHING:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + min(TOKEN_REFRESH_GRACE_SECONDS, app[UPSTREAM_TIMEOUT_KEY])
+        while state is TokenManagerState.REFRESHING:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.01, remaining))
+            state, _reason = _token_readiness(app)
     if state is TokenManagerState.READY:
         return None
     return _error("gateway_not_ready", "gateway is not ready", 503)
@@ -631,7 +649,7 @@ async def _serve_upstream(
     scheduler releases the single Schwab execution slot, so encoding a large payload
     neither holds that slot nor counts against the upstream execution budget.
     """
-    not_ready = _not_ready_response(request.app)
+    not_ready = await _not_ready_response(request.app)
     if not_ready is not None:
         return not_ready
 
@@ -756,7 +774,7 @@ async def _serve_option_chain_without_worker(
     join_inflight = getattr(upstream, "join_inflight_option_chain", None)
     if not callable(read_cached) or not callable(join_inflight):
         return None
-    not_ready = _not_ready_response(request.app)
+    not_ready = await _not_ready_response(request.app)
     if not_ready is not None:
         return not_ready
     try:
@@ -819,7 +837,7 @@ async def session_history(request: web.Request) -> web.Response:
     if callable(read_cached):
         # A completed session is answered from the cache without a scheduler slot, the
         # same way option-chain hits are. Readiness still gates it.
-        not_ready = _not_ready_response(request.app)
+        not_ready = await _not_ready_response(request.app)
         if not_ready is not None:
             return not_ready
         try:
