@@ -40,6 +40,13 @@ The v1 API contract is defined in [`openapi.yaml`](openapi.yaml).
 
 ## Guarantees
 
+`/v1/quotes` accepts the exact padded 21-character OCC option symbols returned by
+Schwab option chains. Spaces are preserved upstream; other symbol routes keep
+their ticker validation. Targeted option bid/ask freshness follows the quote
+timestamp and the 300-second option-contract policy. A successful request or a
+newer last trade does not refresh an old option quote. Equity quote policy is
+unchanged. `allow_partial=true` names missing contracts in `missing_symbols`.
+
 - **Read-only.** There are no account, position, transaction, or order routes.
   `SCHWAB_GATEWAY_ORDER_WRITES_ENABLED` must stay `false`.
 - **Fails closed.** During a feed outage, order-book and option-chain reads return an

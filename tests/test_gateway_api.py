@@ -70,6 +70,50 @@ async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
     assert upstream.calls == [("AAPL", "MSFT")]
 
 
+async def test_quote_route_preserves_padded_held_option_symbols() -> None:
+    symbols = ["XSP   261007P00767000", "NDXP  261007P30660000", "SPXW  261007C07750000"]
+    upstream = FakeQuoteUpstream()
+    async with serving(create_app(
+        upstream, single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with GatewayMarketDataClient(str(server.make_url("/")), "valid-key") as client:
+            response = await client.get_available_quotes(symbols)
+    assert [quote.symbol for quote in response.quotes] == symbols
+    assert upstream.calls == [tuple(symbols)]
+
+
+@pytest.mark.parametrize("symbol", [
+    "XSP  261007P00767000", "XSP    261007P00767000", "XSP   261332P00767000",
+    "XSP\t  261007P00767000", "XSP   261007X00767000", "bad symbol",
+])
+async def test_quote_route_rejects_malformed_padded_symbols(symbol: str) -> None:
+    upstream = FakeQuoteUpstream()
+    async with serving(create_app(
+        upstream, single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            response = await http.get("/v1/quotes", params={"symbols": symbol},
+                                      headers={"X-Internal-API-Key": "valid-key"})
+    assert response.status_code == 400
+    assert upstream.calls == []
+
+
+@pytest.mark.parametrize("path,param", [
+    ("/v1/spot", "symbol"), ("/v1/order-book/stream", "symbols"),
+])
+async def test_option_quote_support_does_not_expand_other_symbol_routes(path, param) -> None:
+    async with serving(create_app(
+        FakeQuoteUpstream(), single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            result = await http.get(path, params={param: "XSP   261007P00767000"},
+                                    headers={"X-Internal-API-Key": "valid-key"})
+    assert result.status_code == 400
+
+
 async def test_gateway_authentication_authorization_and_health_contracts() -> None:
     async with serving(
         create_app(FakeQuoteUpstream(), single_principal_authenticator(capability=None))

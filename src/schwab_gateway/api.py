@@ -56,7 +56,7 @@ from schwab_gateway.scheduler import (
     SchedulerQueueTimeoutError,
     SchedulerUpstreamTimeoutError,
 )
-from schwab_gateway.symbols import SYMBOL_PATTERN
+from schwab_gateway.symbols import SYMBOL_PATTERN, is_quote_symbol
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
@@ -284,7 +284,7 @@ def _error(code: str, message: str, status: int) -> web.Response:
     )
 
 
-def _parse_symbols(request: web.Request) -> tuple[str, ...]:
+def _parse_symbols(request: web.Request, *, allow_options: bool = False) -> tuple[str, ...]:
     value = request.query.get("symbols", "")
     symbols = tuple(part.strip().upper() for part in value.split(",") if part.strip())
     if not symbols:
@@ -293,7 +293,8 @@ def _parse_symbols(request: web.Request) -> tuple[str, ...]:
         raise _InvalidRequestError(f"at most {MAX_SYMBOLS} symbols are allowed")
     if len(set(symbols)) != len(symbols):
         raise _InvalidRequestError("symbols must be unique")
-    if any(not SYMBOL_PATTERN.fullmatch(symbol) for symbol in symbols):
+    valid_symbol = is_quote_symbol if allow_options else SYMBOL_PATTERN.fullmatch
+    if any(not valid_symbol(symbol) for symbol in symbols):
         raise _InvalidRequestError("one or more symbols are invalid")
     return symbols
 
@@ -573,7 +574,7 @@ async def execution_scheduler_context(app: web.Application) -> AsyncIterator[Non
 
 @_market_data_handler
 async def quotes(request: web.Request) -> web.Response:
-    symbols = _parse_symbols(request)
+    symbols = _parse_symbols(request, allow_options=True)
     allow_partial = _parse_allow_partial(request)
 
     async def build_response() -> BaseModel:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,6 +13,7 @@ from schwab_gateway_sdk.models import (
 )
 
 from schwab_gateway.upstream import (
+    DirectSchwabQuoteUpstream,
     normalize_schwab_chain_metadata,
     normalize_schwab_history,
     normalize_schwab_movers,
@@ -43,6 +45,36 @@ def test_quote_normalization_preserves_missing_fields_and_staleness() -> None:
     assert quote.age_seconds == 20
     assert quote.stale is True
     assert quote.data_quality_flags == ("missing_bid", "missing_ask", "stale")
+
+
+@pytest.mark.parametrize("quote_age", [299, 301, None])
+def test_held_option_quote_freshness_is_not_renewed_by_request_or_last_trade(quote_age) -> None:
+    received_at = dt.datetime(2026, 10, 7, 17, 0, tzinfo=dt.UTC)
+    fields = {"bidPrice": 0.0, "askPrice": 0.01, "mark": 0.005,
+              "tradeTime": int(received_at.timestamp() * 1000)}
+    if quote_age is not None:
+        fields["quoteTime"] = int(
+            (received_at - dt.timedelta(seconds=quote_age)).timestamp() * 1000
+        )
+    quote = normalize_schwab_quote("XSP   261007P00767000", {"quote": fields},
+                                  received_at=received_at, stale_after_seconds=300)
+    assert quote.age_seconds == quote_age
+    assert quote.stale is (quote_age is None or quote_age > 300)
+    assert quote.bid == 0.0
+    assert quote.ask == 0.01
+
+
+async def test_targeted_options_use_contract_freshness_without_changing_equity_policy() -> None:
+    at = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=30)
+    payload = {"quote": {"bidPrice": 0, "askPrice": 0.01, "mark": 0.005,
+                         "quoteTime": int(at.timestamp() * 1000)}}
+    symbols = ("XSP   261007P00767000", "AAPL")
+    provider = AsyncMock()
+    provider.get_equity_quotes.return_value = dict.fromkeys(symbols, payload)
+    quotes = await DirectSchwabQuoteUpstream(provider).get_quotes(symbols)
+    assert quotes[0].stale is False
+    assert quotes[1].stale is True
+    provider.get_equity_quotes.assert_awaited_once_with(list(symbols))
 
 
 def test_quote_normalization_uses_fresher_extended_session() -> None:
