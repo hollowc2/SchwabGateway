@@ -70,6 +70,50 @@ async def test_client_to_http_gateway_to_fake_upstream_contract() -> None:
     assert upstream.calls == [("AAPL", "MSFT")]
 
 
+async def test_quote_route_preserves_padded_held_option_symbols() -> None:
+    symbols = ["XSP   261007P00767000", "NDXP  261007P30660000", "SPXW  261007C07750000"]
+    upstream = FakeQuoteUpstream()
+    async with serving(create_app(
+        upstream, single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with GatewayMarketDataClient(str(server.make_url("/")), "valid-key") as client:
+            response = await client.get_available_quotes(symbols)
+    assert [quote.symbol for quote in response.quotes] == symbols
+    assert upstream.calls == [tuple(symbols)]
+
+
+@pytest.mark.parametrize("symbol", [
+    "XSP  261007P00767000", "XSP    261007P00767000", "XSP   261332P00767000",
+    "XSP\t  261007P00767000", "XSP   261007X00767000", "bad symbol",
+])
+async def test_quote_route_rejects_malformed_padded_symbols(symbol: str) -> None:
+    upstream = FakeQuoteUpstream()
+    async with serving(create_app(
+        upstream, single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            response = await http.get("/v1/quotes", params={"symbols": symbol},
+                                      headers={"X-Internal-API-Key": "valid-key"})
+    assert response.status_code == 400
+    assert upstream.calls == []
+
+
+@pytest.mark.parametrize("path,param", [
+    ("/v1/spot", "symbol"), ("/v1/order-book/stream", "symbols"),
+])
+async def test_option_quote_support_does_not_expand_other_symbol_routes(path, param) -> None:
+    async with serving(create_app(
+        FakeQuoteUpstream(), single_principal_authenticator(),
+        token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+    )) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            result = await http.get(path, params={param: "XSP   261007P00767000"},
+                                    headers={"X-Internal-API-Key": "valid-key"})
+    assert result.status_code == 400
+
+
 async def test_gateway_authentication_authorization_and_health_contracts() -> None:
     async with serving(
         create_app(FakeQuoteUpstream(), single_principal_authenticator(capability=None))
@@ -154,6 +198,61 @@ async def test_ready_tracks_fake_refresh_failure_and_recovery() -> None:
         "token_refresh_failed",
         "token_ready",
     ]
+
+
+@pytest.mark.parametrize("final_state", [TokenManagerState.READY, TokenManagerState.REFRESH_FAILED])
+async def test_market_data_waits_for_refresh_and_requires_success(final_state) -> None:
+    entered = asyncio.Event()
+
+    class RefreshingReadiness(FakeReadiness):
+        def health(self):
+            if self.state is TokenManagerState.REFRESHING:
+                entered.set()
+            return super().health()
+
+    provider = RefreshingReadiness(TokenManagerState.REFRESHING)
+    upstream = FakeQuoteUpstream()
+    async with serving(
+        create_app(upstream, single_principal_authenticator(), token_readiness_provider=provider)
+    ) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            pending = asyncio.create_task(
+                http.get("/v1/quotes?symbols=AAPL", headers={"X-Internal-API-Key": "valid-key"})
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            assert not pending.done()
+            assert upstream.calls == []
+            provider.state = final_state
+            response = await pending
+
+    if final_state is TokenManagerState.READY:
+        assert response.status_code == 200
+        assert upstream.calls == [("AAPL",)]
+    else:
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "gateway_not_ready"
+        assert upstream.calls == []
+
+
+async def test_stalled_refresh_is_bounded_and_does_not_dispatch(monkeypatch) -> None:
+    monkeypatch.setattr(api, "TOKEN_REFRESH_GRACE_SECONDS", 0.03)
+    upstream = FakeQuoteUpstream()
+    async with serving(
+        create_app(
+            upstream,
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.REFRESHING),
+        )
+    ) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            response = await asyncio.wait_for(
+                http.get("/v1/quotes?symbols=AAPL", headers={"X-Internal-API-Key": "valid-key"}),
+                timeout=0.5,
+            )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "gateway_not_ready"
+    assert upstream.calls == []
 
 
 async def test_ready_fails_closed_without_an_injected_provider() -> None:

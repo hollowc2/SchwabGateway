@@ -56,7 +56,7 @@ from schwab_gateway.scheduler import (
     SchedulerQueueTimeoutError,
     SchedulerUpstreamTimeoutError,
 )
-from schwab_gateway.symbols import SYMBOL_PATTERN
+from schwab_gateway.symbols import SYMBOL_PATTERN, is_quote_symbol
 from schwab_gateway.upstream import (
     ChainMetadataUpstream,
     HistoryUpstream,
@@ -284,7 +284,7 @@ def _error(code: str, message: str, status: int) -> web.Response:
     )
 
 
-def _parse_symbols(request: web.Request) -> tuple[str, ...]:
+def _parse_symbols(request: web.Request, *, allow_options: bool = False) -> tuple[str, ...]:
     value = request.query.get("symbols", "")
     symbols = tuple(part.strip().upper() for part in value.split(",") if part.strip())
     if not symbols:
@@ -293,7 +293,8 @@ def _parse_symbols(request: web.Request) -> tuple[str, ...]:
         raise _InvalidRequestError(f"at most {MAX_SYMBOLS} symbols are allowed")
     if len(set(symbols)) != len(symbols):
         raise _InvalidRequestError("symbols must be unique")
-    if any(not SYMBOL_PATTERN.fullmatch(symbol) for symbol in symbols):
+    valid_symbol = is_quote_symbol if allow_options else SYMBOL_PATTERN.fullmatch
+    if any(not valid_symbol(symbol) for symbol in symbols):
         raise _InvalidRequestError("one or more symbols are invalid")
     return symbols
 
@@ -479,9 +480,27 @@ async def health(_request: web.Request) -> web.Response:
     )
 
 
-def _not_ready_response(app: web.Application) -> web.Response | None:
-    """Fail closed with 503 unless the token manager reports READY."""
+TOKEN_REFRESH_GRACE_SECONDS = 0.25
+
+
+async def _not_ready_response(app: web.Application) -> web.Response | None:
+    """Allow a brief atomic token write to finish, then require READY.
+
+    schwab-py's write callback marks REFRESHING during token persistence. Rejecting
+    that short transition caused otherwise healthy protected reads to return 503.
+    Wait asynchronously only for REFRESHING; failures still fail closed and /ready
+    continues to report the actual state immediately.
+    """
     state, _reason = _token_readiness(app)
+    if state is TokenManagerState.REFRESHING:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + min(TOKEN_REFRESH_GRACE_SECONDS, app[UPSTREAM_TIMEOUT_KEY])
+        while state is TokenManagerState.REFRESHING:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.01, remaining))
+            state, _reason = _token_readiness(app)
     if state is TokenManagerState.READY:
         return None
     return _error("gateway_not_ready", "gateway is not ready", 503)
@@ -555,7 +574,7 @@ async def execution_scheduler_context(app: web.Application) -> AsyncIterator[Non
 
 @_market_data_handler
 async def quotes(request: web.Request) -> web.Response:
-    symbols = _parse_symbols(request)
+    symbols = _parse_symbols(request, allow_options=True)
     allow_partial = _parse_allow_partial(request)
 
     async def build_response() -> BaseModel:
@@ -631,7 +650,7 @@ async def _serve_upstream(
     scheduler releases the single Schwab execution slot, so encoding a large payload
     neither holds that slot nor counts against the upstream execution budget.
     """
-    not_ready = _not_ready_response(request.app)
+    not_ready = await _not_ready_response(request.app)
     if not_ready is not None:
         return not_ready
 
@@ -756,7 +775,7 @@ async def _serve_option_chain_without_worker(
     join_inflight = getattr(upstream, "join_inflight_option_chain", None)
     if not callable(read_cached) or not callable(join_inflight):
         return None
-    not_ready = _not_ready_response(request.app)
+    not_ready = await _not_ready_response(request.app)
     if not_ready is not None:
         return not_ready
     try:
@@ -819,7 +838,7 @@ async def session_history(request: web.Request) -> web.Response:
     if callable(read_cached):
         # A completed session is answered from the cache without a scheduler slot, the
         # same way option-chain hits are. Readiness still gates it.
-        not_ready = _not_ready_response(request.app)
+        not_ready = await _not_ready_response(request.app)
         if not_ready is not None:
             return not_ready
         try:

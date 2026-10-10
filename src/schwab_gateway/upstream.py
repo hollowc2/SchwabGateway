@@ -35,6 +35,7 @@ from schwab_gateway.market_calendar import (
     latest_completed_session,
     regular_session_end,
 )
+from schwab_gateway.symbols import is_option_symbol
 
 UTC = dt.timezone.utc
 FreshnessModelT = TypeVar("FreshnessModelT", OptionContractV1, SessionHistoryV1)
@@ -364,9 +365,17 @@ def normalize_schwab_quote(
 ) -> QuoteV1:
     regular = payload.get("quote") if isinstance(payload.get("quote"), dict) else {}
     extended = payload.get("extended") if isinstance(payload.get("extended"), dict) else {}
-    regular_time = _event_time(regular)
+    # Option bid/ask freshness must follow the quote, not a newer last trade.
+    # A successful REST response does not renew an unchanged option quote.
+    option_symbol = is_option_symbol(symbol)
+    regular_time = (
+        _event_time({name: regular.get(name) for name in ("quoteTime", "quoteTimeInLong")})
+        if option_symbol else _event_time(regular)
+    )
     extended_time = _event_time(extended)
-    if extended_time is not None and (regular_time is None or extended_time > regular_time):
+    if not option_symbol and extended_time is not None and (
+        regular_time is None or extended_time > regular_time
+    ):
         current = extended
         event_timestamp = extended_time
         session = "extended"
@@ -1281,7 +1290,10 @@ class DirectSchwabQuoteUpstream:
                 symbol,
                 payloads[symbol],
                 received_at=received_at,
-                stale_after_seconds=self._stale_after_seconds,
+                stale_after_seconds=(
+                    DEFAULT_OPTION_CONTRACT_STALE_AFTER_SECONDS
+                    if is_option_symbol(symbol) else self._stale_after_seconds
+                ),
             )
             for symbol in symbols
             if symbol in payloads and isinstance(payloads[symbol], dict)
