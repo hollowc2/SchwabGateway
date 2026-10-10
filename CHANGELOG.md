@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.1 - 2026-10-10
+
+- With `allow_partial=true`, a `/v1/quotes` request for a single symbol that Schwab
+  omits now returns `200` with that symbol in `missing_symbols` and no quotes, instead
+  of a `502`. An empty result for a multi-symbol batch still fails closed. The SDK maps
+  `502` to the transient `GatewayUnavailableError`, so on 2026-10-09 AfterHoursLab's
+  monitor retried the delisted `CLSD` every minute all session.
+- `/v1/quotes` accepts the padded 21-character OCC option symbols that Schwab returns in
+  option chains, with the expiry date validated. Option bid/ask freshness follows the
+  quote timestamp and the 300s option policy; equity quotes and other routes are
+  unchanged.
+- Market-data reads that arrive while the token is being refreshed wait up to 0.25s
+  (capped by the upstream timeout) for it to become ready, instead of failing at once
+  with `503`. Every other token state still fails closed, and `/ready` still reports the
+  true state immediately.
+
 ## 0.8.0 - 2026-10-03
 
 Internal refactor from the 2026-10 code-quality review (`docs/code-review-2026-10.md`).
