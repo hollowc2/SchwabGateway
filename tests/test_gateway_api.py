@@ -511,7 +511,7 @@ async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> Non
                 "/v1/quotes", params={"symbols": "AAPL,MSFT", "allow_partial": "true"}
             )
             default = await http.get("/v1/quotes", params={"symbols": "AAPL,MSFT"})
-            nothing = await http.get(
+            lone_missing = await http.get(
                 "/v1/quotes", params={"symbols": "ZZZQ", "allow_partial": "true"}
             )
             invalid = await http.get(
@@ -524,10 +524,35 @@ async def test_allow_partial_keeps_the_default_shape_and_its_own_limits() -> Non
     # must never grow ``missing_symbols``.
     assert default.status_code == 200
     assert set(default.json()) == {"schema_version", "quotes"}
-    assert nothing.status_code == 502
-    assert nothing.json()["error"]["code"] == "upstream_malformed"
+    # A lone unquotable ticker is named instead of failing as an upstream fault, so a
+    # retrying caller does not poll a dead symbol forever.
+    assert lone_missing.status_code == 200
+    assert lone_missing.json()["quotes"] == []
+    assert lone_missing.json()["missing_symbols"] == ["ZZZQ"]
     assert invalid.status_code == 400
     assert invalid.json()["error"]["code"] == "invalid_request"
+
+
+async def test_allow_partial_still_fails_closed_when_a_batch_comes_back_empty() -> None:
+    async with serving(
+        create_app(
+            OmittingQuoteUpstream({"AAPL", "MSFT"}),
+            single_principal_authenticator(),
+            token_readiness_provider=FakeReadiness(TokenManagerState.READY),
+        )
+    ) as server:
+        async with httpx.AsyncClient(
+            base_url=str(server.make_url("/")),
+            headers={"X-Internal-API-Key": "valid-key"},
+        ) as http:
+            empty_batch = await http.get(
+                "/v1/quotes", params={"symbols": "AAPL,MSFT", "allow_partial": "true"}
+            )
+            lone_default = await http.get("/v1/quotes", params={"symbols": "AAPL"})
+
+    assert empty_batch.status_code == 502
+    assert empty_batch.json()["error"]["code"] == "upstream_malformed"
+    assert lone_default.status_code == 502
 
 
 def test_partial_quote_log_bounds_the_symbol_list(capfd) -> None:

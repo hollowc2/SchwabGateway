@@ -586,9 +586,14 @@ async def quotes(request: web.Request) -> web.Response:
                 return PartialQuoteResponseV1(quotes=ordered, missing_symbols=())
             return QuoteResponseV1(quotes=ordered)
         # A partial set is served only to callers that opted in, and only when every
-        # returned symbol was requested and at least one came back: an empty or
-        # foreign result says more about the upstream than about any one ticker.
-        serve_partial = allow_partial and bool(by_symbol) and set(by_symbol) <= set(symbols)
+        # returned symbol was requested. An empty result for a batch or a foreign
+        # result says more about the upstream than about any one ticker, but an empty
+        # result for a single symbol unambiguously names that ticker as unquotable.
+        serve_partial = (
+            allow_partial
+            and (bool(by_symbol) or len(symbols) == 1)
+            and set(by_symbol) <= set(symbols)
+        )
         _log_partial_quote_response(symbols, by_symbol, served=serve_partial)
         if not serve_partial:
             raise UpstreamMalformedError("upstream returned a partial symbol set")

@@ -58,7 +58,8 @@ paths:
             When true, return the quotes Schwab provided and list omitted symbols in
             `missing_symbols` (PartialQuoteResponseV1) instead of failing the whole
             request with 502. The request still fails with 502 when Schwab returns none
-            of the symbols. Omitted or false keeps the fail-closed QuoteResponseV1 shape.
+            of several symbols; a single requested symbol that Schwab omits is
+            returned in `missing_symbols` with no quotes. Omitted or false keeps the fail-closed QuoteResponseV1 shape.
           schema: {type: string, enum: ["true", "false"], default: "false"}
       responses:
         "200": {$ref: "#/components/responses/QuoteResponse"}
