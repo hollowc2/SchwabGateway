@@ -1169,10 +1169,11 @@ wheels = [
 
 [[package]]
 name = "schwab-gateway"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "httpx" },
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1194,6 +1195,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.4" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "prometheus-client", specifier = ">=0.21.0" },
     { name = "pydantic", specifier = ">=2.9.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
@@ -1214,7 +1216,7 @@ dev = [
 
 [[package]]
 name = "schwab-gateway-sdk"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "packages/sdk" }
 dependencies = [
     { name = "httpx" },
@@ -1254,7 +1256,7 @@ wheels = [
 
 [[package]]
 name = "schwab-token-store"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "packages/token-store" }
 dependencies = [
     { name = "prometheus-client" },

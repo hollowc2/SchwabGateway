@@ -23,6 +23,8 @@ def test_gateway_defaults_to_loopback_and_no_order_writes() -> None:
     assert value.port == 8010
     assert value.order_writes_enabled is False
     assert value.upstream_timeout_seconds == 3.0
+    assert value.http_timeout_seconds is None
+    assert value.http_connect_timeout_seconds is None
     assert value.protected_queue_timeout_seconds == 7.0
     assert value.background_queue_timeout_seconds == 5.0
     assert value.protected_capacity == 8
@@ -71,6 +73,27 @@ def test_gateway_rejects_nonpositive_or_unbounded_capacity(field: str, value: in
 def test_gateway_rejects_invalid_timeouts(field: str, value: float) -> None:
     with pytest.raises(ValidationError, match="timeout must be finite and positive"):
         settings(**{field: value})
+
+
+@pytest.mark.parametrize("field", ["http_timeout_seconds", "http_connect_timeout_seconds"])
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_gateway_rejects_invalid_http_timeouts(field: str, value: float) -> None:
+    with pytest.raises(ValidationError, match="HTTP timeout must be finite and positive"):
+        settings(**{field: value})
+
+
+def test_http_and_scheduler_timeouts_are_independent() -> None:
+    value = settings(
+        upstream_timeout_seconds=3,
+        http_timeout_seconds=2,
+        http_connect_timeout_seconds=1,
+    )
+    assert value.http_timeout_seconds == 2
+    assert value.upstream_timeout_seconds == 3
+    with pytest.raises(ValidationError, match="connect timeout must not exceed"):
+        settings(http_timeout_seconds=1, http_connect_timeout_seconds=2)
+    with pytest.raises(ValidationError, match="connect timeout must not exceed"):
+        settings(upstream_timeout_seconds=1, http_connect_timeout_seconds=2)
 
 
 def test_gateway_validates_live_order_book_configuration() -> None:

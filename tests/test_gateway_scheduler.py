@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 import pytest
+from prometheus_client import REGISTRY
 
 from schwab_gateway import scheduler as scheduler_module
 from schwab_gateway.admission import AdmissionPolicy
@@ -20,6 +21,8 @@ from schwab_gateway.scheduler import (
     scheduler_execution,
     scheduler_queue_depth,
     scheduler_queue_timeouts,
+    scheduler_timeout_drain,
+    scheduler_timeout_drain_active,
     scheduler_upstream_timeouts,
 )
 
@@ -313,6 +316,7 @@ async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> 
         await timed_out
     assert probe.active == 1
     assert scheduler.snapshot().worker_active is True
+    assert REGISTRY.get_sample_value(scheduler_timeout_drain_active._name) == 1
 
     next_request = submit(
         scheduler,
@@ -336,6 +340,13 @@ async def test_actual_timeout_keeps_slot_until_detached_operation_finishes() -> 
         if sample.name.endswith("_count") and sample.labels.get("operation") == "slow"
     }
     assert "timeout_drained_success" in outcomes
+    assert REGISTRY.get_sample_value(scheduler_timeout_drain_active._name) == 0
+    drain_labels = {
+        "priority_class": "protected",
+        "operation": "slow",
+        "outcome": "timeout_drained_success",
+    }
+    assert REGISTRY.get_sample_value(f"{scheduler_timeout_drain._name}_sum", drain_labels) >= 0.02
 
 
 async def test_actual_timeout_reports_eventual_drain_error() -> None:
@@ -365,6 +376,18 @@ async def test_actual_timeout_reports_eventual_drain_error() -> None:
         if sample.name.endswith("_count") and sample.labels.get("operation") == "timeout-then-error"
     }
     assert outcomes == {"timeout_drained_error"}
+    assert REGISTRY.get_sample_value(scheduler_timeout_drain_active._name) == 0
+    assert (
+        REGISTRY.get_sample_value(
+            f"{scheduler_timeout_drain._name}_count",
+            {
+                "priority_class": "protected",
+                "operation": "timeout-then-error",
+                "outcome": "timeout_drained_error",
+            },
+        )
+        >= 1
+    )
 
 
 async def test_queued_and_running_cancellation_release_only_the_caller() -> None:
@@ -454,6 +477,8 @@ async def test_each_job_logs_one_info_line_carrying_its_queue_wait(
     assert [entry["event"] for entry in info] == ["gateway_scheduler_execution_finished"] * 2
     assert [entry["operation"] for entry in info] == ["first", "second"]
     assert info[1]["queue_wait_ms"] >= 10
+    assert all(entry["timeout_drain_ms"] == 0 for entry in info)
+    assert all(entry["execution_timeout_seconds"] == 1 for entry in info)
     assert {event for level, event, _fields in records if level == "debug"} == {
         "gateway_scheduler_dispatched"
     }

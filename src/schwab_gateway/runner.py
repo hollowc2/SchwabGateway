@@ -140,9 +140,8 @@ def build_live_app(
         client_factory,
         api_key=upstream_settings.api_key.get_secret_value(),
         app_secret=upstream_settings.app_secret.get_secret_value(),
-        # A call that overruns the execution budget keeps the slot until Schwab I/O ends,
-        # so the HTTP timeout matches the budget instead of schwab-py's 30s default.
-        http_timeout_seconds=settings.upstream_timeout_seconds,
+        http_timeout_seconds=settings.http_timeout_seconds or settings.upstream_timeout_seconds,
+        http_connect_timeout_seconds=settings.http_connect_timeout_seconds,
     )
     provider = LockedSchwabMarketDataProvider(adapter)
     order_book_store = OrderBookSnapshotStore(

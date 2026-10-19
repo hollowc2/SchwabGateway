@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2 - 2026-10-19
+
+- Separate HTTP phase timeouts from the scheduler execution budget. Compose uses a
+  1-second connection timeout and a 3-second read/write/pool timeout, while preserving
+  the 3-second execution budget, single worker, and 8-second production PAPER cache.
+- Measure post-deadline worker occupancy in timeout-drain histograms and an active
+  drain gauge. Completion logs include the execution budget and drain milliseconds,
+  distinguishing late successes from eventual upstream errors without cancelling work.
+- Export the refresh-token lifetime deadline without token contents, and add alerts
+  for renewal within 24 hours, sustained protected queue-wait p99, and timeout spillover.
+- Consumer polling, retries, and trading bots are unchanged. No stale-chain fallback,
+  extra token writer, additional worker, or automatic execution-budget increase is added.
+
 ## 0.8.1 - 2026-10-10
 
 - With `allow_partial=true`, a `/v1/quotes` request for a single symbol that Schwab

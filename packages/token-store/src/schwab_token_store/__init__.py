@@ -43,6 +43,10 @@ token_state = Gauge(
     "Current single-token manager state (one-hot)",
     ["state"],
 )
+token_refresh_expires_timestamp = Gauge(
+    "schwab_gateway_refresh_token_expires_timestamp_seconds",
+    "Last validated refresh-token lifetime deadline as a Unix timestamp; zero if unknown",
+)
 token_lock_wait_seconds = Histogram(
     "schwab_gateway_token_lock_wait_seconds",
     "Time spent waiting to acquire the token-file lock",
@@ -614,7 +618,9 @@ class AtomicTokenManager:
     def _load_from_transaction(self, transaction: TokenTransaction) -> TokenDocument:
         token = validate_token_document(transaction.read())
         creation_timestamp = float(token["creation_timestamp"])
-        if self._clock() >= creation_timestamp + self._refresh_token_ttl_seconds:
+        expires_at = creation_timestamp + self._refresh_token_ttl_seconds
+        token_refresh_expires_timestamp.set(expires_at)
+        if self._clock() >= expires_at:
             raise TokenExpiredError("refresh token lifetime has expired")
         return token
 
