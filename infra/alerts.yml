@@ -15,6 +15,61 @@
 groups:
   - name: schwab-gateway
     rules:
+      - alert: SchwabGatewayRefreshTokenExpiring
+        expr: >-
+          (schwab_gateway_refresh_token_expires_timestamp_seconds{job="schwab_gateway"}
+          - time() < 86400)
+          and
+          (schwab_gateway_refresh_token_expires_timestamp_seconds{job="schwab_gateway"}
+          > time())
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Schwab refresh token needs reauthorization within 24 hours
+          description: >-
+            Complete interactive Schwab OAuth renewal before the recorded refresh-token
+            lifetime expires. Automatic access-token refresh does not extend this deadline.
+
+      - alert: SchwabGatewayProtectedQueueWaitHigh
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (job, le) (rate(schwab_gateway_scheduler_queue_wait_seconds_bucket{
+              job="schwab_gateway", priority_class="protected"
+            }[5m]))
+          ) > 1.5
+          and on(job)
+          sum by (job) (increase(schwab_gateway_scheduler_queue_wait_seconds_count{
+            job="schwab_gateway", priority_class="protected"
+          }[5m])) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Protected gateway queue-wait p99 exceeds 1.5 seconds
+          description: >-
+            Sustained protected queueing is consuming request deadlines. Inspect consumer
+            polling bursts and timeout-drain time before increasing capacity or budgets.
+
+      - alert: SchwabGatewayTimeoutDrainHigh
+        expr: >-
+          sum by (job) (increase(schwab_gateway_scheduler_timeout_drain_seconds_sum{
+            job="schwab_gateway"
+          }[5m])) > 2
+          or
+          max by (job) (schwab_gateway_scheduler_timeout_drain_active{
+            job="schwab_gateway"
+          }) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Timed-out Schwab calls are still occupying the gateway worker
+          description: >-
+            Timeout overrun has consumed more than two worker-seconds in five minutes,
+            or a drain has remained active for one minute. Calls retain the token lock
+            and worker until they finish; do not free the slot by cancelling the waiter.
+
       - alert: SchwabGatewayDown
         # The gateway is always-on (restart: unless-stopped). This rule is the reason
         # it is allowed to be: an always-on service with nothing watching it is how a

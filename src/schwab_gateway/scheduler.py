@@ -72,6 +72,16 @@ scheduler_worker_active = Gauge(
     "schwab_gateway_scheduler_worker_active",
     "One while the serialized Schwab execution slot is reserved",
 )
+scheduler_timeout_drain_active = Gauge(
+    "schwab_gateway_scheduler_timeout_drain_active",
+    "One while timed-out work still owns the serialized worker",
+)
+scheduler_timeout_drain = Histogram(
+    "schwab_gateway_scheduler_timeout_drain_seconds",
+    "Operation time beyond the execution deadline while the worker remains reserved",
+    ["priority_class", "operation", "outcome"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30),
+)
 
 
 class SchedulerCapacityError(RuntimeError):
@@ -158,6 +168,7 @@ class ExecutionScheduler:
         self._idle = asyncio.Event()
         self._idle.set()
         scheduler_worker_active.set(0)
+        scheduler_timeout_drain_active.set(0)
         for priority in PriorityClass:
             self._update_class_metrics(priority)
         # Seed failure counters before the first event so Prometheus ``increase()``
@@ -172,6 +183,16 @@ class ExecutionScheduler:
                 priority_class=PriorityClass.PROTECTED.value,
                 operation=operation,
             ).inc(0)
+            for outcome in (
+                "timeout_drained_success",
+                "timeout_drained_error",
+                "timeout_drained_cancelled",
+            ):
+                scheduler_timeout_drain.labels(
+                    priority_class=PriorityClass.PROTECTED.value,
+                    operation=operation,
+                    outcome=outcome,
+                )
 
     async def execute(
         self,
@@ -404,6 +425,7 @@ class ExecutionScheduler:
         started_at = loop.time()
         execution_deadline = started_at + job.execution_timeout_seconds
         operation_completed_at: float | None = None
+        timed_out = False
         outcome = "error"
 
         async def invoke() -> Any:
@@ -433,6 +455,8 @@ class ExecutionScheduler:
                 operation_completed_at is not None and operation_completed_at <= execution_deadline
             )
             if not completed_in_budget:
+                timed_out = True
+                scheduler_timeout_drain_active.set(int(not operation_task.done()))
                 scheduler_upstream_timeouts.labels(
                     priority_class=job.priority.value,
                     operation=job.operation_name,
@@ -482,6 +506,18 @@ class ExecutionScheduler:
                         job.result.set_result(value)
         finally:
             elapsed = loop.time() - started_at
+            drain_seconds = (
+                max(0.0, (operation_completed_at or loop.time()) - execution_deadline)
+                if timed_out
+                else 0.0
+            )
+            if timed_out:
+                scheduler_timeout_drain.labels(
+                    priority_class=job.priority.value,
+                    operation=job.operation_name,
+                    outcome=outcome,
+                ).observe(drain_seconds)
+            scheduler_timeout_drain_active.set(0)
             scheduler_execution.labels(
                 priority_class=job.priority.value,
                 operation=job.operation_name,
@@ -494,6 +530,8 @@ class ExecutionScheduler:
                 outcome=outcome,
                 queue_wait_ms=round(job.queue_wait_seconds * 1000, 2),
                 execution_ms=round(elapsed * 1000, 2),
+                execution_timeout_seconds=job.execution_timeout_seconds,
+                timeout_drain_ms=round(drain_seconds * 1000, 2),
             )
             async with self._lock:
                 job.state = "finished"

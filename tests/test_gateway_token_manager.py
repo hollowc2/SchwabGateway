@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from prometheus_client import REGISTRY
 from schwab_token_store import (
     AtomicFileTokenStore,
     AtomicTokenManager,
@@ -107,6 +108,38 @@ def test_load_validates_and_returns_a_defensive_copy(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")) == token_document()
     assert token_manager.health().state is TokenManagerState.READY
     assert token_manager.health().reason == "token_loaded"
+
+
+def test_refresh_expiry_metric_tracks_authorization_not_access_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_manager = manager(path)
+    metric = "schwab_gateway_refresh_token_expires_timestamp_seconds"
+    expected = NOW - 60 + 7 * 24 * 60 * 60
+
+    token_manager.load()
+    assert REGISTRY.get_sample_value(metric) == expected
+    token_manager.refresh(increment_callback)
+    assert REGISTRY.get_sample_value(metric) == expected
+
+    renewed = token_document()
+    renewed["creation_timestamp"] = NOW
+    write_token(path, renewed)
+    token_manager.run_access_transaction(lambda read, _write: read())
+    assert REGISTRY.get_sample_value(metric) == NOW + 7 * 24 * 60 * 60
+
+
+def test_expired_token_still_exports_its_deadline(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    expired = token_document()
+    expired["creation_timestamp"] = NOW - 8 * 24 * 60 * 60
+    write_token(path, expired)
+    with pytest.raises(TokenExpiredError):
+        manager(path).load()
+    assert (
+        REGISTRY.get_sample_value("schwab_gateway_refresh_token_expires_timestamp_seconds")
+        == NOW - 24 * 60 * 60
+    )
 
 
 def test_read_locked_uses_the_existing_lock_without_write_flags(

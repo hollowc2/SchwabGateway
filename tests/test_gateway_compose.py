@@ -179,6 +179,8 @@ def test_only_minimal_secret_inputs_are_admitted() -> None:
         "SCHWAB_GATEWAY_INTERNAL_KEYS_PATH",
         "SCHWAB_GATEWAY_ORDER_WRITES_ENABLED",
         "SCHWAB_GATEWAY_UPSTREAM_TIMEOUT_SECONDS",
+        "SCHWAB_GATEWAY_HTTP_TIMEOUT_SECONDS",
+        "SCHWAB_GATEWAY_HTTP_CONNECT_TIMEOUT_SECONDS",
         "SCHWAB_GATEWAY_PROTECTED_QUEUE_TIMEOUT_SECONDS",
         "SCHWAB_GATEWAY_BACKGROUND_QUEUE_TIMEOUT_SECONDS",
         "SCHWAB_GATEWAY_OPTION_CHAIN_CACHE_TTL_SECONDS",
@@ -211,6 +213,17 @@ def test_alert_rules_keep_gateway_metric_names() -> None:
     assert "queue_wait_timeouts_total" in scheduler_timeout["expr"]
     assert "upstream_timeouts_total" in scheduler_timeout["expr"]
     assert "capacity_rejections_total" in scheduler_timeout["expr"]
+    assert "expires_timestamp_seconds" in rules["SchwabGatewayRefreshTokenExpiring"]["expr"]
+    assert "histogram_quantile(0.99" in rules["SchwabGatewayProtectedQueueWaitHigh"]["expr"]
+    assert "timeout_drain_seconds_sum" in rules["SchwabGatewayTimeoutDrainHigh"]["expr"]
+    assert "timeout_drain_active" in rules["SchwabGatewayTimeoutDrainHigh"]["expr"]
+
+
+def test_compose_sets_independent_bounded_http_timeouts() -> None:
+    for service in compose()["services"].values():
+        environment = service["environment"]
+        assert environment["SCHWAB_GATEWAY_HTTP_TIMEOUT_SECONDS"].endswith(":-3}")
+        assert environment["SCHWAB_GATEWAY_HTTP_CONNECT_TIMEOUT_SECONDS"].endswith(":-1}")
 
 
 def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:

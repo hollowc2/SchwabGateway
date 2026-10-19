@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from schwab_token_store import (
     AtomicFileTokenStore,
@@ -63,9 +64,9 @@ class FakeClient:
     def __init__(self, token: dict[str, Any], sdk_token_writer) -> None:
         self.token = copy.deepcopy(token)
         self._sdk_token_writer = sdk_token_writer
-        self.timeouts: list[float] = []
+        self.timeouts: list[float | httpx.Timeout] = []
 
-    def set_timeout(self, timeout: float) -> None:
+    def set_timeout(self, timeout: float | httpx.Timeout) -> None:
         self.timeouts.append(timeout)
 
     def rotate(self, generation: int) -> None:
@@ -475,6 +476,46 @@ def test_without_http_timeout_the_client_keeps_its_default(tmp_path: Path) -> No
     assert adapter(path).execute(lambda client: list(client.timeouts)) == []
 
 
+def test_http_connect_timeout_is_set_on_every_client(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_adapter = LockedSchwabClientAdapter(
+        manager(path),
+        FakeAccessFunctionFactory(),
+        api_key=FAKE_API_KEY,
+        app_secret=FAKE_APP_SECRET,
+        http_timeout_seconds=3,
+        http_connect_timeout_seconds=1,
+    )
+    expected = httpx.Timeout(3, connect=1)
+    assert token_adapter.execute(lambda client: client.timeouts) == [expected]
+    assert token_adapter.execute(lambda client: client.timeouts) == [expected]
+
+
+@pytest.mark.parametrize("value", [0, -1, math.inf, math.nan, 4])
+def test_http_connect_timeout_rejects_invalid_values(tmp_path: Path, value: float) -> None:
+    with pytest.raises(ValueError):
+        LockedSchwabClientAdapter(
+            manager(tmp_path / "tokens.json"),
+            FakeAccessFunctionFactory(),
+            api_key=FAKE_API_KEY,
+            app_secret=FAKE_APP_SECRET,
+            http_timeout_seconds=3,
+            http_connect_timeout_seconds=value,
+        )
+
+
+def test_http_connect_timeout_requires_an_http_timeout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires a matching HTTP timeout"):
+        LockedSchwabClientAdapter(
+            manager(tmp_path / "tokens.json"),
+            FakeAccessFunctionFactory(),
+            api_key=FAKE_API_KEY,
+            app_secret=FAKE_APP_SECRET,
+            http_connect_timeout_seconds=1,
+        )
+
+
 @pytest.mark.parametrize("value", [0.0, -1.0, math.inf, math.nan])
 def test_http_timeout_must_be_finite_and_positive(tmp_path: Path, value: float) -> None:
     with pytest.raises(ValueError):
@@ -552,8 +593,9 @@ def test_operation_failure_logs_schwab_status_code(
     assert "access-secret-0" not in repr(fake_log.method_calls)
 
 
+@pytest.mark.parametrize("connect_timeout", [None, 0.1])
 def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, connect_timeout: float | None
 ) -> None:
     """The 2026-09-29 incident: a Schwab read stalled and held the slot for 28.9s.
 
@@ -571,6 +613,7 @@ def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
         api_key=FAKE_API_KEY,
         app_secret=FAKE_APP_SECRET,
         http_timeout_seconds=0.3,
+        http_connect_timeout_seconds=connect_timeout,
     )
 
     with socket.socket() as stalled:
@@ -589,7 +632,10 @@ def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
             token_adapter.execute(read)
         elapsed = time.monotonic() - started
 
-    assert session_timeouts == [httpx.Timeout(0.3)]
+    expected = (
+        httpx.Timeout(0.3, connect=connect_timeout) if connect_timeout else httpx.Timeout(0.3)
+    )
+    assert session_timeouts == [expected]
     assert elapsed < 5.0
     fake_log.warning.assert_called_once_with(
         "schwab_token_adapter_failed",

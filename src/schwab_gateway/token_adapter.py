@@ -6,6 +6,7 @@ import math
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 
+import httpx
 from schwab_token_store import (
     AtomicTokenManager,
     TokenManagerError,
@@ -69,12 +70,11 @@ class LockedSchwabClientAdapter:
     its own; it is not the dominant contributor to option-chain latency (see the
     2026-09 latency investigation) and is accepted as-is for now.
 
-    ``http_timeout_seconds`` replaces schwab-py's 30-second default on every client
-    built here. The scheduler never cancels a call that overruns its budget. It waits
-    for the call to finish before it frees the single execution slot. So this timeout,
-    not the scheduler budget, bounds how long one stalled Schwab response can block
-    every other read. On 2026-09-29, a stalled spot read held the slot for 28.9 seconds
-    and 13 queued protected reads returned 503.
+    ``http_timeout_seconds`` replaces schwab-py's 30-second default on every client.
+    An optional shorter connect timeout limits connection stalls independently. HTTP
+    timeouts apply per phase (and per received chunk), not to total operation time.
+    The scheduler never cancels a call that overruns its budget: it retains the slot
+    until the operation and token transaction finish.
     """
 
     def __init__(
@@ -85,16 +85,23 @@ class LockedSchwabClientAdapter:
         api_key: str,
         app_secret: str,
         http_timeout_seconds: float | None = None,
+        http_connect_timeout_seconds: float | None = None,
     ) -> None:
         if http_timeout_seconds is not None and not (
             math.isfinite(http_timeout_seconds) and http_timeout_seconds > 0
         ):
             raise ValueError("Schwab HTTP timeout must be finite and positive")
+        if http_connect_timeout_seconds is not None:
+            if not math.isfinite(http_connect_timeout_seconds) or http_connect_timeout_seconds <= 0:
+                raise ValueError("Schwab HTTP connect timeout must be finite and positive")
+            if http_timeout_seconds is None or http_connect_timeout_seconds > http_timeout_seconds:
+                raise ValueError("Schwab HTTP connect timeout requires a matching HTTP timeout")
         self._token_manager = token_manager
         self._client_factory = client_factory
         self._api_key = api_key
         self._app_secret = app_secret
         self._http_timeout_seconds = http_timeout_seconds
+        self._http_connect_timeout_seconds = http_connect_timeout_seconds
 
     def execute(
         self,
@@ -116,7 +123,13 @@ class LockedSchwabClientAdapter:
                     enforce_enums=True,
                 )
                 if self._http_timeout_seconds is not None:
-                    client.set_timeout(self._http_timeout_seconds)
+                    timeout: float | httpx.Timeout = self._http_timeout_seconds
+                    if self._http_connect_timeout_seconds is not None:
+                        timeout = httpx.Timeout(
+                            self._http_timeout_seconds,
+                            connect=self._http_connect_timeout_seconds,
+                        )
+                    client.set_timeout(timeout)
             except TokenManagerError:
                 raise
             except Exception as exc:

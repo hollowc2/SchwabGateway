@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ORDER_BOOK_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9$._/-]{1,32}$")
@@ -26,6 +26,8 @@ class GatewaySettings(BaseSettings):
     log_level: str = "INFO"
     order_writes_enabled: bool = False
     upstream_timeout_seconds: float = 3.0
+    http_timeout_seconds: float | None = None
+    http_connect_timeout_seconds: float | None = None
     protected_queue_timeout_seconds: float = 7.0
     background_queue_timeout_seconds: float = 5.0
     protected_capacity: int = 8
@@ -72,6 +74,23 @@ class GatewaySettings(BaseSettings):
         if not math.isfinite(value) or value <= 0:
             raise ValueError("gateway timeout must be finite and positive")
         return value
+
+    @field_validator("http_timeout_seconds", "http_connect_timeout_seconds")
+    @classmethod
+    def http_timeout_must_be_positive(cls, value: float | None) -> float | None:
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError("HTTP timeout must be finite and positive")
+        return value
+
+    @model_validator(mode="after")
+    def http_connect_timeout_must_not_exceed_http_timeout(self) -> GatewaySettings:
+        http_timeout = self.http_timeout_seconds or self.upstream_timeout_seconds
+        if (
+            self.http_connect_timeout_seconds is not None
+            and self.http_connect_timeout_seconds > http_timeout
+        ):
+            raise ValueError("HTTP connect timeout must not exceed the HTTP timeout")
+        return self
 
     @field_validator("protected_capacity", "background_capacity")
     @classmethod
