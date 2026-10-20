@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-SCRIPT = ROOT / "scripts" / "helios_preflight.sh"
+SCRIPT = ROOT / "scripts" / "deploy_preflight.sh"
 IMAGE_ID = "sha256:" + "b" * 64
 RUNNING_IMAGE_ID = IMAGE_ID
 LEGACY_IMAGE_ID = "sha256:" + "c" * 64

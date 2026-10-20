@@ -1,8 +1,8 @@
-# Helios production deployment runbook
+# Production deployment runbook
 
-This procedure deploys the standalone SchwabGateway on `billy@helios`. A rebuild,
+This procedure deploys the standalone SchwabGateway on `deploy@gateway-host`. A rebuild,
 recreate, restart, monitoring change, or cutover is a production change. Complete the
-read-only preflight and the rollback record, then stop for Corey's explicit approval of
+read-only preflight and the rollback record, then stop for explicit approval of
 the named release and actions. Approval to prepare or inspect is not approval to deploy.
 
 Never print `.env`, resolved Compose environment, token contents, application secrets,
@@ -25,9 +25,7 @@ offline, build one immutable image, and recreate only the production `live` serv
 approval. Keep the stopped legacy rollback container and both production image baselines
 intact through the stability window. Never copy or reset the token or add another writer.
 
-The 2026-08-22 audit also found the Helios checkout detached at a release tag with the
-production overlays untracked; the server's production overlay also still
-selects a mutable version tag. Treat a dirty checkout, a mutable production image, or a
+Treat a dirty checkout, a mutable production image, or a
 checkout not at the intended exact release as a failed gate even when the files happen to
 render correctly. A detached checkout at the intended exact tag is acceptable. Do not
 delete or overwrite the server files. First compare them with the committed release,
@@ -37,7 +35,7 @@ Staging code must not recreate or restart the gateway.
 ### Logs
 
 `docker logs schwab_gateway_live` is the only log store. `compose.yml` overrides the
-Helios daemon default (3 x 10 MB, about 1.5 days before 2026-09) with 10 x 20 MB. The
+Docker daemon default (3 x 10 MB, about 1.5 days before 2026-09) with 10 x 20 MB. The
 new limits take effect only when the container is recreated. At INFO each request logs
 one `gateway_request` line with its caller, status, latency, and query. Each upstream
 call adds one `gateway_scheduler_execution_finished` line with its queue wait and
@@ -70,7 +68,7 @@ Build the image in a dedicated release worktree, not in `/opt/schwab-gateway` it
 (that checkout is stale and must never be built from or activated from):
 
 ```bash
-ssh -F /dev/null -o BatchMode=yes billy@helios
+ssh -F /dev/null -o BatchMode=yes deploy@gateway-host
 sg_release_sha='<short-sha-of-approved-release>'
 cd /opt/schwab-gateway
 git fetch --tags
@@ -92,11 +90,11 @@ exact locally built and reviewed ID/digest; it is not a secret:
 ```bash
 sg_record="/tmp/schwab-gateway-preflight-$(date -u +%Y%m%dT%H%M%SZ).txt"
 SCHWAB_GATEWAY_PRODUCTION_IMAGE='sha256:<exact-image-id>' \
-  scripts/helios_preflight.sh --phase predeploy \
+  scripts/deploy_preflight.sh --phase predeploy \
   --repo "/opt/schwab-gateway-releases/${sg_release_sha}" --record "$sg_record"
 ```
 
-The script defaults to `billy@helios`, `/opt/schwab-gateway`, `compose.yml` plus
+The script defaults to `deploy@gateway-host`, `/opt/schwab-gateway`, `compose.yml` plus
 `compose.production.yml`, the production container, and the production health,
 readiness, network, secret-metadata, disk, and Prometheus expectations. In `predeploy`
 phase it records the current live baseline, requires the intended immutable image to
@@ -125,7 +123,7 @@ exact baseline fields:
 ```text
 observed_at_utc=
 operator=
-host=billy@helios
+host=deploy@gateway-host
 repo=/opt/schwab-gateway-releases/<approved-release-short-sha>
 repo_git_sha=
 repo_git_ref=
@@ -158,12 +156,12 @@ exact_legacy_fallback_command=
 ```
 
 Record metadata only for key and token files. Do not hash or display the token or any
-secret. Before approval, verify the intended image exists locally on Helios and record
+secret. Before approval, verify the intended image exists locally on the production host and record
 its exact resolved image ID.
 
 ## Mandatory approval stop
 
-**STOP. Do not continue below until Corey explicitly approves the named host, production
+**STOP. Do not continue below until the operator explicitly approves the named host, production
 service, intended Git release, exact image ID/digest, production recreate, any Prometheus
 change, validation plan, and both rollback paths.**
 
@@ -182,11 +180,11 @@ obtain new approval.
 
 ## Approved production activation
 
-After approval, connect to Helios and set the approved immutable reference exactly as
+After approval, connect to the production host and set the approved immutable reference exactly as
 recorded. Run each assertion as a separate command so the failing gate is unambiguous:
 
 ```bash
-ssh -F /dev/null -o BatchMode=yes billy@helios
+ssh -F /dev/null -o BatchMode=yes deploy@gateway-host
 # /opt/schwab-gateway is a stale checkout, not a release worktree -- running the
 # activation command from it can silently recreate the container on whatever image
 # that checkout's own compose files resolve to. Always cd into the approved
@@ -215,7 +213,7 @@ printf 'PASS activate-production\n'
 
 Do not use `down`, remove containers/images/volumes, or create a candidate. If the
 activation command fails or any required validation fails, follow
-[the rollback runbook](rollback.md) before debugging further unless Corey directs
+[the rollback runbook](rollback.md) before debugging further unless the operator directs
 otherwise.
 
 ## Validation order
@@ -253,7 +251,7 @@ approved image as an acceptance gate; keep its sanitized record with the change 
 ```bash
 sg_post_record="/tmp/schwab-gateway-postdeploy-$(date -u +%Y%m%dT%H%M%SZ).txt"
 SCHWAB_GATEWAY_PRODUCTION_IMAGE='sha256:<approved-exact-image-id>' \
-  scripts/helios_preflight.sh --phase postdeploy \
+  scripts/deploy_preflight.sh --phase postdeploy \
   --repo "/opt/schwab-gateway-releases/${sg_release_sha}" --record "$sg_post_record"
 ```
 
@@ -346,5 +344,5 @@ check fails, restore the recorded backup in place using the rollback runbook.
 After successful validation, record the deployed Git SHA, configured immutable image
 reference, resolved image ID, validation results, and any Prometheus backup. Keep the
 previous production image, legacy image/container, and
-monitoring backup until Corey closes the stability window. Removal or cleanup requires a
+monitoring backup until the operator closes the stability window. Removal or cleanup requires a
 separate explicit approval.

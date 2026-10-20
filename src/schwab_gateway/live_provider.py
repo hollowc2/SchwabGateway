@@ -73,7 +73,7 @@ class GatewayUpstreamSettings(BaseSettings):
 
     Deliberately a separate class from ``GatewayCredentialProbeSettings`` rather than a
     reuse of it. That class and the module it lives in are members of the credential
-    proof's reviewed archive, whose SHA-256 is gated on Helios; editing or widening it
+    proof's reviewed archive, whose SHA-256 is gated on the production host; editing or widening it
     would change the archive hash for a proof that is already complete.
     """
 

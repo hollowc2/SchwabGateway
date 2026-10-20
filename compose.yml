@@ -90,7 +90,7 @@ services:
     networks:
       monitoring_net:
         aliases: [schwab-gateway]
-    # The Helios daemon default (json-file, 3 x 10 MB) kept only ~1.5 days of logs.
+    # The Docker daemon default (json-file, 3 x 10 MB) kept only ~1.5 days of logs.
     # 10 x 20 MB is bounded at 200 MB and holds weeks at post-2026-09 log volume.
     logging:
       driver: json-file

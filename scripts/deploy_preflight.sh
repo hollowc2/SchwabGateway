@@ -6,13 +6,13 @@ umask 077
 
 usage() {
     cat <<'EOF'
-Usage: scripts/helios_preflight.sh [options]
+Usage: scripts/deploy_preflight.sh [options]
 
-Runs a read-only audit on Helios through SSH. Use --local to run the same audit on
+Runs a read-only audit on the production host through SSH. Use --local to run the same audit on
 the current machine (primarily for tests). Failed gates exit 1; invalid usage exits 2.
 
 Options:
-  --host HOST                 SSH destination (default: billy@helios)
+  --host HOST                 SSH destination (default: deploy@gateway-host)
   --repo PATH                 Remote repository (default: /opt/schwab-gateway)
   --compose-file PATH         Compose file relative to --repo; repeatable
   --production-image IMAGE    Exact sha256 image ID or repository digest; defaults to
@@ -24,7 +24,7 @@ Options:
   --legacy-container NAME     Preserved rollback container
                               (default: butterfly_schwab_gateway_live)
   --service NAME              Compose service (default: live)
-  --expected-host NAME        Expected short hostname (default: helios)
+  --expected-host NAME        Expected short hostname (default: gateway-host)
   --network NAME              Expected Docker network (default: monitoring_net)
   --network-alias NAME        Required alias (default: schwab-gateway)
   --candidate-network-alias NAME
@@ -56,30 +56,30 @@ die_usage() {
     exit 2
 }
 
-host="${HELIOS_PREFLIGHT_HOST:-billy@helios}"
-repo="${HELIOS_PREFLIGHT_REPO:-/opt/schwab-gateway}"
-container="${HELIOS_PREFLIGHT_CONTAINER:-schwab_gateway_live}"
-candidate_container="${HELIOS_PREFLIGHT_CANDIDATE_CONTAINER:-schwab_gateway_candidate}"
-legacy_container="${HELIOS_PREFLIGHT_LEGACY_CONTAINER:-butterfly_schwab_gateway_live}"
-service="${HELIOS_PREFLIGHT_SERVICE:-live}"
-expected_host="${HELIOS_PREFLIGHT_EXPECTED_HOST:-helios}"
-network="${HELIOS_PREFLIGHT_NETWORK:-monitoring_net}"
-network_alias="${HELIOS_PREFLIGHT_NETWORK_ALIAS:-schwab-gateway}"
-candidate_network_alias="${HELIOS_PREFLIGHT_CANDIDATE_NETWORK_ALIAS:-schwab-gateway-candidate}"
-port="${HELIOS_PREFLIGHT_PORT:-8011}"
-candidate_port="${HELIOS_PREFLIGHT_CANDIDATE_PORT:-8012}"
-health_url="${HELIOS_PREFLIGHT_HEALTH_URL:-http://127.0.0.1:8011/health}"
-ready_url="${HELIOS_PREFLIGHT_READY_URL:-http://127.0.0.1:8011/ready}"
-candidate_ready_url="${HELIOS_PREFLIGHT_CANDIDATE_READY_URL:-http://127.0.0.1:8012/ready}"
-prometheus_url="${HELIOS_PREFLIGHT_PROMETHEUS_URL:-http://127.0.0.1:9090/api/v1/targets?state=active}"
-prometheus_target="${HELIOS_PREFLIGHT_PROMETHEUS_TARGET:-schwab-gateway:8011}"
+host="${DEPLOY_PREFLIGHT_HOST:-deploy@gateway-host}"
+repo="${DEPLOY_PREFLIGHT_REPO:-/opt/schwab-gateway}"
+container="${DEPLOY_PREFLIGHT_CONTAINER:-schwab_gateway_live}"
+candidate_container="${DEPLOY_PREFLIGHT_CANDIDATE_CONTAINER:-schwab_gateway_candidate}"
+legacy_container="${DEPLOY_PREFLIGHT_LEGACY_CONTAINER:-butterfly_schwab_gateway_live}"
+service="${DEPLOY_PREFLIGHT_SERVICE:-live}"
+expected_host="${DEPLOY_PREFLIGHT_EXPECTED_HOST:-gateway-host}"
+network="${DEPLOY_PREFLIGHT_NETWORK:-monitoring_net}"
+network_alias="${DEPLOY_PREFLIGHT_NETWORK_ALIAS:-schwab-gateway}"
+candidate_network_alias="${DEPLOY_PREFLIGHT_CANDIDATE_NETWORK_ALIAS:-schwab-gateway-candidate}"
+port="${DEPLOY_PREFLIGHT_PORT:-8011}"
+candidate_port="${DEPLOY_PREFLIGHT_CANDIDATE_PORT:-8012}"
+health_url="${DEPLOY_PREFLIGHT_HEALTH_URL:-http://127.0.0.1:8011/health}"
+ready_url="${DEPLOY_PREFLIGHT_READY_URL:-http://127.0.0.1:8011/ready}"
+candidate_ready_url="${DEPLOY_PREFLIGHT_CANDIDATE_READY_URL:-http://127.0.0.1:8012/ready}"
+prometheus_url="${DEPLOY_PREFLIGHT_PROMETHEUS_URL:-http://127.0.0.1:9090/api/v1/targets?state=active}"
+prometheus_target="${DEPLOY_PREFLIGHT_PROMETHEUS_TARGET:-schwab-gateway:8011}"
 production_image="${SCHWAB_GATEWAY_PRODUCTION_IMAGE:-}"
-phase="${HELIOS_PREFLIGHT_PHASE:-predeploy}"
-keys_path="${HELIOS_PREFLIGHT_KEYS_PATH:-}"
-token_path="${HELIOS_PREFLIGHT_TOKEN_PATH:-}"
-expected_user="${HELIOS_PREFLIGHT_EXPECTED_USER:-1001:1001}"
-restart_policy="${HELIOS_PREFLIGHT_RESTART_POLICY:-unless-stopped}"
-min_disk_mb="${HELIOS_PREFLIGHT_MIN_DISK_MB:-2048}"
+phase="${DEPLOY_PREFLIGHT_PHASE:-predeploy}"
+keys_path="${DEPLOY_PREFLIGHT_KEYS_PATH:-}"
+token_path="${DEPLOY_PREFLIGHT_TOKEN_PATH:-}"
+expected_user="${DEPLOY_PREFLIGHT_EXPECTED_USER:-1001:1001}"
+restart_policy="${DEPLOY_PREFLIGHT_RESTART_POLICY:-unless-stopped}"
+min_disk_mb="${DEPLOY_PREFLIGHT_MIN_DISK_MB:-2048}"
 record_path=""
 local_mode=false
 internal_audit=false

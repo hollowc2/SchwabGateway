@@ -33,7 +33,7 @@ jobs:
           SCHWAB_GATEWAY_TOKEN_DIR: /tmp/synthetic-token-dir
           SCHWAB_GATEWAY_KEYS_PATH: /tmp/synthetic-keys.json
         run: docker compose --profile demo config --quiet
-      - name: Render Helios Compose overlays
+      - name: Render production Compose overlays
         env:
           SCHWAB_API_KEY: synthetic
           SCHWAB_SECRET_KEY: synthetic
