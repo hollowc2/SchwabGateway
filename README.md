@@ -31,7 +31,7 @@ gateway over HTTP with their own keys and never touch the Schwab credentials.
 
 ## Quickstart
 
-You need Docker, [uv](https://docs.astral.sh/uv/), and a Schwab developer app from
+You need Docker (with the daemon running), [uv](https://docs.astral.sh/uv/), and a Schwab developer app from
 [developer.schwab.com](https://developer.schwab.com) with Market Data access and a
 callback URL (for example `https://127.0.0.1:8182`).
 
@@ -82,8 +82,15 @@ cp .env.example .env
 #   SCHWAB_GATEWAY_KEYS_PATH=/home/<you>/schwab-gateway-keys.json
 #   SCHWAB_GATEWAY_UID=<output of id -u>
 #   SCHWAB_GATEWAY_GID=<output of id -g>
+docker network create monitoring_net   # once; shared with Prometheus if you run it
 docker compose --profile live up -d --build
 ```
+
+Edit the four values in `.env` before starting. If a path still points at the
+`/absolute/path/...` placeholder, Docker creates an empty directory there and the gateway
+exits with `gateway keys file could not be read or parsed`. Wait for the container to
+report healthy (`docker ps`, or `curl http://127.0.0.1:8011/ready`) before sending
+requests; the first start takes a few seconds.
 
 **5. Read some data.**
 
