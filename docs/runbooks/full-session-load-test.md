@@ -1,7 +1,7 @@
 # Full-session market-data load test
 
-This runbook prepares and executes an auditable, read-only SchwabGateway load test on
-Helios. It models the PAPER SPX, NDX, and XSP collector and position-monitor traffic.
+This runbook prepares and executes an auditable, read-only SchwabGateway load test on the
+production host. It models the PAPER SPX, NDX, and XSP collector and position-monitor traffic.
 It does not authorize an order, a live-money consumer, a service restart, a deployment,
 a key-file replacement, or a Prometheus configuration change.
 
@@ -93,7 +93,7 @@ an isolated candidate. Do not rotate or remove existing keys as part of a load t
 
 ## Required code gates
 
-Before touching Helios:
+Before touching the production host:
 
 1. Gateway, SDK, and OpenAPI release versions match; wire schema remains `1.0`.
 2. The complete gateway suite, lint, and all three package builds pass.
@@ -105,7 +105,7 @@ Before touching Helios:
    key file, refuses to overwrite evidence, and stores no response bodies or secrets.
 7. Prometheus rules pass `promtool check rules` before any separately approved install.
 
-## Read-only Helios preflight
+## Read-only host preflight
 
 Collect a sanitized baseline immediately before the session:
 
@@ -124,10 +124,6 @@ the existing authenticated, read-only broker audit for SPX/NDX/XSP positions and
 missing, unmapped, or duplicate orders. Do not call a broker write API. If anything is
 not flat, postpone the synthetic provider-load stage.
 
-The observed Helios baseline on 2026-08-29 was production healthy/ready with zero
-restarts, about 56 MiB resident container memory, and 33 GiB free root-disk space.
-Production had no ordinary quote/chain traffic because the PAPER applications were in
-direct mode. Treat this only as historical context and recapture every value.
 
 ## Staged execution
 

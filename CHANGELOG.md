@@ -31,7 +31,7 @@
 
 ## 0.8.0 - 2026-10-03
 
-Internal refactor from the 2026-10 code-quality review (`docs/code-review-2026-10.md`).
+Internal refactor from the 2026-10 code-quality review.
 The HTTP contract, response bodies, status codes, metric names and labels, log events,
 CLI entry points, configuration keys and the token file format are unchanged.
 
@@ -109,7 +109,7 @@ CLI entry points, configuration keys and the token file format are unchanged.
     `gateway_scheduler_execution_finished`.
   - Token-manager transitions that keep the same state, such as the `token_loaded`
     logged on every call, move to debug.
-- Keep up to 10 x 20 MB of `json-file` logs for the live container, up from the Helios
+- Keep up to 10 x 20 MB of `json-file` logs for the live container, up from the Docker
   daemon default of 3 x 10 MB, which held only about 1.5 days.
 - Serve `/v1/option-chain` cache hits, and duplicate requests for a chain whose fetch
   is already running, before scheduler admission. Neither issues a Schwab call, so they
@@ -170,7 +170,7 @@ CLI entry points, configuration keys and the token file format are unchanged.
 ## 0.4.5 - 2026-09-07
 
 - Replace the Compose health checks' heavyweight `urllib.request` import with a
-  minimal socket-based HTTP readiness probe. On the two-core Helios host, the
+  minimal socket-based HTTP readiness probe. On a two-core host, the
   old import took 7.4-10.2 seconds while Docker allowed only three seconds,
   creating a persistent false-unhealthy state and repeated probe churn.
 - Run the readiness probe every 30 seconds with a 10-second process budget and

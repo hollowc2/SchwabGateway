@@ -1,13 +1,13 @@
-# Helios production rollback runbook
+# Production rollback runbook
 
 Use this runbook when an approved standalone SchwabGateway activation fails or behaves
-incorrectly. The preflight record from [the deployment runbook](helios.md) is the source
+incorrectly. The preflight record from [the deployment runbook](deploy.md) is the source
 of truth. Do not infer a baseline from a tag, rebuild an old release, delete a container,
 or remove an image or volume during rollback.
 
 Rollback is part of the approved deployment only when the approval named the exact
 production service and these restore paths. Stop and get approval if the target or
-rollback scope differs. Unless Corey directs otherwise, restore the recorded baseline
+rollback scope differs. Unless the operator directs otherwise, restore the recorded baseline
 before investigating a failed live release.
 
 ## Required baseline
@@ -41,7 +41,7 @@ This is the primary rollback when the prior `schwab_gateway_live` deployment was
 Use the exact previous image ID/digest from the record, not its mutable tag:
 
 ```bash
-ssh -F /dev/null -o BatchMode=yes billy@helios
+ssh -F /dev/null -o BatchMode=yes deploy@gateway-host
 # /opt/schwab-gateway is a stale checkout, not a release worktree -- run rollback
 # from the previous release's own worktree instead. Releases deployed before this
 # procedure (or worktrees since pruned) may not have one; recreate it from the SHA:
@@ -185,5 +185,5 @@ approval explicitly authorizes that test.
 Record the trigger, failed validation gate, rollback path, restored Git/image identity,
 container and Prometheus results, token readiness, legacy state, candidate absence, start/end UTC
 times, and any remaining risk. Preserve the failed and restored images, all containers,
-the monitoring backup, and the sanitized preflight record until Corey closes the
+the monitoring backup, and the sanitized preflight record until the operator closes the
 stability window. Any cleanup requires separate approval.

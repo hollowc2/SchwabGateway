@@ -227,18 +227,18 @@ def test_compose_sets_independent_bounded_http_timeouts() -> None:
 
 
 def test_runbooks_update_prometheus_single_file_bind_mount_safely() -> None:
-    helios = Path("docs/runbooks/helios.md").read_text()
+    runbook = Path("docs/runbooks/deploy.md").read_text()
     rollback = Path("docs/runbooks/rollback.md").read_text()
 
-    assert "sed -i" in helios
-    assert "Never update" in helios
-    assert "docker exec --user 1001:1001 -i" in helios
+    assert "sed -i" in runbook
+    assert "Never update" in runbook
+    assert "docker exec --user 1001:1001 -i" in runbook
     assert "docker exec --user 1001:1001 -i" in rollback
-    assert "cat > /etc/prometheus/prometheus.yml" in helios
+    assert "cat > /etc/prometheus/prometheus.yml" in runbook
     assert "cat > /etc/prometheus/prometheus.yml" in rollback
     assert "butterfly_schwab_gateway_live:8011" in rollback
-    assert "phase6_ports=$(docker inspect" in helios
-    assert "phase6_aliases=$(docker inspect" in helios
-    assert ")phase6_aliases=" not in helios
-    assert "CHECK port-publication" in helios
-    assert "PASS network-alias" in helios
+    assert "phase6_ports=$(docker inspect" in runbook
+    assert "phase6_aliases=$(docker inspect" in runbook
+    assert ")phase6_aliases=" not in runbook
+    assert "CHECK port-publication" in runbook
+    assert "PASS network-alias" in runbook

@@ -4,15 +4,109 @@
 
 # SchwabGateway
 
-A read-only HTTP service that gives internal consumers safe, rate-bounded access to
-Charles Schwab market data.
+**One process owns your Schwab credentials, and every bot reads market data through it.**
 
-This repository also publishes two Python packages:
+If you run more than one script against the Schwab API, such as a scanner, a
+backtester's live feed, and a couple of paper-trading bots, they end up competing for
+the same rate limit and the same OAuth token. Two processes refreshing at once can
+corrupt `tokens.json`, and a chatty background job can starve the bot that matters.
 
-- **`schwab_gateway_sdk`**: the typed client for the gateway.
-- **`schwab_token_store`**: shared storage for Schwab OAuth tokens.
+SchwabGateway is a small, read-only HTTP service that sits between your programs and
+Schwab:
 
-The v1 API contract is defined in [`openapi.yaml`](openapi.yaml).
+- **One token owner.** Refreshes are locked and atomic, so concurrent refreshes can't
+  corrupt the token file.
+- **Priority scheduling.** Each client key is `protected` or `background`; background
+  work is delayed or dropped before it can slow protected work.
+- **Read-only by design.** There are no account, position, or order routes.
+- **Fails closed.** During an outage you get an error, not stale data.
+- **Typed Python SDK**, an OpenAPI contract, and Prometheus metrics.
+
+### How does this relate to schwab-py?
+
+SchwabGateway is built on [schwab-py](https://github.com/alexgolec/schwab-py) and uses
+the same token file format. schwab-py is a client library for one program.
+SchwabGateway is for when several programs need Schwab data at once: they call the
+gateway over HTTP with their own keys and never touch the Schwab credentials.
+
+## Quickstart
+
+You need Docker, [uv](https://docs.astral.sh/uv/), and a Schwab developer app from
+[developer.schwab.com](https://developer.schwab.com) with Market Data access and a
+callback URL (for example `https://127.0.0.1:8182`).
+
+**1. Clone and install.**
+
+```bash
+git clone https://github.com/hollowc2/SchwabGateway.git
+cd SchwabGateway
+uv sync
+```
+
+**2. Create the initial token** with schwab-py's manual login flow. It prints a URL; log
+in, then paste back the URL you were redirected to.
+
+```bash
+export SCHWAB_API_KEY=<app key> SCHWAB_SECRET_KEY=<app secret>
+mkdir -p ~/schwab-tokens
+uv run python -c "
+import schwab, os
+schwab.auth.client_from_manual_flow(
+    os.environ['SCHWAB_API_KEY'], os.environ['SCHWAB_SECRET_KEY'],
+    'https://127.0.0.1:8182', os.path.expanduser('~/schwab-tokens/tokens.json'))
+"
+```
+
+Schwab refresh tokens last 7 days, so repeat this step weekly. The
+`schwab_gateway_refresh_token_expires_timestamp_seconds` metric tells you when.
+
+**3. Issue a client key** for each program that will call the gateway:
+
+```bash
+uv run schwab-gateway-issue-keys \
+  --output ~/schwab-gateway-keys.json \
+  --application-id my-scanner \
+  --capability market_data:read \
+  --priority protected
+```
+
+The keys file stores only digests. The plaintext key is printed once, so save it.
+
+**4. Start the gateway** from the same shell, so it sees the exported credentials.
+Both files from steps 2 and 3 are private to your user, so run the container as you:
+
+```bash
+cp .env.example .env
+# Edit .env:
+#   SCHWAB_GATEWAY_TOKEN_DIR=/home/<you>/schwab-tokens
+#   SCHWAB_GATEWAY_KEYS_PATH=/home/<you>/schwab-gateway-keys.json
+#   SCHWAB_GATEWAY_UID=<output of id -u>
+#   SCHWAB_GATEWAY_GID=<output of id -g>
+docker compose --profile live up -d --build
+```
+
+**5. Read some data.**
+
+```bash
+KEY=<plaintext key from step 3>
+curl -H "X-Internal-API-Key: $KEY" "http://127.0.0.1:8011/v1/quotes?symbols=AAPL,SPY"
+```
+
+Or from Python:
+
+```python
+import asyncio
+from schwab_gateway_sdk import GatewayMarketDataClient
+
+async def main() -> None:
+    async with GatewayMarketDataClient("http://127.0.0.1:8011", "<your key>") as client:
+        print(await client.get_quotes(["AAPL", "SPY"]))
+
+asyncio.run(main())
+```
+
+To try the API without Schwab credentials, see the demo profile under
+[Development](#development).
 
 ## Endpoints
 
@@ -28,15 +122,6 @@ The v1 API contract is defined in [`openapi.yaml`](openapi.yaml).
 | `GET /v1/session-history` | Regular and extended session bars for a point in time |
 | `GET /v1/order-book/recent` | Recent order-book snapshots for one venue |
 | `GET /v1/order-book/stream` | Live order-book snapshots over WebSocket |
-
-## Guides
-
-- [SDK order books](docs/sdk-order-books.md): read recent snapshots and stream live
-  depth from Python.
-- [Order-book research](docs/order-book-research.md): record a `NASDAQ_BOOK` or
-  `NYSE_BOOK` stream with a hashed evidence manifest.
-- [Equity-data research](docs/equity-data-research.md): record `CHART_EQUITY` and
-  Level I streams, and export one day of one-minute candles.
 
 ## Guarantees
 
@@ -70,40 +155,19 @@ unchanged. `allow_partial=true` names missing contracts in `missing_symbols`.
 | `503 gateway_queue_timeout` | The request waited too long to be dispatched |
 | `504 upstream_timeout` | Schwab took longer than the 3-second budget |
 
-### Adding consumers
+## Guides
 
-Add paper strategies one at a time, and prove each one through a full session under
-real collector and position-monitor load before adding the next. The contract tests do
-not prove multi-consumer capacity.
+- [SDK order books](docs/sdk-order-books.md): read recent snapshots and stream live
+  depth from Python.
+- [Order-book research](docs/order-book-research.md): record a `NASDAQ_BOOK` or
+  `NYSE_BOOK` stream with a hashed evidence manifest.
+- [Equity-data research](docs/equity-data-research.md): record `CHART_EQUITY` and
+  Level I streams, and export one day of one-minute candles.
 
-### Timeout and reliability controls
+## Running in production
 
-`SCHWAB_GATEWAY_UPSTREAM_TIMEOUT_SECONDS` is the dispatched execution budget (3s
-by default). It does not include queue wait and does not cancel running Schwab work.
-`SCHWAB_GATEWAY_HTTP_TIMEOUT_SECONDS` controls HTTP read/write/pool timeouts; when
-unset outside Compose, it follows the execution budget. The optional
-`SCHWAB_GATEWAY_HTTP_CONNECT_TIMEOUT_SECONDS` overrides connection establishment
-and must not exceed the HTTP timeout. Compose defaults these HTTP settings to 3s
-and 1s respectively. HTTP timeouts apply per network phase, and read timeouts per
-chunk, not as a hard total-operation deadline. Reducing them can produce earlier
-upstream failures; raising them can hold the single worker longer after a 504.
-
-`schwab_gateway_scheduler_timeout_drain_seconds` measures operation time beyond its
-execution deadline, with eventual outcome labels. The matching
-`schwab_gateway_scheduler_timeout_drain_active` gauge stays at 1 while a timed-out
-operation still owns the worker. Completion logs report `timeout_drain_ms` and
-`execution_timeout_seconds`; a late successful fetch can still populate the cache.
-
-`schwab_gateway_refresh_token_expires_timestamp_seconds` reports the last validated
-authorization creation time plus the refresh-token lifetime, not access-token expiry.
-Zero means unknown. Access-token refresh does not move this deadline; interactive
-reauthorization does. The rules in `infra/alerts.yml` warn within 24 hours of expiry,
-on sustained protected queue-wait p99 above 1.5s with sufficient traffic, and when
-post-timeout drains consume more than 2 worker-seconds in 5 minutes or stay active
-for 1 minute. Alert rule deployment/reload requires separate production approval.
-
-Consumer polling should be staggered, and retries bounded and jittered, in the
-consumer's own repository. The SDK does not automatically retry failed reads.
+Timeouts, alerting, adding consumers, and deploy/rollback runbooks are in
+[docs/operations.md](docs/operations.md).
 
 ## Development
 
@@ -130,13 +194,6 @@ uv run schwab-gateway-issue-keys \
 SCHWAB_GATEWAY_DEMO_KEYS_PATH=/tmp/schwab-gateway-demo-keys.json \
   docker compose --profile demo up --build
 ```
-
-## Operations
-
-- Deploy: [`docs/runbooks/helios.md`](docs/runbooks/helios.md)
-- Roll back: [`docs/runbooks/rollback.md`](docs/runbooks/rollback.md)
-- Full-session load test and option-chain TTL analysis:
-  [`docs/runbooks/full-session-load-test.md`](docs/runbooks/full-session-load-test.md)
 
 ## Versioning
 
