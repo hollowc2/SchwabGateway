@@ -166,10 +166,8 @@ unchanged. `allow_partial=true` names missing contracts in `missing_symbols`.
 
 - [SDK order books](docs/sdk-order-books.md): read recent snapshots and stream live
   depth from Python.
-- [Order-book research](docs/order-book-research.md): record a `NASDAQ_BOOK` or
-  `NYSE_BOOK` stream with a hashed evidence manifest.
-- [Equity-data research](docs/equity-data-research.md): record `CHART_EQUITY` and
-  Level I streams, and export one day of one-minute candles.
+- [Session-history export](docs/session-history-export.md): export one day of
+  one-minute candles with a hashed evidence manifest.
 
 ## Running in production
 
