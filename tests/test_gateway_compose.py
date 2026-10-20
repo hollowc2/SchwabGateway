@@ -106,15 +106,6 @@ def test_base_compose_does_not_require_the_production_image_override() -> None:
     assert rendered["services"]["demo"]["profiles"] == ["demo"]
 
 
-def test_candidate_overlay_is_retired_and_cannot_define_an_8012_service() -> None:
-    candidate_path = ROOT / "compose.candidate.yml"
-    candidate = yaml.safe_load(candidate_path.read_text())
-
-    assert "services" not in candidate
-    assert candidate["x-schwab-gateway-retired-candidate"] == {"reason": "single-live-gateway-only"}
-    assert "8012" not in candidate_path.read_text()
-
-
 def test_production_layer_requires_an_explicit_image() -> None:
     environment = os.environ.copy()
     environment.update(SYNTHETIC_LIVE_ENV)

@@ -1,11 +1,9 @@
-"""Deterministic tests for venue-specific order-book research capture."""
+"""Deterministic tests for venue-specific order-book normalization and the live feed."""
 
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -18,18 +16,10 @@ from schwab_gateway_sdk.models import (
 )
 
 from schwab_gateway.admission import AdmissionPolicy
-from schwab_gateway.capture_order_books import build_parser
 from schwab_gateway.live_provider import GatewayUpstreamSettings
 from schwab_gateway.order_book import (
     OrderBookMalformedError,
     normalize_schwab_book_message,
-)
-from schwab_gateway.order_book_capture import (
-    CapturingBookJsonDecoder,
-    OrderBookCaptureRequest,
-    OrderBookResearchRecorder,
-    capture_order_book_with_reconnects,
-    parse_symbols,
 )
 from schwab_gateway.order_book_live import OrderBookLiveFeed
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
@@ -84,15 +74,6 @@ def _book_message(*, sequence: int = 10) -> dict[str, Any]:
             }
         ],
     }
-
-
-def _request(tmp_path: Path, *, duration_seconds: float = 1) -> OrderBookCaptureRequest:
-    return OrderBookCaptureRequest(
-        venue="NASDAQ",
-        symbols=("AAPL",),
-        duration_seconds=duration_seconds,
-        output_root=tmp_path,
-    )
 
 
 def test_normalizer_produces_sorted_venue_specific_snapshot() -> None:
@@ -187,124 +168,12 @@ def test_transport_models_reject_consolidated_or_unsorted_books() -> None:
         )
 
 
-def test_recorder_preserves_raw_frames_and_manifests_sequence_gaps(tmp_path: Path) -> None:
-    times = iter(
-        (
-            RECEIVED_AT,
-            RECEIVED_AT + dt.timedelta(seconds=2),
-        )
-    )
-    recorder = OrderBookResearchRecorder(_request(tmp_path), clock=lambda: next(times))
-    recorder.start()
-    raw = '{"data":[{"service":"NASDAQ_BOOK","content":[]}]}'
-    recorder.record_raw_frame(raw, RECEIVED_AT)
-    first = normalize_schwab_book_message(
-        _book_message(sequence=10), venue="NASDAQ", gateway_received_at=RECEIVED_AT
-    )[0]
-    second = normalize_schwab_book_message(
-        _book_message(sequence=13), venue="NASDAQ", gateway_received_at=RECEIVED_AT
-    )[0]
-    recorder.record_snapshot(first)
-    recorder.record_snapshot(second)
-    manifest_path = recorder.finalize(termination_reason="completed")
-
-    assert recorder.raw_path is not None
-    expected_raw = b"\x1e" + raw.encode() + b"\n"
-    assert recorder.raw_path.read_bytes() == expected_raw
-    manifest = json.loads(manifest_path.read_text())
-    assert manifest["is_consolidated"] is False
-    assert manifest["path_scope"] == "relative_to_manifest"
-    assert manifest["raw_path"] == "raw_frames.jsonseq"
-    assert manifest["normalized_path"] == "normalized_snapshots.ndjson"
-    assert manifest["raw_sha256"] == hashlib.sha256(expected_raw).hexdigest()
-    assert manifest["raw_frame_count"] == 1
-    assert manifest["normalized_snapshot_count"] == 2
-    assert manifest["sequence_gap_count"] == 1
-    assert manifest["missing_sequence_count"] == 2
-    assert manifest["snapshots_without_sequence_count"] == 0
-    assert manifest["sequence_continuity_observable"] is True
-    assert manifest["dropped_event_count"] == 0
-    assert manifest["termination_reason"] == "completed"
-    assert recorder.normalized_path is not None
-    normalized = [json.loads(line) for line in recorder.normalized_path.read_text().splitlines()]
-    assert "sequence_gap" in normalized[1]["data_quality_flags"]
-
-
-def test_recorder_discloses_when_sequence_continuity_is_unobservable(tmp_path: Path) -> None:
-    times = iter((RECEIVED_AT, RECEIVED_AT + dt.timedelta(seconds=1)))
-    recorder = OrderBookResearchRecorder(_request(tmp_path), clock=lambda: next(times))
-    recorder.start()
-    snapshot = normalize_schwab_book_message(
-        _book_message(), venue="NASDAQ", gateway_received_at=RECEIVED_AT
-    )[0].model_copy(update={"sequence": None})
-    recorder.record_snapshot(snapshot)
-    manifest = json.loads(recorder.finalize(termination_reason="completed").read_text())
-
-    assert manifest["snapshots_without_sequence_count"] == 1
-    assert manifest["sequence_continuity_observable"] is False
-    assert recorder.normalized_path is not None
-    normalized = json.loads(recorder.normalized_path.read_text())
-    assert "missing_sequence" in normalized["data_quality_flags"]
-
-
-def test_decoder_captures_only_target_service_before_relabeling(tmp_path: Path) -> None:
-    times = iter((RECEIVED_AT, RECEIVED_AT + dt.timedelta(seconds=1)))
-    recorder = OrderBookResearchRecorder(_request(tmp_path), clock=lambda: next(times))
-    recorder.start()
-    decoder = CapturingBookJsonDecoder(
-        service="NASDAQ_BOOK",
-        recorder=recorder,
-        clock=lambda: RECEIVED_AT,
-    )
-    raw_target = '{"data":[{"service":"NASDAQ_BOOK","content":[]}]}'
-    raw_heartbeat = '{"notify":[{"heartbeat":"1777305600000"}]}'
-
-    assert decoder.decode_json_string(raw_target)["data"][0]["service"] == "NASDAQ_BOOK"
-    decoder.decode_json_string(raw_heartbeat)
-    recorder.finalize(termination_reason="completed")
-
-    assert recorder.raw_frame_count == 1
-    assert decoder.last_received_at == RECEIVED_AT
-
-
 class _FakeAsyncClient:
     def __init__(self) -> None:
         self.closed = False
 
     async def close_async_session(self) -> None:
         self.closed = True
-
-
-class _DisconnectingStream:
-    def __init__(self, _client: Any) -> None:
-        self.decoder = None
-        self.handler = None
-        self.logged_in = False
-        self.logged_out = False
-        self.subscriptions: list[str] = []
-
-    async def login(self) -> None:
-        self.logged_in = True
-
-    def set_json_decoder(self, decoder: Any) -> None:
-        self.decoder = decoder
-
-    def add_nasdaq_book_handler(self, handler: Any) -> None:
-        self.handler = handler
-
-    async def nasdaq_book_subs(self, symbols: list[str]) -> None:
-        self.subscriptions = symbols
-
-    async def handle_message(self) -> None:
-        assert self.decoder is not None
-        assert self.handler is not None
-        raw = json.dumps({"data": [{"service": "NASDAQ_BOOK", "content": []}]})
-        self.decoder.decode_json_string(raw)
-        self.handler(_book_message())
-        raise ConnectionError("synthetic disconnect")
-
-    async def logout(self) -> None:
-        self.logged_out = True
 
 
 class _ScopedAsyncManager:
@@ -319,99 +188,6 @@ class _ScopedAsyncManager:
             return await operation(lambda: {}, lambda _token: None)
         finally:
             self.in_transaction = False
-
-
-class _EpochStream(_DisconnectingStream):
-    def __init__(self, client: Any, *, disconnect: bool) -> None:
-        super().__init__(client)
-        self.disconnect = disconnect
-        self.handled = False
-        self._manager: Any = None
-
-    async def login(self) -> None:
-        assert self._manager.in_transaction
-        await super().login()
-
-    async def handle_message(self) -> None:
-        if not self.handled:
-            self.handled = True
-            assert self.decoder is not None
-            assert self.handler is not None
-            raw = json.dumps({"data": [{"service": "NASDAQ_BOOK", "content": []}]})
-            self.decoder.decode_json_string(raw)
-            self.handler(_book_message())
-            if self.disconnect:
-                raise ConnectionError("synthetic disconnect")
-        await asyncio.sleep(1)
-
-
-async def test_shared_bootstrap_reconnects_into_explicit_continuity_epochs(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path, duration_seconds=1)
-    recorder = OrderBookResearchRecorder(request)
-    manager = _ScopedAsyncManager()
-    streams: list[_EpochStream] = []
-
-    def client_factory(*_args, **_kwargs) -> _FakeAsyncClient:
-        return _FakeAsyncClient()
-
-    def stream_factory(client: Any) -> _EpochStream:
-        stream = _EpochStream(client, disconnect=not streams)
-        stream._manager = manager
-        streams.append(stream)
-        return stream
-
-    settings = GatewayUpstreamSettings(
-        SCHWAB_API_KEY="fake-key",
-        SCHWAB_SECRET_KEY="fake-secret",
-        SCHWAB_TOKEN_PATH=tmp_path / "tokens.json",
-    )
-    await capture_order_book_with_reconnects(
-        manager,  # type: ignore[arg-type]
-        settings,
-        client_factory,
-        request,
-        recorder,
-        stream_client_factory=stream_factory,
-        reconnect_base_delay_seconds=0,
-    )
-    manifest = json.loads(recorder.finalize(termination_reason="completed").read_text())
-
-    assert manager.calls == 2
-    assert manager.in_transaction is False
-    assert manifest["connection_attempt_count"] == 2
-    assert manifest["successful_connection_count"] == 2
-    assert manifest["reconnect_count"] == 1
-    assert manifest["continuity_epoch_count"] == 2
-    assert recorder.normalized_path is not None
-    snapshots = [json.loads(line) for line in recorder.normalized_path.read_text().splitlines()]
-    assert [item["continuity_epoch"] for item in snapshots] == [1, 2]
-    assert "reconnect_boundary" in snapshots[1]["data_quality_flags"]
-
-
-def test_request_and_cli_keep_scope_explicit(tmp_path: Path) -> None:
-    assert parse_symbols(["aapl, msft", "nvda"]) == ("AAPL", "MSFT", "NVDA")
-    with pytest.raises(ValueError, match="absolute"):
-        OrderBookCaptureRequest(
-            venue="NASDAQ",
-            symbols=("AAPL",),
-            duration_seconds=60,
-            output_root=Path("relative"),
-        )
-    args = build_parser().parse_args(
-        [
-            "--venue",
-            "NYSE",
-            "--symbols",
-            "IBM",
-            "--duration-seconds",
-            "60",
-            "--output-root",
-            str(tmp_path),
-        ]
-    )
-    assert args.venue == "NYSE"
 
 
 async def test_live_feed_retains_backoff_until_validated_data_arrives(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from schwab.contrib.util import StreamJsonDecoder
@@ -20,18 +20,72 @@ from schwab_gateway.order_book import (
     OrderBookVenue,
     normalize_schwab_book_message,
 )
-from schwab_gateway.order_book_capture import (
-    DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS,
-    MAX_CAPTURE_SYMBOLS,
-    bootstrap_stream_under_token_lock,
-    frame_has_service,
-    subscribe_venue_book,
-)
 from schwab_gateway.order_book_store import OrderBookSnapshotStore
 from schwab_gateway.scheduler import ExecutionScheduler
 
 UTC = dt.timezone.utc
+MAX_FEED_SYMBOLS = 25
+DEFAULT_STREAM_LOGIN_TIMEOUT_SECONDS = 8.0
 log = get_logger(__name__)
+
+
+def frame_has_service(payload: Any, services: tuple[str, ...]) -> bool:
+    """True when a decoded stream frame carries data for one of ``services``."""
+    if not isinstance(payload, Mapping):
+        return False
+    data = payload.get("data")
+    return isinstance(data, list) and any(
+        isinstance(item, Mapping) and item.get("service") in services for item in data
+    )
+
+
+async def subscribe_venue_book(
+    stream: Any,
+    venue: OrderBookVenue,
+    symbols: Sequence[str],
+    handler: Callable[[Any], None],
+) -> None:
+    """Install ``handler`` and subscribe ``symbols`` on the venue's Level II book service."""
+    if venue == "NASDAQ":
+        stream.add_nasdaq_book_handler(handler)
+        await stream.nasdaq_book_subs(list(symbols))
+    else:
+        stream.add_nyse_book_handler(handler)
+        await stream.nyse_book_subs(list(symbols))
+
+
+async def bootstrap_stream_under_token_lock(
+    manager: AtomicTokenManager,
+    upstream_settings: GatewayUpstreamSettings,
+    client_factory: Callable[..., Any],
+    stream_client_factory: Callable[[Any], Any],
+    *,
+    login_timeout_seconds: float,
+) -> Any:
+    """Authenticate a stream under the token lock, then return the live socket only."""
+
+    async def bootstrap(
+        token_read_func: Callable[[], Any],
+        token_write_func: Callable[..., None],
+    ) -> Any:
+        client = client_factory(
+            upstream_settings.api_key.get_secret_value(),
+            upstream_settings.app_secret.get_secret_value(),
+            token_read_func,
+            token_write_func,
+            asyncio=True,
+            enforce_enums=True,
+        )
+        stream = stream_client_factory(client)
+        try:
+            await asyncio.wait_for(stream.login(), timeout=login_timeout_seconds)
+            return stream
+        finally:
+            close = getattr(client, "close_async_session", None)
+            if callable(close):
+                await close()
+
+    return await manager.run_access_transaction_async(bootstrap)
 
 
 class _LiveBookDecoder(StreamJsonDecoder):
@@ -65,8 +119,8 @@ class OrderBookLiveFeed:
     ) -> None:
         if not symbols:
             raise ValueError("live order-book feed requires at least one symbol")
-        if len(symbols) > MAX_CAPTURE_SYMBOLS:
-            raise ValueError(f"live order-book feed supports at most {MAX_CAPTURE_SYMBOLS} symbols")
+        if len(symbols) > MAX_FEED_SYMBOLS:
+            raise ValueError(f"live order-book feed supports at most {MAX_FEED_SYMBOLS} symbols")
         self._manager = manager
         self._upstream_settings = upstream_settings
         self._client_factory = client_factory

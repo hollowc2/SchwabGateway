@@ -1,4 +1,0 @@
-# Retired compatibility marker. The candidate topology no longer exists and this file
-# intentionally contains no service override. Do not use it in Compose commands.
-x-schwab-gateway-retired-candidate:
-  reason: single-live-gateway-only

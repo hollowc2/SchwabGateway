@@ -19,8 +19,8 @@ The required topology is:
 | Production | `schwab_gateway`; `compose.yml` + `compose.production.yml` | `schwab_gateway_live` | `127.0.0.1:8011`; `schwab-gateway` | healthy and scraped by Prometheus |
 | Emergency legacy | `butterfly_gateway_foundation` | `butterfly_schwab_gateway_live` | legacy internal target | stopped but preserved |
 
-There is exactly one live gateway. `schwab_gateway_candidate` must be absent, port 8012
-must remain unused, and `compose.candidate.yml` must not be invoked. Validate the release
+There is exactly one live gateway. `schwab_gateway_candidate` must be absent and port 8012
+must remain unused. Validate the release
 offline, build one immutable image, and recreate only the production `live` service after
 approval. Keep the stopped legacy rollback container and both production image baselines
 intact through the stability window. Never copy or reset the token or add another writer.
