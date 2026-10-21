@@ -37,3 +37,19 @@ aggregate histogram quantiles/TTL recommendations only over homogeneous bucket
 schemas. Roll back rules first to the recorded previous bytes in place, validate
 and reload using the runbooks, then restore the recorded immutable gateway image
 from its release directory. Do not change thresholds, TTLs or worker concurrency.
+
+
+## Stage 2: collector collisions
+
+Consumer review found SPX aligned to minute :00 while NDX/XSP slept 60 seconds
+AFTER each pass; the two-second runtime startup phases do not survive those
+loops. ButterflyGuy's linked collector-only change uses existing minute-grid
+logic at +0/+2/+4 seconds. No position or entry orchestration changes are needed.
+Single-flight expansion is not justified by known request keys: distinct symbols,
+SPX-only VIX, and existing chain coalescing already cover the obvious overlap.
+
+The reproducible consumer synthetic FIFO burst model holds monitor arrivals and
+990 upstream attempts constant: queue p95 2.9 -> 1.5s, latency p95 3.35 -> 1.7s,
+max latency 4.5 -> 1.9s. This deliberately burst-heavy model is diagnostic, not
+recorded-window replay or proof that production targets will pass. No acceptance
+gates are relaxed. See the consumer PR's collector phase evidence for assumptions.
