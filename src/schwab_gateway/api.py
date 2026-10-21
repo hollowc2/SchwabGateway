@@ -48,6 +48,7 @@ from schwab_gateway.auth import (
     authentication_middleware,
     require_capability,
 )
+from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 from schwab_gateway.order_book_store import OrderBookSnapshotStore, OrderBookVenue
 from schwab_gateway.scheduler import (
@@ -122,6 +123,7 @@ gateway_latency = Histogram(
     "gateway_client_request_latency_seconds",
     "Internal gateway request latency",
     ["operation"],
+    buckets=LATENCY_BUCKETS,
 )
 gateway_admission = Counter(
     "gateway_admission_total",

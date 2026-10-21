@@ -44,6 +44,7 @@ from schwab_token_store import (
     TokenManagerState,
 )
 
+from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 from schwab_gateway.market_calendar import EASTERN
 from schwab_gateway.token_adapter import LockedSchwabClientAdapter
@@ -65,6 +66,7 @@ upstream_operation_latency = Histogram(
     "schwab_gateway_upstream_operation_latency_seconds",
     "Live provider latency including its defensive worker lease and token transaction",
     ["operation", "status"],
+    buckets=LATENCY_BUCKETS,
 )
 
 

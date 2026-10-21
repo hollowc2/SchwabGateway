@@ -13,6 +13,7 @@ from prometheus_client import Counter, Gauge, Histogram
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.auth import PriorityClass
+from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 
 log = get_logger(__name__)
@@ -37,6 +38,7 @@ scheduler_queue_wait = Histogram(
     "schwab_gateway_scheduler_queue_wait_seconds",
     "Time spent queued before dispatch, timeout, or caller cancellation",
     ["priority_class", "operation"],
+    buckets=LATENCY_BUCKETS,
 )
 scheduler_dispatches = Counter(
     "schwab_gateway_scheduler_dispatch_total",
@@ -47,6 +49,7 @@ scheduler_execution = Histogram(
     "schwab_gateway_scheduler_upstream_execution_seconds",
     "Actual upstream task duration, including detached timeout drain",
     ["priority_class", "operation", "outcome"],
+    buckets=LATENCY_BUCKETS,
 )
 scheduler_capacity_rejections = Counter(
     "schwab_gateway_scheduler_capacity_rejections_total",
