@@ -31,12 +31,16 @@ operation still owns the worker. Completion logs report `timeout_drain_ms` and
 authorization creation time plus the refresh-token lifetime, not access-token expiry.
 Zero means unknown. Access-token refresh does not move this deadline; interactive
 reauthorization does. The rules in `infra/alerts.yml` warn within 24 hours of expiry,
-on sustained protected queue-wait p99 above 1.5s with sufficient traffic, and when
+when more than 1% of protected queue waits exceed 1.5s with sufficient traffic, and when
 post-timeout drains consume more than 2 worker-seconds in 5 minutes or stay active
 for 1 minute. Alert rule deployment/reload requires separate production approval.
 
 Consumer polling should be staggered, and retries bounded and jittered, in the
 consumer's own repository. The SDK does not automatically retry failed reads.
+The gateway retries eligible connection timeouts at most once within the original
+budget, outside the worker/token transaction; 429 responses are never retried.
+See [reliability evidence and rollout](runbooks/reliability-2026-10-21.md) for
+classified failures, the shared local cooldown and exporter/rule ordering.
 
 ## Runbooks
 

@@ -44,6 +44,7 @@ from schwab_token_store import (
     TokenManagerState,
 )
 
+from schwab_gateway.failures import classify, upstream_attempts, upstream_failures
 from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 from schwab_gateway.market_calendar import EASTERN
@@ -222,6 +223,7 @@ class LockedSchwabMarketDataProvider:
             def execute_and_signal() -> None:
                 worker_error: BaseException | None = None
                 try:
+                    upstream_attempts.labels(operation=operation_name).inc()
                     result = self._adapter.execute(operation)
                 except BaseException as error:
                     result = None
@@ -244,6 +246,9 @@ class LockedSchwabMarketDataProvider:
             return result
         except asyncio.CancelledError:
             status = "cancelled"
+            raise
+        except Exception as exc:
+            upstream_failures.labels(operation=operation_name, cause=classify(exc).cause).inc()
             raise
         finally:
             upstream_operation_latency.labels(
