@@ -48,6 +48,14 @@ from schwab_gateway.auth import (
     authentication_middleware,
     require_capability,
 )
+from schwab_gateway.failures import (
+    FailureMetadata,
+    ReadBackoff,
+    classify,
+    read_recovery,
+    upstream_failures,
+)
+from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 from schwab_gateway.order_book_store import OrderBookSnapshotStore, OrderBookVenue
 from schwab_gateway.scheduler import (
@@ -122,6 +130,7 @@ gateway_latency = Histogram(
     "gateway_client_request_latency_seconds",
     "Internal gateway request latency",
     ["operation"],
+    buckets=LATENCY_BUCKETS,
 )
 gateway_admission = Counter(
     "gateway_admission_total",
@@ -163,6 +172,7 @@ MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
 SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
     "gateway_session_history_upstream", SessionHistoryUpstream
 )
+BACKOFF_UNTIL_KEY = web.AppKey("gateway_backoff_until", ReadBackoff)
 UPSTREAM_TIMEOUT_KEY = web.AppKey("gateway_upstream_timeout", float)
 PROTECTED_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_protected_queue_timeout", float)
 BACKGROUND_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_background_queue_timeout", float)
@@ -636,6 +646,30 @@ def _log_partial_quote_response(
     )
 
 
+class _RateLimitedReadError(UpstreamUnavailableError, FailureMetadata):
+    def __init__(self, seconds: float) -> None:
+        UpstreamUnavailableError.__init__(self, "upstream cooldown active")
+        FailureMetadata.__init__(self, "rate_limited", min(60.0, seconds))
+
+
+def _failure_response(request: web.Request, exc: BaseException, message: str) -> web.Response:
+    failure = classify(exc)
+    if failure.cause == "rate_limited":
+        delay = max(1.0, failure.retry_after or 1.0)
+        loop = asyncio.get_running_loop()
+        request.app[BACKOFF_UNTIL_KEY].until = max(
+            request.app[BACKOFF_UNTIL_KEY].until, loop.time() + delay
+        )
+        response = _error("upstream_rate_limited", message, 503)
+        if failure.retry_after is not None:
+            response.headers["Retry-After"] = str(math.ceil(delay))
+        return response
+    code = "upstream_connect_timeout" if failure.cause == "connect_timeout" else (
+        "upstream_unavailable"
+    )
+    return _error(code, message, 503)
+
+
 async def _serve_upstream(
     request: web.Request,
     operation_name: str,
@@ -668,13 +702,61 @@ async def _serve_upstream(
             if priority is PriorityClass.PROTECTED
             else BACKGROUND_QUEUE_TIMEOUT_KEY
         ]
-        result = await request.app[EXECUTION_SCHEDULER_KEY].execute(
-            priority,
-            operation_name,
-            build_response,
-            queue_timeout_seconds=queue_timeout,
-            execution_timeout_seconds=request.app[UPSTREAM_TIMEOUT_KEY],
-        )
+        loop = asyncio.get_running_loop()
+        # Conservatively charge initial queueing and backoff to the execution budget.
+        # Never renew this deadline for a replacement attempt.
+        deadline = loop.time() + request.app[UPSTREAM_TIMEOUT_KEY]
+
+        async def guarded_response() -> BaseModel:
+            cooldown = request.app[BACKOFF_UNTIL_KEY].until - loop.time()
+            if cooldown > 0:
+                raise _RateLimitedReadError(cooldown)
+            try:
+                return await build_response()
+            except UpstreamUnavailableError as exc:
+                if classify(exc).cause == "rate_limited":
+                    _failure_response(request, exc, unavailable_message)
+                raise
+
+        for attempt in range(2):
+            cooldown = request.app[BACKOFF_UNTIL_KEY].until - loop.time()
+            if cooldown > 0:
+                read_recovery.labels(outcome="cooldown_rejected").inc()
+                response = _error("upstream_rate_limited", unavailable_message, 503)
+                response.headers["Retry-After"] = str(math.ceil(cooldown))
+                return response
+            try:
+                result = await request.app[EXECUTION_SCHEDULER_KEY].execute(
+                    priority,
+                    operation_name,
+                    guarded_response,
+                    queue_timeout_seconds=queue_timeout if attempt == 0 else min(
+                        queue_timeout, max(.001, deadline - loop.time())
+                    ),
+                    execution_timeout_seconds=request.app[UPSTREAM_TIMEOUT_KEY]
+                    if attempt == 0 else max(.001, deadline - loop.time()),
+                    request_deadline=deadline if attempt else None,
+                )
+                break
+            except UpstreamUnavailableError as exc:
+                admitted = True
+                failure = classify(exc)
+                if failure.cause == "rate_limited":
+                    # No automatic 429 retry; fail closed with safe metadata.
+                    return _failure_response(request, exc, unavailable_message)
+                if failure.cause == "connect_timeout":
+                    if attempt == 0 and operation_name in {
+                        "spot", "quotes", "option_chain", "chain_metadata", "history",
+                        "movers", "session_history",
+                    } and deadline - loop.time() >= 1.1:
+                        # The failed operation has completed and released its transaction.
+                        # Sleep outside scheduler ownership; cancellation stops the retry.
+                        read_recovery.labels(outcome="connection_retry").inc()
+                        await asyncio.sleep(.1)
+                        continue
+                    read_recovery.labels(outcome="connection_exhausted").inc()
+                    return _error("upstream_connect_timeout", unavailable_message, 503)
+                raise
         admitted = True
         return _json(result)
     except SchedulerCapacityError:
@@ -695,6 +777,7 @@ async def _serve_upstream(
             503,
         )
     except SchedulerUpstreamTimeoutError:
+        upstream_failures.labels(operation=operation_name, cause="scheduler_timeout").inc()
         admitted = True
         return _error("upstream_timeout", timeout_message, 504)
     except UpstreamUnavailableError:
@@ -796,8 +879,8 @@ async def _serve_option_chain_without_worker(
         response = _option_chain_response(result, symbol, expiration)
     except TimeoutError:
         return _error("upstream_timeout", UPSTREAM_TIMEOUT_MESSAGE, 504)
-    except UpstreamUnavailableError:
-        return _error("upstream_unavailable", UPSTREAM_UNAVAILABLE_MESSAGE, 503)
+    except UpstreamUnavailableError as exc:
+        return _failure_response(request, exc, UPSTREAM_UNAVAILABLE_MESSAGE)
     except (UpstreamMalformedError, ValueError):
         return _error("upstream_malformed", UPSTREAM_MALFORMED_MESSAGE, 502)
     return _json(response)
@@ -1012,6 +1095,7 @@ def create_app(
         session_history_upstream or _UnavailableSessionHistoryUpstream()
     )
     app[AUTHENTICATOR_KEY] = authenticator
+    app[BACKOFF_UNTIL_KEY] = ReadBackoff()
     app[UPSTREAM_TIMEOUT_KEY] = upstream_timeout_seconds
     app[PROTECTED_QUEUE_TIMEOUT_KEY] = protected_queue_timeout_seconds
     app[BACKGROUND_QUEUE_TIMEOUT_KEY] = background_queue_timeout_seconds

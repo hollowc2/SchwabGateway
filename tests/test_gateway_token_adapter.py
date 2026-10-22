@@ -562,6 +562,7 @@ def test_operation_failure_logs_the_error_type_but_not_the_message(
     fake_log.warning.assert_called_once_with(
         "schwab_token_adapter_failed",
         reason="client_operation_failed",
+        cause="other",
         error_type="TimeoutError",
     )
     assert "access-secret-0" not in repr(fake_log.method_calls)
@@ -587,6 +588,7 @@ def test_operation_failure_logs_schwab_status_code(
     fake_log.warning.assert_called_once_with(
         "schwab_token_adapter_failed",
         reason="client_operation_failed",
+        cause="other",
         error_type="HTTPStatusError",
         upstream_status=502,
     )
@@ -640,5 +642,6 @@ def test_real_schwab_client_gives_up_on_a_stalled_response_at_the_http_timeout(
     fake_log.warning.assert_called_once_with(
         "schwab_token_adapter_failed",
         reason="client_operation_failed",
+        cause="other",
         error_type="ReadTimeout",
     )

@@ -15,6 +15,11 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest
       - run: uv run ruff check .
+      - name: Test Prometheus rules offline
+        run: >-
+          docker run --rm --network none
+          -v "$PWD/infra:/work:ro" --entrypoint promtool
+          prom/prometheus:v3.10.0 test rules /work/tests/gateway-alerts.test.yml
       - run: uv build
       - run: uv build --package schwab-gateway-sdk
       - run: uv build --package schwab-token-store
