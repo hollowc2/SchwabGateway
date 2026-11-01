@@ -314,7 +314,11 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/OrderBookRecentResponseV1"}
     Error:
-      description: Bounded error.
+      description: Bounded error. No automatic SDK retry.
+      headers:
+        Retry-After:
+          description: Optional validated upstream rate-limit or local read cooldown seconds.
+          schema: {type: integer, minimum: 1, maximum: 60}
       content:
         application/json:
           schema: {$ref: "#/components/schemas/GatewayErrorV1"}
@@ -674,6 +678,8 @@ components:
                 - gateway_queue_timeout
                 - upstream_timeout
                 - upstream_unavailable
+                - upstream_rate_limited
+                - upstream_connect_timeout
                 - upstream_malformed
                 - order_book_unavailable
             message: {type: string}

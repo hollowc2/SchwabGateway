@@ -33,11 +33,29 @@ groups:
 
       - alert: SchwabGatewayProtectedQueueWaitHigh
         expr: >-
-          histogram_quantile(0.99,
-            sum by (job, le) (rate(schwab_gateway_scheduler_queue_wait_seconds_bucket{
+          (
+            sum by (job) (rate(schwab_gateway_scheduler_queue_wait_seconds_count{
               job="schwab_gateway", priority_class="protected"
             }[5m]))
-          ) > 1.5
+            -
+            sum by (job) (
+              rate(schwab_gateway_scheduler_queue_wait_seconds_bucket{
+                job="schwab_gateway", priority_class="protected", le="1.5"
+              }[5m])
+              or ignoring(le)
+              rate(schwab_gateway_scheduler_queue_wait_seconds_bucket{
+                job="schwab_gateway", priority_class="protected", le="1.0"
+              }[5m])
+              or ignoring(le)
+              rate(schwab_gateway_scheduler_queue_wait_seconds_bucket{
+                job="schwab_gateway", priority_class="protected", le="1"
+              }[5m])
+            )
+          )
+          /
+          sum by (job) (rate(schwab_gateway_scheduler_queue_wait_seconds_count{
+            job="schwab_gateway", priority_class="protected"
+          }[5m])) > 0.01
           and on(job)
           sum by (job) (increase(schwab_gateway_scheduler_queue_wait_seconds_count{
             job="schwab_gateway", priority_class="protected"
@@ -50,6 +68,21 @@ groups:
           description: >-
             Sustained protected queueing is consuming request deadlines. Inspect consumer
             polling bursts and timeout-drain time before increasing capacity or budgets.
+
+      # Fail visibly if neither exact nor legacy fallback buckets are available.
+      - alert: SchwabGatewayQueueBucketsMissing
+        expr: >-
+          schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway"}
+          unless ignoring(le)
+          schwab_gateway_scheduler_queue_wait_seconds_bucket{
+            job="schwab_gateway", le=~"1|1.0|1.5"
+          }
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Gateway queue histogram threshold buckets are missing
+          description: Restore compatible instrumentation before interpreting queue warnings.
 
       - alert: SchwabGatewayTimeoutDrainHigh
         expr: >-

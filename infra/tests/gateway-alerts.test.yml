@@ -82,3 +82,91 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 0
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+100x20'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+100x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+100x20'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+100x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+100x20'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+98x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+1x20'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+0x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x20'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+0x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+100x20'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayQueueBucketsMissing",alertstate="firing"})'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+  - interval: 1m
+    input_series:
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_count{job="schwab_gateway",priority_class="protected"}'
+        values: '0+100x8 0+100x12'
+      - series: 'schwab_gateway_scheduler_queue_wait_seconds_bucket{job="schwab_gateway",priority_class="protected",le="1.5"}'
+        values: '0+100x8 0+100x12'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedQueueWaitHigh",alertstate="firing"}) or vector(0)'
+        eval_time: 16m
+        exp_samples:
+          - labels: '{}'
+            value: 0

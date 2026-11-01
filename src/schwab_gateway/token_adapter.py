@@ -14,6 +14,7 @@ from schwab_token_store import (
     TokenWriteCallback,
 )
 
+from schwab_gateway.failures import FailureMetadata, classify
 from schwab_gateway.logging import get_logger
 
 log = get_logger(__name__)
@@ -53,8 +54,11 @@ class SchwabClientConstructionError(SchwabTokenAdapterError):
     pass
 
 
-class SchwabClientOperationError(SchwabTokenAdapterError):
-    pass
+class SchwabClientOperationError(SchwabTokenAdapterError, FailureMetadata):
+    def __init__(self, message: str, metadata: FailureMetadata | None = None) -> None:
+        SchwabTokenAdapterError.__init__(self, message)
+        metadata = metadata or FailureMetadata()
+        FailureMetadata.__init__(self, metadata.cause, metadata.retry_after)
 
 
 class LockedSchwabClientAdapter:
@@ -153,8 +157,11 @@ class LockedSchwabClientAdapter:
                     "schwab_token_adapter_failed",
                     reason="client_operation_failed",
                     error_type=type(exc).__name__,
+                    cause=classify(exc).cause,
                     **_upstream_status(exc),
                 )
-                raise SchwabClientOperationError("Schwab client operation failed") from None
+                raise SchwabClientOperationError(
+                    "Schwab client operation failed", classify(exc)
+                ) from None
 
         return self._token_manager.run_access_transaction(run_locked)

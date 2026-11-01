@@ -13,6 +13,7 @@ from prometheus_client import Counter, Gauge, Histogram
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.auth import PriorityClass
+from schwab_gateway.latency import LATENCY_BUCKETS
 from schwab_gateway.logging import get_logger
 
 log = get_logger(__name__)
@@ -37,6 +38,7 @@ scheduler_queue_wait = Histogram(
     "schwab_gateway_scheduler_queue_wait_seconds",
     "Time spent queued before dispatch, timeout, or caller cancellation",
     ["priority_class", "operation"],
+    buckets=LATENCY_BUCKETS,
 )
 scheduler_dispatches = Counter(
     "schwab_gateway_scheduler_dispatch_total",
@@ -47,6 +49,7 @@ scheduler_execution = Histogram(
     "schwab_gateway_scheduler_upstream_execution_seconds",
     "Actual upstream task duration, including detached timeout drain",
     ["priority_class", "operation", "outcome"],
+    buckets=LATENCY_BUCKETS,
 )
 scheduler_capacity_rejections = Counter(
     "schwab_gateway_scheduler_capacity_rejections_total",
@@ -118,6 +121,7 @@ class _Job:
     execution_timeout_seconds: float
     enqueued_at: float
     queue_deadline: float
+    request_deadline: float | None
     started: asyncio.Future[None]
     result: asyncio.Future[Any]
     state: Literal["queued", "running", "finished"] = "queued"
@@ -202,6 +206,7 @@ class ExecutionScheduler:
         *,
         queue_timeout_seconds: float,
         execution_timeout_seconds: float,
+        request_deadline: float | None = None,
     ) -> T:
         if not isinstance(priority, PriorityClass):
             raise ValueError("unknown gateway priority class")
@@ -214,6 +219,8 @@ class ExecutionScheduler:
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"scheduler {label} must be finite and positive")
 
+        if request_deadline is not None and not math.isfinite(request_deadline):
+            raise ValueError("request deadline must be finite")
         loop = asyncio.get_running_loop()
         enqueued_at = loop.time()
         job = _Job(
@@ -222,7 +229,9 @@ class ExecutionScheduler:
             operation=operation,
             execution_timeout_seconds=execution_timeout_seconds,
             enqueued_at=enqueued_at,
-            queue_deadline=enqueued_at + queue_timeout_seconds,
+            queue_deadline=min(enqueued_at + queue_timeout_seconds, request_deadline)
+            if request_deadline is not None else enqueued_at + queue_timeout_seconds,
+            request_deadline=request_deadline,
             started=loop.create_future(),
             result=loop.create_future(),
         )
@@ -424,6 +433,8 @@ class ExecutionScheduler:
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         execution_deadline = started_at + job.execution_timeout_seconds
+        if job.request_deadline is not None:
+            execution_deadline = min(execution_deadline, job.request_deadline)
         operation_completed_at: float | None = None
         timed_out = False
         outcome = "error"

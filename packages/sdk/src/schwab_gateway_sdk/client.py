@@ -55,6 +55,18 @@ class GatewayUnavailableError(GatewayClientError):
     pass
 
 
+class GatewayRateLimitError(GatewayUnavailableError):
+    """Upstream rate limiting; the SDK never retries automatically."""
+
+    def __init__(self, retry_after_seconds: int | None = None) -> None:
+        super().__init__("gateway upstream rate limited")
+        self.retry_after_seconds = retry_after_seconds
+
+
+class GatewayConnectionTimeoutError(GatewayUnavailableError):
+    """The gateway exhausted its bounded connection-retry policy."""
+
+
 class GatewayQueueTimeoutError(GatewayUnavailableError):
     """The server shed a request whose bounded dispatch wait expired."""
 
@@ -197,6 +209,12 @@ class GatewayMarketDataClient:
             raise GatewayQueueTimeoutError("gateway worker queue wait timed out")
         if response.status_code == 504:
             raise GatewayTimeoutError(f"gateway {noun} upstream timed out")
+        if response.status_code == 503 and _error_code(response) == "upstream_rate_limited":
+            raw = response.headers.get("Retry-After", "")
+            seconds = int(raw) if len(raw) <= 2 and raw.isascii() and raw.isdigit() else None
+            raise GatewayRateLimitError(seconds if seconds is not None and seconds <= 60 else None)
+        if response.status_code == 503 and _error_code(response) == "upstream_connect_timeout":
+            raise GatewayConnectionTimeoutError("gateway upstream connection timed out")
         if response.status_code in {502, 503}:
             raise GatewayUnavailableError("gateway upstream is unavailable")
         if response.status_code != 200:

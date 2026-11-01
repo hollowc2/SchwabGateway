@@ -205,7 +205,12 @@ def test_alert_rules_keep_gateway_metric_names() -> None:
     assert "upstream_timeouts_total" in scheduler_timeout["expr"]
     assert "capacity_rejections_total" in scheduler_timeout["expr"]
     assert "expires_timestamp_seconds" in rules["SchwabGatewayRefreshTokenExpiring"]["expr"]
-    assert "histogram_quantile(0.99" in rules["SchwabGatewayProtectedQueueWaitHigh"]["expr"]
+    queue_rule = rules["SchwabGatewayProtectedQueueWaitHigh"]
+    assert 'le="1.5"' in queue_rule["expr"]
+    assert '> 0.01' in queue_rule["expr"]
+    assert '> 20' in queue_rule["expr"]
+    assert queue_rule['for'] == '10m'
+    assert "SchwabGatewayQueueBucketsMissing" in rules
     assert "timeout_drain_seconds_sum" in rules["SchwabGatewayTimeoutDrainHigh"]["expr"]
     assert "timeout_drain_active" in rules["SchwabGatewayTimeoutDrainHigh"]["expr"]
 

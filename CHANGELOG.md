@@ -8,6 +8,12 @@
   reauthorization over a quiet weekend left the old deadline exported and
   `SchwabGatewayRefreshTokenExpiring` fired for a token that had already been replaced
   (2026-11-01). The probe never changes readiness; a failed read is only logged.
+- Tag the reliability work from #55, already live since 2026-10-21 as the untagged
+  build `502ede3`. Readiness-latency histograms gain explicit 1.25/1.5/1.75/2s buckets,
+  and the protected queue-wait alert counts waits above 1.5s. Upstream failures are
+  reported with bounded causes in responses and SDK errors, `Retry-After` is honored
+  with a shared read cooldown, and at most one connection-timeout retry runs within the
+  original budget. See `docs/runbooks/reliability-2026-10-21.md`.
 
 ## 0.8.2 - 2026-10-19
 
