@@ -615,14 +615,30 @@ class AtomicTokenManager:
                 )
             executor.shutdown(wait=True)
 
+    def observe_refresh_deadline(self) -> float:
+        """Re-read the document to refresh the deadline gauge without changing state.
+
+        The gauge otherwise moves only when a transaction loads the document, so after an
+        interactive reauthorization during a quiet period it keeps reporting the previous
+        authorization's deadline. Health is left alone: readiness stays owned by the
+        transaction path, and a transient lock timeout here must not flip a READY
+        manager. Failures raise for the caller to log.
+        """
+        with self._store.locked(self._lock_timeout_seconds) as transaction:
+            token = validate_token_document(transaction.read())
+        return self._record_refresh_deadline(token)
+
     def _load_from_transaction(self, transaction: TokenTransaction) -> TokenDocument:
         token = validate_token_document(transaction.read())
-        creation_timestamp = float(token["creation_timestamp"])
-        expires_at = creation_timestamp + self._refresh_token_ttl_seconds
-        token_refresh_expires_timestamp.set(expires_at)
+        expires_at = self._record_refresh_deadline(token)
         if self._clock() >= expires_at:
             raise TokenExpiredError("refresh token lifetime has expired")
         return token
+
+    def _record_refresh_deadline(self, token: TokenDocument) -> float:
+        expires_at = float(token["creation_timestamp"]) + self._refresh_token_ttl_seconds
+        token_refresh_expires_timestamp.set(expires_at)
+        return expires_at
 
     def _record_load_failure(self, exc: TokenManagerError) -> None:
         state, reason, _result = _failure_outcome(exc)

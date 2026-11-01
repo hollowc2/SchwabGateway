@@ -142,6 +142,50 @@ def test_expired_token_still_exports_its_deadline(tmp_path: Path) -> None:
     )
 
 
+def test_observe_refresh_deadline_tracks_reauthorization_without_a_transaction(
+    tmp_path: Path,
+) -> None:
+    """A reauthorization during a quiet period must move the gauge with no request."""
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_manager = manager(path)
+    metric = "schwab_gateway_refresh_token_expires_timestamp_seconds"
+    token_manager.load()
+    health = token_manager.health()
+
+    renewed = token_document()
+    renewed["creation_timestamp"] = NOW
+    write_token(path, renewed)
+
+    assert token_manager.observe_refresh_deadline() == NOW + 7 * 24 * 60 * 60
+    assert REGISTRY.get_sample_value(metric) == NOW + 7 * 24 * 60 * 60
+    assert token_manager.health() == health
+
+
+def test_observe_refresh_deadline_failure_leaves_health_alone(tmp_path: Path) -> None:
+    path = tmp_path / "tokens.json"
+    write_token(path, token_document())
+    token_manager = manager(path)
+    token_manager.load()
+    health = token_manager.health()
+
+    path.unlink()
+    with pytest.raises(TokenMissingError):
+        token_manager.observe_refresh_deadline()
+    assert token_manager.health() == health
+
+
+def test_observe_refresh_deadline_exports_an_expired_deadline_without_raising(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tokens.json"
+    expired = token_document()
+    expired["creation_timestamp"] = NOW - 8 * 24 * 60 * 60
+    write_token(path, expired)
+
+    assert manager(path).observe_refresh_deadline() == NOW - 24 * 60 * 60
+
+
 def test_read_locked_uses_the_existing_lock_without_write_flags(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
