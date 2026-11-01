@@ -30,8 +30,10 @@ operation still owns the worker. Completion logs report `timeout_drain_ms` and
 `schwab_gateway_refresh_token_expires_timestamp_seconds` reports the last validated
 authorization creation time plus the refresh-token lifetime, not access-token expiry.
 Zero means unknown. Access-token refresh does not move this deadline; interactive
-reauthorization does. The rules in `infra/alerts.yml` warn within 24 hours of expiry,
-when more than 1% of protected queue waits exceed 1.5s with sufficient traffic, and when
+reauthorization does, within about 5 minutes even with no traffic, because a background
+probe re-reads the token document on that interval without affecting readiness. The
+rules in `infra/alerts.yml` warn within 24 hours of expiry, when more than 1% of
+protected queue waits exceed 1.5s with sufficient traffic, and when
 post-timeout drains consume more than 2 worker-seconds in 5 minutes or stay active
 for 1 minute. Alert rule deployment/reload requires separate production approval.
 

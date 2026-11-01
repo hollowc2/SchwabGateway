@@ -55,6 +55,7 @@ T = TypeVar("T")
 
 DEFAULT_QUOTE_BATCH_SIZE = 150
 DEFAULT_READINESS_RECOVERY_SECONDS = 30.0
+DEFAULT_REFRESH_DEADLINE_PROBE_SECONDS = 300.0
 DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS = 6.0
 DEFAULT_WARMUP_RETRY_SECONDS = 3.0
 # Schwab's standard full extended-hours window: pre-market open through after-hours
@@ -549,3 +550,46 @@ class TokenReadinessRecovery:
                 raise
             except Exception:
                 log.warning("gateway_readiness_recovery_attempt_crashed", reason="unexpected_error")
+
+
+class RefreshDeadlineProbe:
+    """Keep the refresh-token deadline gauge current while no requests arrive.
+
+    The gauge moves only when the token document is loaded, and the gateway loads it only
+    inside request transactions. An interactive reauthorization during a quiet stretch
+    (a weekend) therefore leaves the previous authorization's deadline exported, and
+    ``SchwabGatewayRefreshTokenExpiring`` fires for a token that has already been
+    replaced. This re-reads the document on a fixed interval to refresh the gauge only;
+    readiness is untouched, so a failed probe is logged and never fails the gateway.
+    """
+
+    def __init__(
+        self,
+        manager: AtomicTokenManager,
+        *,
+        interval_seconds: float = DEFAULT_REFRESH_DEADLINE_PROBE_SECONDS,
+    ) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("refresh deadline probe interval must be positive")
+        self._manager = manager
+        self._interval_seconds = interval_seconds
+
+    async def attempt_once(self) -> bool:
+        """Return True when the gauge was refreshed from the current document."""
+        try:
+            await asyncio.to_thread(self._manager.observe_refresh_deadline)
+        except TokenManagerError as exc:
+            log.warning("gateway_refresh_deadline_probe_failed", error_type=type(exc).__name__)
+            return False
+        return True
+
+    async def run_forever(self) -> None:
+        """Probe forever; any non-cancellation failure is logged and the loop continues."""
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self.attempt_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("gateway_refresh_deadline_probe_crashed", reason="unexpected_error")

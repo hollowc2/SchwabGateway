@@ -30,6 +30,7 @@ from schwab_gateway.live_provider import (
     DEFAULT_WARMUP_STARTUP_TIMEOUT_SECONDS,
     GatewayUpstreamSettings,
     LockedSchwabMarketDataProvider,
+    RefreshDeadlineProbe,
     TokenReadinessRecovery,
     UpstreamWarmupReadiness,
 )
@@ -189,6 +190,7 @@ def build_live_app(
     app.cleanup_ctx.append(event_loop_lag_context)
     app.cleanup_ctx.append(_upstream_warmup_ctx(warmup_readiness))
     app.cleanup_ctx.append(_readiness_recovery_ctx(TokenReadinessRecovery(manager)))
+    app.cleanup_ctx.append(_refresh_deadline_probe_ctx(RefreshDeadlineProbe(manager)))
     if settings.order_book_stream_enabled:
         symbols = tuple(
             symbol for symbol in settings.order_book_stream_symbols.split(",") if symbol
@@ -233,6 +235,16 @@ def _readiness_recovery_ctx(recovery: TokenReadinessRecovery) -> CleanupContext:
 
     async def ctx(_app: web.Application) -> AsyncIterator[None]:
         async with _background_task(recovery.run_forever()):
+            yield
+
+    return ctx
+
+
+def _refresh_deadline_probe_ctx(probe: RefreshDeadlineProbe) -> CleanupContext:
+    """Keep the refresh-token deadline gauge current for the application's lifetime."""
+
+    async def ctx(_app: web.Application) -> AsyncIterator[None]:
+        async with _background_task(probe.run_forever()):
             yield
 
     return ctx

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 from schwab_token_store import (
     AtomicFileTokenStore,
     AtomicTokenManager,
@@ -36,6 +37,7 @@ from schwab_gateway.api import (
 )
 from schwab_gateway.config import GatewaySettings
 from schwab_gateway.live_provider import (
+    RefreshDeadlineProbe,
     TokenReadinessRecovery,
     UpstreamWarmupReadiness,
 )
@@ -332,7 +334,8 @@ def test_live_app_registers_readiness_recovery(tmp_path: Path) -> None:
         _unused_factory,
     )
     # scheduler drain + event-loop lag sampler + upstream warmup + readiness recovery
-    assert len(app.cleanup_ctx) == 4
+    # + refresh-deadline probe
+    assert len(app.cleanup_ctx) == 5
     assert execution_scheduler_context in app.cleanup_ctx
     assert event_loop_lag_context in app.cleanup_ctx
 
@@ -347,8 +350,9 @@ def test_live_app_registers_opt_in_order_book_feed(tmp_path: Path) -> None:
         _upstream_settings(_token_file(tmp_path)),
         _unused_factory,
     )
-    # scheduler drain + lag sampler + upstream warmup + readiness recovery + feed
-    assert len(app.cleanup_ctx) == 5
+    # scheduler drain + lag sampler + upstream warmup + readiness recovery
+    # + refresh-deadline probe + feed
+    assert len(app.cleanup_ctx) == 6
 
 
 def test_live_app_refuses_enabled_order_book_feed_without_symbols(tmp_path: Path) -> None:
@@ -563,3 +567,42 @@ def test_live_app_exposes_no_account_or_order_route(tmp_path: Path) -> None:
         "/v1/order-book/recent",
         "/v1/order-book/stream",
     }
+
+
+# --- Refresh-deadline probe ----------------------------------------------------------
+
+
+async def test_probe_refreshes_the_deadline_after_a_quiet_reauthorization(
+    tmp_path: Path,
+) -> None:
+    token = _token_file(tmp_path)
+    manager = AtomicTokenManager(AtomicFileTokenStore(token))
+    manager.load()
+
+    renewed_at = int(time.time())
+    document = json.loads(token.read_text(encoding="utf-8"))
+    document["creation_timestamp"] = renewed_at
+    token.write_text(json.dumps(document), encoding="utf-8")
+
+    assert await RefreshDeadlineProbe(manager).attempt_once() is True
+    assert (
+        REGISTRY.get_sample_value("schwab_gateway_refresh_token_expires_timestamp_seconds")
+        == renewed_at + 7 * 24 * 60 * 60
+    )
+    assert manager.health().state is TokenManagerState.READY
+
+
+async def test_probe_failure_is_absorbed_and_leaves_readiness_alone(tmp_path: Path) -> None:
+    token = _token_file(tmp_path)
+    manager = AtomicTokenManager(AtomicFileTokenStore(token))
+    manager.load()
+    token.unlink()
+
+    assert await RefreshDeadlineProbe(manager).attempt_once() is False
+    assert manager.health().state is TokenManagerState.READY
+
+
+def test_probe_interval_must_be_positive(tmp_path: Path) -> None:
+    manager = AtomicTokenManager(AtomicFileTokenStore(_token_file(tmp_path)))
+    with pytest.raises(ValueError):
+        RefreshDeadlineProbe(manager, interval_seconds=0)
