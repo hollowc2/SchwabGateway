@@ -44,6 +44,28 @@ budget, outside the worker/token transaction; 429 responses are never retried.
 See [reliability evidence and rollout](runbooks/reliability-2026-10-21.md) for
 classified failures, the shared local cooldown and exporter/rule ordering.
 
+## DNS incident checks
+
+When upstream connection failures coincide across unrelated services, compare the
+host resolver with Docker's resolver from the affected containers:
+
+```bash
+python3 tools/probe_dns.py --container schwab_gateway_live --container turtlequant-bot
+```
+
+The standard-library-only script runs once, emits one JSON line per hostname and
+environment, and exits nonzero if any lookup fails. Each lookup has a three-second
+deadline, including Docker execution; use `--timeout-seconds` to override it. By
+default it resolves `api.schwabapi.com` and `api.binance.com`; `--hostnames` selects
+other names. It performs DNS lookups only and accesses no credentials. Running it
+does not install a recurring monitor or alter DNS configuration.
+
+For a transient incident, preserve the timestamped probe output alongside gateway
+and consumer logs. A successful probe after recovery cannot prove which resolver
+failed earlier. Have an authorized operator inspect `systemd-resolved` and kernel
+journals for the same UTC window when system-journal access is unavailable. Resolver
+configuration changes and recurring production monitoring require deployment review.
+
 ## Runbooks
 
 - Deploy: [`runbooks/deploy.md`](runbooks/deploy.md)
