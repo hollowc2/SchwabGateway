@@ -68,9 +68,17 @@ configuration changes and recurring production monitoring require deployment rev
 
 The optional user units in `infra/systemd/schwab-gateway-dns-probe.{service,timer}`
 are prepared for Helios's existing `billy` user manager (`Linger=yes`). They run
-the probe 15 seconds after the previous run finishes, with a 25-second service
-deadline. Runs do not overlap. Each probe emits six JSON lines into the user's
-existing journal. A failed lookup exits nonzero and marks that run failed; the
+the probe 15 seconds after the previous run finishes, with a 35-second service
+deadline. Runs do not overlap. Each probe emits six lookup JSON lines into the user's
+existing journal. The unit also enables `--resolver-interface eth0` and
+`--compare-upstreams-on-failure`. This requires the existing `resolvectl` and `dig`
+commands. Before/after records capture the configured and selected numeric DNS
+servers without logging raw command output. Following a failed lookup, up to three
+upstream servers receive one direct A and AAAA query for each of the two API names.
+The comparison has at most 12 queries, four concurrent workers, one attempt per
+query and a 1.5-second subprocess deadline. Successful runs do not run this comparison.
+It is emitted as a separate JSON event, preserving the six original lookup records.
+A failed lookup exits nonzero and marks that run failed; the
 timer continues scheduling later runs. This captures evidence without delivering
 external alerts. The units have not been enabled by this preparation.
 
@@ -98,6 +106,14 @@ probe service, restore any saved prior unit/script bytes and their prior timer
 states, and reload the user manager. If all three files were previously absent,
 the disabled inert files may remain; no file deletion or application restart is
 needed. Installing the capture timer does not change resolver configuration.
+
+The initial six-lookup timer was enabled on Helios on 2026-11-04 at 00:51 UTC from
+source `6cc7bd7`. The additional upstream-selection/comparison capture is prepared
+locally and requires approval to update the installed probe and service. Before
+that update, back up those two existing files and the enabled/active timer states;
+validate one healthy run and an isolated simulated-failure run, then confirm two
+scheduled runs. Rollback restores the saved probe/service files and the old
+25-second service deadline, reloads the user manager and restores prior timer states.
 
 ## Runbooks
 
