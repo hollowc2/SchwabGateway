@@ -66,6 +66,39 @@ failed earlier. Have an authorized operator inspect `systemd-resolved` and kerne
 journals for the same UTC window when system-journal access is unavailable. Resolver
 configuration changes and recurring production monitoring require deployment review.
 
+The optional user units in `infra/systemd/schwab-gateway-dns-probe.{service,timer}`
+are prepared for Helios's existing `billy` user manager (`Linger=yes`). They run
+the probe 15 seconds after the previous run finishes, with a 25-second service
+deadline. Runs do not overlap. Each probe emits six JSON lines into the user's
+existing journal. A failed lookup exits nonzero and marks that run failed; the
+timer continues scheduling later runs. This captures evidence without delivering
+external alerts. The units have not been enabled by this preparation.
+
+After approval to enable `schwab-gateway-dns-probe.timer` on Helios:
+
+1. Record the gateway/trading container identities, existing unit/script bytes
+   (or their absence), and timer enabled/active states in a timestamped rollback
+   directory. Use the approved source commit for all three files.
+2. Install the probe at
+   `~/.local/share/schwab-gateway-dns-monitor/probe_dns.py` and the two units in
+   `~/.config/systemd/user/`, preserving any previous versions in the rollback
+   directory. Validate with `systemd-analyze --user verify` before enabling.
+3. Run `systemctl --user daemon-reload`, then
+   `systemctl --user enable --now schwab-gateway-dns-probe.timer`. Verify at least
+   two completed runs and inspect their JSON with
+   `journalctl --user -u schwab-gateway-dns-probe.service -o cat`.
+4. Confirm the gateway remains ready and the recorded application containers
+   retain their identities and restart counts. Observe user-journal usage and
+   the next DNS incident; an ordinary successful run proves current resolution
+   only. Existing journald retention controls apply.
+
+Rollback: disable and stop this timer with
+`systemctl --user disable --now schwab-gateway-dns-probe.timer`, stop an active
+probe service, restore any saved prior unit/script bytes and their prior timer
+states, and reload the user manager. If all three files were previously absent,
+the disabled inert files may remain; no file deletion or application restart is
+needed. Installing the capture timer does not change resolver configuration.
+
 ## Runbooks
 
 - Deploy: [`runbooks/deploy.md`](runbooks/deploy.md)
