@@ -3,8 +3,8 @@ Description=Capture host and container DNS evidence for SchwabGateway
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 %h/.local/share/schwab-gateway-dns-monitor/probe_dns.py --container schwab_gateway_live --container turtlequant-bot --timeout-seconds 3
-TimeoutStartSec=25s
+ExecStart=/usr/bin/python3 %h/.local/share/schwab-gateway-dns-monitor/probe_dns.py --container schwab_gateway_live --container turtlequant-bot --timeout-seconds 3 --resolver-interface eth0 --compare-upstreams-on-failure
+TimeoutStartSec=35s
 NoNewPrivileges=true
 UMask=0077
 StandardOutput=journal
