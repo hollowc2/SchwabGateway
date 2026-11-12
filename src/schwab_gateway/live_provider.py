@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
+import structlog
 from prometheus_client import Histogram
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -225,7 +226,10 @@ class LockedSchwabMarketDataProvider:
                 worker_error: BaseException | None = None
                 try:
                     upstream_attempts.labels(operation=operation_name).inc()
-                    result = self._adapter.execute(operation)
+                    # Tags the adapter's failure log, so a single 429 or timeout can be
+                    # matched to the read that hit it rather than only to the counter.
+                    with structlog.contextvars.bound_contextvars(operation=operation_name):
+                        result = self._adapter.execute(operation)
                 except BaseException as error:
                     result = None
                     worker_error = error

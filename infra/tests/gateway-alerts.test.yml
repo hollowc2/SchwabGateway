@@ -170,3 +170,38 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 0
+  - interval: 1m
+    # One isolated protected 503 (a single Schwab 429 the next poll recovers from)
+    # stays on the counters and does not page.
+    input_series:
+      - series: 'gateway_client_requests_total{job="schwab_gateway",operation="option_chain_v1",status="503"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname=~"SchwabGatewayProtected(RequestFailure|SchedulerFailure)",alertstate="firing"}) or vector(0)'
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - interval: 1m
+    # Three protected failures inside ten minutes is a cluster and pages on both rules.
+    input_series:
+      - series: 'gateway_client_requests_total{job="schwab_gateway",operation="option_chain_v1",status="503"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname=~"SchwabGatewayProtected(RequestFailure|SchedulerFailure)",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 2

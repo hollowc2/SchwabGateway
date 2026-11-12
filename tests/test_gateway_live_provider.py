@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Any
 
 import pytest
+import structlog
 
 from schwab_gateway.admission import AdmissionPolicy
 from schwab_gateway.auth import PriorityClass
@@ -284,6 +285,29 @@ async def test_spot_read_closes_its_session_even_when_the_call_fails() -> None:
     with pytest.raises(SchwabClientOperationError):
         await provider.get_spot_price("$SPX")
     assert client.session.closed == 1
+
+
+async def test_adapter_failure_log_names_the_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure counter already has the operation; the log line needs it too so one
+    429 or timeout can be lined up with the consumer request that hit it."""
+    bound_at_failure: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "schwab_gateway.token_adapter.log.warning",
+        lambda *_args, **_kwargs: bound_at_failure.append(
+            structlog.contextvars.get_contextvars()
+        ),
+    )
+    client = _FakeClient()
+    client.chain_response = _Response(None, raises=RuntimeError("upstream refused"))
+    provider, _ = _provider(client)
+
+    with pytest.raises(SchwabClientOperationError):
+        await provider.get_option_chain("$SPX", dt.date(2026, 11, 12))
+
+    assert bound_at_failure == [{"operation": "option_chain"}]
+    assert structlog.contextvars.get_contextvars() == {}
 
 
 async def test_spot_read_raises_bare_value_error_on_a_malformed_payload() -> None:
