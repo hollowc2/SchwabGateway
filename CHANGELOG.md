@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Page on clusters of protected-path failures, not single blips.
+  `SchwabGatewayProtectedRequestFailure` and `SchwabGatewayProtectedSchedulerFailure` now
+  need three failures in 10 minutes instead of one in 5. Between 2026-11-10 and 11-12
+  they paged 14 and 7 times. Each page was one or two option_chain reads that hit a Schwab
+  429 or the 3s budget, and butterfly-guy recovered on its next poll. Against the same
+  data the new bar fires 7 and 2 times; incidents like the 09-29 slot stall (13x503)
+  still page.
+- Add `operation` to the `schwab_token_adapter_failed` log line so one 429 or timeout
+  can be matched to the read that hit it. `schwab_gateway_upstream_failures_total`
+  already carried it; the log line did not.
+
 ## 0.8.3 - 2026-11-01
 
 - Re-read the token document every 5 minutes to keep
