@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SchwabGateway
-  version: 0.8.3
+  version: 0.8.4
   description: >-
     Internal market-data-only Schwab gateway; wire schema version 1.0. Protected and
     background reads use independent bounded queues feeding one strict-priority Schwab
@@ -91,6 +91,11 @@ paths:
   /v1/chain:
     get:
       operationId: chainV1
+      deprecated: true
+      description: >-
+        Deprecated in favour of /v1/option-chain, which returns the same counts with
+        the contracts. No production caller used it between 2026-11-05 and 2026-11-22;
+        its only known caller is ButterflyGuy's disabled shadow-read comparator.
       security: [{internalApiKey: []}]
       parameters:
         - in: query
@@ -317,8 +322,11 @@ components:
       description: Bounded error. No automatic SDK retry.
       headers:
         Retry-After:
-          description: Optional validated upstream rate-limit or local read cooldown seconds.
-          schema: {type: integer, minimum: 1, maximum: 60}
+          description: >-
+            Seconds until the gateway accepts reads in the throttled Schwab operation
+            family again. Always sent with upstream_rate_limited; the gateway's own
+            1-second cooldown applies when Schwab omits the header.
+          schema: {type: integer, minimum: 1, maximum: 3600}
       content:
         application/json:
           schema: {$ref: "#/components/schemas/GatewayErrorV1"}

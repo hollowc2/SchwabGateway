@@ -172,26 +172,32 @@ tests:
             value: 0
   - interval: 1m
     # One isolated protected 503 (a single Schwab 429 the next poll recovers from)
-    # stays on the counters and does not page.
+    # stays on the counters and pages on neither rule.
     input_series:
-      - series: 'gateway_client_requests_total{job="schwab_gateway",operation="option_chain_v1",status="503"}'
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="option_chain_v1",status="503"}'
         values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
       - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
-        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1'
+        values: '0+0x14'
       - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
         values: '0+0x14'
       - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
         values: '0+0x14'
     promql_expr_test:
-      - expr: 'count(ALERTS{alertname=~"SchwabGatewayProtected(RequestFailure|SchedulerFailure)",alertstate="firing"}) or vector(0)'
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
         eval_time: 5m
         exp_samples:
           - labels: '{}'
             value: 0
   - interval: 1m
-    # Three protected failures inside ten minutes is a cluster and pages on both rules.
+    # Three protected upstream timeouts inside ten minutes is a cluster. Each is a
+    # 504 and a scheduler upstream timeout, so both rules page for one incident.
     input_series:
-      - series: 'gateway_client_requests_total{job="schwab_gateway",operation="option_chain_v1",status="503"}'
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="option_chain_v1",status="504"}'
         values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
       - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
         values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
@@ -200,8 +206,154 @@ tests:
       - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
         values: '0+0x14'
     promql_expr_test:
-      - expr: 'count(ALERTS{alertname=~"SchwabGatewayProtected(RequestFailure|SchedulerFailure)",alertstate="firing"}) or vector(0)'
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
         eval_time: 6m
         exp_samples:
           - labels: '{}'
-            value: 2
+            value: 1
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+  - interval: 1m
+    # Background callers' history failures never page the protected rule, however
+    # many there are; the old route-based rule counted them.
+    input_series:
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="background",operation="history_v1",status="503"}'
+        values: '0 0 0 1 2 3 4 5 5 5 5 5 5 5 5'
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="background",operation="history_v1",status="504"}'
+        values: '0 0 0 1 2 3 4 5 5 5 5 5 5 5 5'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - interval: 1m
+    # Protected held-leg quote failures count; the old route-based rule missed
+    # quotes_v1 entirely.
+    input_series:
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="quotes_v1",status="503"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - interval: 1m
+    # A cluster of Schwab 429s (503 upstream_rate_limited) is a request failure but
+    # not a scheduler failure, so only the request rule pages.
+    input_series:
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="option_chain_v1",status="503"}'
+        values: '0 0 0 2 2 2 4 4 4 4 4 4 4 4 4'
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="spot_v1",status="503"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 7m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 7m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - interval: 1m
+    # Protected pool rejections are HTTP 429, not 503/504: scheduler rule only.
+    input_series:
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="option_chain_v1",status="429"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+  - interval: 1m
+    # Order-book routes 503 by design while the stream is disabled; never page.
+    input_series:
+      - series: 'gateway_priority_requests_total{job="schwab_gateway",priority_class="protected",operation="order_book_recent_v1",status="503"}'
+        values: '0 0 0 1 2 3 4 5 5 5 5 5 5 5 5'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - interval: 1m
+    # Mixed-version rollout: these rules against a v0.8.3 exporter, which has only
+    # gateway_client_requests_total. The request rule has no data and stays silent;
+    # the scheduler rule still pages on timeouts. Deploy the image before the rules.
+    input_series:
+      - series: 'gateway_client_requests_total{job="schwab_gateway",operation="option_chain_v1",status="504"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_upstream_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0 0 0 1 2 3 3 3 3 3 3 3 3 3 3'
+      - series: 'schwab_gateway_scheduler_queue_wait_timeouts_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+      - series: 'schwab_gateway_scheduler_capacity_rejections_total{job="schwab_gateway",priority_class="protected"}'
+        values: '0+0x14'
+    promql_expr_test:
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedRequestFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: 'count(ALERTS{alertname="SchwabGatewayProtectedSchedulerFailure",alertstate="firing"}) or vector(0)'
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1

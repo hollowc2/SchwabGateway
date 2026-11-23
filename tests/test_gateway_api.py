@@ -600,3 +600,68 @@ async def test_event_loop_lag_sampler_records_every_sample_in_a_histogram(
     new_total = after[f"{name}_count"] - before[f"{name}_count"]
     new_fast = after[f"{name}_bucket0.05"] - before[f"{name}_bucket0.05"]
     assert new_total - new_fast >= 1
+
+
+async def test_priority_request_series_labels_the_callers_class_not_the_route() -> None:
+    from schwab_gateway.auth import (
+        InternalKeyAuthenticator,
+        InternalPrincipal,
+        PriorityClass,
+        hash_api_key,
+    )
+
+    def principal(client_id: str, key: str, priority: PriorityClass) -> InternalPrincipal:
+        return InternalPrincipal(
+            client_id=client_id,
+            key_sha256=hash_api_key(key),
+            capabilities=frozenset({"market_data:read"}),
+            priority_class=priority,
+        )
+
+    authenticator = InternalKeyAuthenticator((
+        principal("butterfly-guy", "protected-key", PriorityClass.PROTECTED),
+        principal("equity-scanner", "background-key", PriorityClass.BACKGROUND),
+    ))
+    # No history upstream is configured, so every history read fails closed with 503.
+    app = create_app(
+        FakeQuoteUpstream(), authenticator, token_readiness_provider=FakeReadiness()
+    )
+
+    def value(text: str, priority: str, operation: str, status: str) -> float:
+        prefix = (
+            f'gateway_priority_requests_total{{operation="{operation}",'
+            f'priority_class="{priority}",status="{status}"}} '
+        )
+        line = next((line for line in text.splitlines() if line.startswith(prefix)), None)
+        return float(line.removeprefix(prefix)) if line else 0.0
+
+    async with serving(app) as server:
+        async with httpx.AsyncClient(base_url=str(server.make_url("/"))) as http:
+            before = (await http.get("/metrics")).text
+            for key in ("protected-key", "background-key", "background-key"):
+                await http.get(
+                    "/v1/history", params={"symbol": "SPY"}, headers={"X-Internal-API-Key": key}
+                )
+            await http.get("/v1/history", params={"symbol": "SPY"})
+            after = (await http.get("/metrics")).text
+
+    # Seeded (at zero in a fresh process) so the first protected failure is alertable.
+    for operation in api.PROTECTED_ALERT_OPERATIONS:
+        for status in ("503", "504"):
+            assert (
+                f'gateway_priority_requests_total{{operation="{operation}",'
+                f'priority_class="protected",status="{status}"}}'
+            ) in before
+    assert value(after, "protected", "history_v1", "503") - value(
+        before, "protected", "history_v1", "503"
+    ) == 1
+    assert value(after, "background", "history_v1", "503") - value(
+        before, "background", "history_v1", "503"
+    ) == 2
+    # The unauthenticated 401 has no class and stays out of the priority series, while
+    # the existing route series keeps counting every request.
+    assert not any(
+        line.startswith("gateway_priority_requests_total{") and 'status="401"' in line
+        for line in after.splitlines()
+    )
+    assert 'gateway_client_requests_total{operation="history_v1",status="401"}' in after

@@ -122,7 +122,7 @@ To try the API without Schwab credentials, see the demo profile under
 | `GET /health`, `/ready`, `/metrics` | Liveness, readiness, Prometheus metrics |
 | `GET /v1/quotes` | Current quotes for one or more symbols |
 | `GET /v1/spot` | Spot price for one symbol, with Schwab quote and trade timestamps |
-| `GET /v1/chain` | Option-chain summary without contracts (kept for compatibility) |
+| `GET /v1/chain` | Option-chain summary without contracts (deprecated; use `/v1/option-chain`) |
 | `GET /v1/option-chain` | Normalized contracts for one symbol and expiration (max 5,000) |
 | `GET /v1/history` | Minute bars; `days_back` counts Eastern calendar days |
 | `GET /v1/movers` | Market movers |

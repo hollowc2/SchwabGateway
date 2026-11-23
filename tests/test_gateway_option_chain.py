@@ -32,6 +32,7 @@ from schwab_gateway.upstream import (
     UpstreamMalformedError,
     UpstreamUnavailableError,
     normalize_schwab_option_chain,
+    normalize_schwab_quote,
     option_chain_crossed_market_normalizations,
     option_chain_negative_intrinsic_value_normalizations,
     option_chain_negative_theoretical_value_normalizations,
@@ -514,6 +515,185 @@ def test_quiet_contract_policy_remains_fail_closed_after_five_minutes() -> None:
     assert chain.contracts[0].age_seconds == 301
     assert chain.contracts[0].stale is True
     assert "stale" in chain.contracts[0].data_quality_flags
+
+
+def _millis_before(seconds: float) -> int:
+    return int((RECEIVED_AT - dt.timedelta(seconds=seconds)).timestamp() * 1000)
+
+
+OCC_CALL = "SPXW  260824C06450000"
+
+
+def _timed_payload(quote_millis: int | None, trade_millis: int | None) -> dict[str, object]:
+    """``_payload`` with the first call's quote and trade times replaced."""
+    payload = _payload()
+    contract = payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]
+    contract["symbol"] = OCC_CALL
+    contract.pop("quoteTimeInLong")
+    for name, value in (("quoteTimeInLong", quote_millis), ("tradeTimeInLong", trade_millis)):
+        if value is not None:
+            contract[name] = value
+    return payload
+
+
+def test_old_quote_is_stale_even_when_the_last_trade_is_recent() -> None:
+    """The audit reproduction: a ten-minute-old bid/ask with a one-second-old print."""
+    payload = _timed_payload(_millis_before(600), _millis_before(1))
+
+    chain = normalize_schwab_option_chain(
+        "XSP", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    )
+    contract = chain.contracts[0]
+    raw = payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]
+    quote = normalize_schwab_quote(
+        OCC_CALL,
+        {"quote": {"quoteTime": raw["quoteTimeInLong"], "tradeTime": raw["tradeTimeInLong"]}},
+        received_at=RECEIVED_AT,
+        stale_after_seconds=300,
+    )
+
+    assert contract.event_timestamp == RECEIVED_AT - dt.timedelta(seconds=600)
+    assert contract.age_seconds == 600
+    assert contract.stale is True
+    assert "stale" in contract.data_quality_flags
+    # The chain and the targeted quote endpoint now agree about the same contract.
+    assert (quote.event_timestamp, quote.age_seconds, quote.stale) == (
+        contract.event_timestamp,
+        contract.age_seconds,
+        contract.stale,
+    )
+
+
+def test_recent_quote_is_fresh_even_when_the_last_trade_is_old() -> None:
+    payload = _timed_payload(_millis_before(2), _millis_before(3600))
+
+    contract = normalize_schwab_option_chain(
+        "XSP", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    ).contracts[0]
+
+    assert contract.event_timestamp == RECEIVED_AT - dt.timedelta(seconds=2)
+    assert contract.age_seconds == 2
+    assert contract.stale is False
+    assert contract.data_quality_flags == ()
+    assert contract.last == 1.15
+
+
+@pytest.mark.parametrize(
+    "quote_millis",
+    [
+        None,
+        0,
+        -5,
+        "not-a-time",
+        10**20,  # beyond datetime's range
+        float("inf"),  # json.loads accepts Infinity
+        _millis_before(-61),  # past the clock-skew allowance
+        _millis_before(-3 * 365 * 86400),  # years ahead
+    ],
+)
+def test_missing_or_unusable_quote_time_is_unknown_despite_a_recent_trade(quote_millis) -> None:
+    payload = _timed_payload(None, _millis_before(1))
+    if quote_millis is not None:
+        payload["callExpDateMap"]["2026-08-24:0"]["6450.0"][0]["quoteTimeInLong"] = quote_millis
+
+    chain = normalize_schwab_option_chain(
+        "XSP", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    )
+    contract = chain.contracts[0]
+
+    assert contract.event_timestamp is None
+    assert contract.age_seconds is None
+    assert contract.stale is True
+    assert contract.data_quality_flags == ("missing_event_timestamp", "stale")
+    # Existing chain-level vocabulary only: ButterflyGuy treats any other flag as fatal.
+    assert chain.stale is False
+    assert set(chain.data_quality_flags) == {
+        "missing_contract_event_timestamp",
+        "stale_contracts_present",
+    }
+
+
+def test_quote_slightly_ahead_of_the_gateway_clock_is_fresh() -> None:
+    payload = _timed_payload(_millis_before(-7), None)
+
+    contract = normalize_schwab_option_chain(
+        "XSP", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    ).contracts[0]
+
+    assert contract.event_timestamp == RECEIVED_AT + dt.timedelta(seconds=7)
+    assert (contract.age_seconds, contract.stale) == (0, False)
+
+
+def test_unusable_trade_time_falls_back_to_the_quote_time_on_the_quote_endpoint() -> None:
+    quote = normalize_schwab_quote(
+        "$SPX",
+        {"quote": {"quoteTime": _millis_before(3), "tradeTime": 10**20}},
+        received_at=RECEIVED_AT,
+        stale_after_seconds=15,
+    )
+
+    assert quote.event_timestamp == RECEIVED_AT - dt.timedelta(seconds=3)
+    assert quote.stale is False
+
+
+def test_mixed_chain_aggregate_follows_the_freshest_quote_not_the_freshest_trade() -> None:
+    payload = _timed_payload(_millis_before(600), _millis_before(0.5))
+
+    chain = normalize_schwab_option_chain(
+        "NDX", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    )
+
+    assert [contract.stale for contract in chain.contracts] == [True, False, False, False]
+    assert chain.event_timestamp == RECEIVED_AT - dt.timedelta(seconds=1)
+    assert chain.age_seconds == 1
+    assert chain.stale is False
+    assert "stale_contracts_present" in chain.data_quality_flags
+
+
+def test_chain_with_only_old_quotes_is_stale_even_when_every_contract_just_traded() -> None:
+    payload = _payload()
+    for side in ("callExpDateMap", "putExpDateMap"):
+        for options in payload[side]["2026-08-24:0"].values():
+            for option in options:
+                option["quoteTimeInLong"] = _millis_before(600)
+                option["tradeTimeInLong"] = _millis_before(1)
+
+    chain = normalize_schwab_option_chain(
+        "NDX", payload, EXPIRATION, received_at=RECEIVED_AT, stale_after_seconds=300
+    )
+
+    assert chain.event_timestamp == RECEIVED_AT - dt.timedelta(seconds=600)
+    assert chain.age_seconds == 600
+    assert chain.stale is True
+    assert all(contract.stale for contract in chain.contracts)
+
+
+async def test_cache_hit_keeps_quote_observation_time_and_ages_it() -> None:
+    clock = _Clock()
+    payload = _timed_payload(_millis_before(299), _millis_before(1))
+    provider = _Provider(payload)
+    upstream = DirectSchwabOptionChainUpstream(
+        provider,
+        stale_after_seconds=300,
+        monotonic_clock=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    first = await upstream.get_option_chain("XSP", EXPIRATION)
+    clock.advance(2)
+    cached = upstream.cached_option_chain("XSP", EXPIRATION)
+
+    assert provider.calls == [("XSP", EXPIRATION)]
+    assert cached is not None
+    assert cached.gateway_received_at == first.gateway_received_at == RECEIVED_AT
+    assert cached.contracts[0].event_timestamp == first.contracts[0].event_timestamp
+    assert first.contracts[0].age_seconds == 299
+    assert first.contracts[0].stale is False
+    # Two seconds in the cache take the quote past 300s; the recent trade does not help.
+    assert cached.contracts[0].age_seconds == 301
+    assert cached.contracts[0].stale is True
+    assert "stale_contracts_present" in cached.data_quality_flags
+    assert cached.age_seconds == first.age_seconds + 2
 
 
 @pytest.mark.parametrize(

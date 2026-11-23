@@ -50,7 +50,7 @@ from schwab_gateway.auth import (
 )
 from schwab_gateway.failures import (
     FailureMetadata,
-    ReadBackoff,
+    ReadCooldowns,
     classify,
     read_recovery,
     upstream_failures,
@@ -126,6 +126,15 @@ gateway_requests = Counter(
     "Internal gateway client requests",
     ["operation", "status"],
 )
+# The protected-failure alert needs the caller's class, which the route name only
+# guessed at: background callers read history too, and ButterflyGuy's held-leg quotes
+# are protected. A separate series keeps ``gateway_client_requests_total`` unchanged.
+# Labels stay bounded: two classes, the registered route names, and HTTP statuses.
+gateway_priority_requests = Counter(
+    "gateway_priority_requests_total",
+    "Authenticated gateway requests by the caller's priority class",
+    ["priority_class", "operation", "status"],
+)
 gateway_latency = Histogram(
     "gateway_client_request_latency_seconds",
     "Internal gateway request latency",
@@ -157,6 +166,18 @@ gateway_quote_partial_responses = Counter(
     ["outcome"],
 )
 
+# Market-data reads whose protected 503/504s the request alert counts. Order-book
+# routes are left out: the stream is disabled in production and answers 503 by design.
+PROTECTED_ALERT_OPERATIONS = (
+    "quotes_v1",
+    "spot_v1",
+    "chain_v1",
+    "option_chain_v1",
+    "history_v1",
+    "movers_v1",
+    "session_history_v1",
+)
+
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 ResponseBuilder = Callable[[], Awaitable[BaseModel]]
 UPSTREAM_TIMEOUT_MESSAGE = "market data upstream timed out"
@@ -172,7 +193,21 @@ MOVERS_UPSTREAM_KEY = web.AppKey("gateway_movers_upstream", MoversUpstream)
 SESSION_HISTORY_UPSTREAM_KEY = web.AppKey(
     "gateway_session_history_upstream", SessionHistoryUpstream
 )
-BACKOFF_UNTIL_KEY = web.AppKey("gateway_backoff_until", ReadBackoff)
+READ_COOLDOWNS_KEY = web.AppKey("gateway_read_cooldowns", ReadCooldowns)
+# The Schwab endpoint family each scheduler operation calls. A 429 cools only its own
+# family (see ``ReadCooldowns``). The chain summary and the full chain are the same
+# ``/chains`` read. Spot is a single-symbol ``/quotes`` read; grouping it with batch
+# quotes is an assumption, since no quote or spot read has been throttled to tell them
+# apart. Daily, minute and session history are all ``/pricehistory``.
+SCHWAB_THROTTLE_FAMILIES = {
+    "option_chain": "chains",
+    "chain_metadata": "chains",
+    "spot": "quotes",
+    "quotes": "quotes",
+    "history": "price_history",
+    "session_history": "price_history",
+    "movers": "movers",
+}
 UPSTREAM_TIMEOUT_KEY = web.AppKey("gateway_upstream_timeout", float)
 PROTECTED_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_protected_queue_timeout", float)
 BACKGROUND_QUEUE_TIMEOUT_KEY = web.AppKey("gateway_background_queue_timeout", float)
@@ -465,6 +500,12 @@ async def audit_middleware(request: web.Request, handler: Handler) -> web.Stream
         caller = principal.client_id if principal is not None else "anonymous"
         elapsed = time.perf_counter() - started
         gateway_requests.labels(operation=operation, status=str(status)).inc()
+        if principal is not None:
+            gateway_priority_requests.labels(
+                priority_class=principal.priority_class.value,
+                operation=operation,
+                status=str(status),
+            ).inc()
         gateway_latency.labels(operation=operation).observe(elapsed)
         if status >= 400 or operation not in UNLOGGED_SUCCESSFUL_OPERATIONS:
             fields: dict[str, object] = {}
@@ -649,20 +690,46 @@ def _log_partial_quote_response(
 class _RateLimitedReadError(UpstreamUnavailableError, FailureMetadata):
     def __init__(self, seconds: float) -> None:
         UpstreamUnavailableError.__init__(self, "upstream cooldown active")
-        FailureMetadata.__init__(self, "rate_limited", min(60.0, seconds))
+        FailureMetadata.__init__(self, "rate_limited", seconds)
 
 
-def _failure_response(request: web.Request, exc: BaseException, message: str) -> web.Response:
+def _cooldown_seconds(failure: FailureMetadata) -> float:
+    return max(1.0, failure.retry_after or 1.0)
+
+
+def _arm_cooldown(request: web.Request, operation_name: str, failure: FailureMetadata) -> None:
+    """Record one observed Schwab 429. Called only where an upstream call ran."""
+    seconds = _cooldown_seconds(failure)
+    family = SCHWAB_THROTTLE_FAMILIES.get(operation_name)
+    scope = request.app[READ_COOLDOWNS_KEY].arm(
+        family, seconds, asyncio.get_running_loop().time()
+    )
+    log.warning(
+        "gateway_upstream_cooldown_armed",
+        operation=operation_name,
+        scope=scope,
+        cooldown_seconds=seconds,
+        retry_after_provided=failure.retry_after is not None,
+    )
+
+
+def _failure_response(
+    request: web.Request, exc: BaseException, message: str, operation_name: str
+) -> web.Response:
+    """Map a failure to its response. Never arms or extends a cooldown.
+
+    A rate-limited response always carries ``Retry-After``: the gateway rejects this
+    family locally until then, so a caller that retries sooner only spends a request.
+    """
     failure = classify(exc)
     if failure.cause == "rate_limited":
-        delay = max(1.0, failure.retry_after or 1.0)
-        loop = asyncio.get_running_loop()
-        request.app[BACKOFF_UNTIL_KEY].until = max(
-            request.app[BACKOFF_UNTIL_KEY].until, loop.time() + delay
+        remaining = request.app[READ_COOLDOWNS_KEY].remaining(
+            SCHWAB_THROTTLE_FAMILIES.get(operation_name), asyncio.get_running_loop().time()
         )
         response = _error("upstream_rate_limited", message, 503)
-        if failure.retry_after is not None:
-            response.headers["Retry-After"] = str(math.ceil(delay))
+        response.headers["Retry-After"] = str(
+            math.ceil(max(remaining, _cooldown_seconds(failure)))
+        )
         return response
     code = "upstream_connect_timeout" if failure.cause == "connect_timeout" else (
         "upstream_unavailable"
@@ -706,20 +773,26 @@ async def _serve_upstream(
         # Conservatively charge initial queueing and backoff to the execution budget.
         # Never renew this deadline for a replacement attempt.
         deadline = loop.time() + request.app[UPSTREAM_TIMEOUT_KEY]
+        cooldowns = request.app[READ_COOLDOWNS_KEY]
+        family = SCHWAB_THROTTLE_FAMILIES.get(operation_name)
 
         async def guarded_response() -> BaseModel:
-            cooldown = request.app[BACKOFF_UNTIL_KEY].until - loop.time()
+            # Work queued before a 429 in its own family is shed at dispatch. The
+            # rejection reports the remaining cooldown and never re-arms it.
+            cooldown = cooldowns.remaining(family, loop.time())
             if cooldown > 0:
+                read_recovery.labels(outcome="cooldown_rejected").inc()
                 raise _RateLimitedReadError(cooldown)
             try:
                 return await build_response()
             except UpstreamUnavailableError as exc:
-                if classify(exc).cause == "rate_limited":
-                    _failure_response(request, exc, unavailable_message)
+                failure = classify(exc)
+                if failure.cause == "rate_limited":
+                    _arm_cooldown(request, operation_name, failure)
                 raise
 
         for attempt in range(2):
-            cooldown = request.app[BACKOFF_UNTIL_KEY].until - loop.time()
+            cooldown = cooldowns.remaining(family, loop.time())
             if cooldown > 0:
                 read_recovery.labels(outcome="cooldown_rejected").inc()
                 response = _error("upstream_rate_limited", unavailable_message, 503)
@@ -743,7 +816,7 @@ async def _serve_upstream(
                 failure = classify(exc)
                 if failure.cause == "rate_limited":
                     # No automatic 429 retry; fail closed with safe metadata.
-                    return _failure_response(request, exc, unavailable_message)
+                    return _failure_response(request, exc, unavailable_message, operation_name)
                 if failure.cause == "connect_timeout":
                     if attempt == 0 and operation_name in {
                         "spot", "quotes", "option_chain", "chain_metadata", "history",
@@ -880,7 +953,8 @@ async def _serve_option_chain_without_worker(
     except TimeoutError:
         return _error("upstream_timeout", UPSTREAM_TIMEOUT_MESSAGE, 504)
     except UpstreamUnavailableError as exc:
-        return _failure_response(request, exc, UPSTREAM_UNAVAILABLE_MESSAGE)
+        # A joined fetch's 429 was armed once by the request that dispatched it.
+        return _failure_response(request, exc, UPSTREAM_UNAVAILABLE_MESSAGE, "option_chain")
     except (UpstreamMalformedError, ValueError):
         return _error("upstream_malformed", UPSTREAM_MALFORMED_MESSAGE, 502)
     return _json(response)
@@ -1095,7 +1169,7 @@ def create_app(
         session_history_upstream or _UnavailableSessionHistoryUpstream()
     )
     app[AUTHENTICATOR_KEY] = authenticator
-    app[BACKOFF_UNTIL_KEY] = ReadBackoff()
+    app[READ_COOLDOWNS_KEY] = ReadCooldowns()
     app[UPSTREAM_TIMEOUT_KEY] = upstream_timeout_seconds
     app[PROTECTED_QUEUE_TIMEOUT_KEY] = protected_queue_timeout_seconds
     app[BACKGROUND_QUEUE_TIMEOUT_KEY] = background_queue_timeout_seconds
@@ -1110,6 +1184,11 @@ def create_app(
     for operation in ("spot_v1", "option_chain_v1", "history_v1"):
         for status in ("503", "504"):
             gateway_requests.labels(operation=operation, status=status).inc(0)
+    for operation in PROTECTED_ALERT_OPERATIONS:
+        for status in ("503", "504"):
+            gateway_priority_requests.labels(
+                priority_class=PriorityClass.PROTECTED.value, operation=operation, status=status
+            ).inc(0)
     app.cleanup_ctx.append(execution_scheduler_context)
     app[ORDER_BOOK_STORE_KEY] = order_book_store or OrderBookSnapshotStore()
     app[ORDER_BOOK_STREAM_ADMISSION_KEY] = AdmissionController(

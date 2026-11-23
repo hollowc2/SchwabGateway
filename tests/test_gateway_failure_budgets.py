@@ -12,7 +12,12 @@ from support import EmptyQuoteUpstream, FakeReadiness, single_principal_authenti
 
 from schwab_gateway import api
 from schwab_gateway.auth import InternalPrincipal, PriorityClass, hash_api_key
-from schwab_gateway.failures import FailureMetadata, classify, retry_after_seconds
+from schwab_gateway.failures import (
+    MAX_RETRY_AFTER_SECONDS,
+    FailureMetadata,
+    classify,
+    retry_after_seconds,
+)
 from schwab_gateway.token_adapter import SchwabClientOperationError
 from schwab_gateway.upstream import UpstreamUnavailableError
 
@@ -40,7 +45,8 @@ def failure(cause, retry_after=None):
 
 
 @pytest.mark.parametrize('raw,expected', [
-    ('0', 0), ('2', 2), ('60', 60), ('61', None), ('-1', None), ('1.5', None),
+    ('0', 0), ('2', 2), ('60', 60), ('61', 61), ('120', 120), ('3600', 3600),
+    ('7200', 3600), ('-1', None), ('1.5', None),
     ('nan', None), ('bad-secret', None), (None, None), ('9' * 200, None),
 ])
 def test_numeric_retry_after(raw, expected):
@@ -51,7 +57,7 @@ def test_http_date_retry_after():
     now = dt.datetime(2026, 10, 21, tzinfo=dt.UTC)
     assert retry_after_seconds(format_datetime(now + dt.timedelta(seconds=20)), now=now) == 20
     assert retry_after_seconds(format_datetime(now - dt.timedelta(seconds=1)), now=now) is None
-    assert retry_after_seconds(format_datetime(now + dt.timedelta(seconds=61)), now=now) is None
+    assert retry_after_seconds(format_datetime(now + dt.timedelta(seconds=120)), now=now) == 120
     assert retry_after_seconds('Wed, 21 Oct 2026 00:00:00', now=now) is None
 
 
@@ -71,7 +77,7 @@ def test_only_allowlisted_metadata_survives(header, expected):
 
 
 @pytest.mark.parametrize('retry_after', [None, 2])
-async def test_429_never_retries_and_shared_cooldown_sheds_reads(retry_after):
+async def test_429_never_retries_and_family_cooldown_sheds_reads(retry_after):
     request = request_for()
     calls = 0
 
@@ -83,9 +89,11 @@ async def test_429_never_retries_and_shared_cooldown_sheds_reads(retry_after):
     response = await api._serve_upstream(request, 'spot', read)
     assert response.status == 503
     assert b'upstream_rate_limited' in response.body
-    assert response.headers.get('Retry-After') == ('2' if retry_after else None)
-    response = await api._serve_upstream(request, 'history', read)
+    # The gateway arms a 1s cooldown when Schwab omits Retry-After, and says so.
+    assert response.headers.get('Retry-After') == ('2' if retry_after else '1')
+    response = await api._serve_upstream(request, 'quotes', read)
     assert response.status == 503 and calls == 1
+    assert response.headers.get('Retry-After') == ('2' if retry_after else '1')
     assert request.app[api.EXECUTION_SCHEDULER_KEY].snapshot().total == 0
 
 
@@ -333,4 +341,4 @@ def test_new_failure_codes_are_in_published_contract():
         'error']['properties']['code']['enum']
     assert {'upstream_rate_limited', 'upstream_connect_timeout'} <= set(codes)
     retry_after = spec['components']['responses']['Error']['headers']['Retry-After']['schema']
-    assert retry_after == {'type': 'integer', 'minimum': 1, 'maximum': 60}
+    assert retry_after == {'type': 'integer', 'minimum': 1, 'maximum': MAX_RETRY_AFTER_SECONDS}

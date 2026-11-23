@@ -114,9 +114,13 @@ groups:
         annotations:
           summary: Schwab gateway is down
           description: >-
-            schwab_gateway_live has not been scrapeable for 2 minutes.
-            Trading is unaffected -- no consumer depends on the gateway while
-            SCHWAB_ACCESS_MODE and SCHWAB_GATEWAY_SHADOW_READS are at their defaults.
+            schwab_gateway_live has not been scrapeable for 2 minutes. Every
+            gateway-dependent read is failing: ButterflyGuy apps with
+            SCHWAB_ACCESS_MODE=gateway (NDX and XSP as of 2026-11) fail closed and skip
+            chain collection, entries and position marks, and afterhours-lab and
+            equity-scanner reads fail. Apps with SCHWAB_ACCESS_MODE=direct (SPX) call
+            Schwab themselves and are not affected by the outage, although they share
+            the gateway's Schwab app key and token file.
 
       - alert: SchwabGatewayNotReady
         # Require a successful scrape so process loss remains the Down alert's concern.
@@ -132,9 +136,12 @@ groups:
         annotations:
           summary: Schwab gateway is running but not ready
           description: >-
-            schwab_gateway_live has remained scrapeable without a ready
-            token state for 2 minutes. Direct trading remains authoritative unless
-            a separately approved gateway access-mode rollout changes that boundary.
+            schwab_gateway_live has remained scrapeable without a ready token state
+            for 2 minutes, so it answers every market-data read with 503
+            gateway_not_ready. Gateway-mode ButterflyGuy apps (NDX and XSP as of
+            2026-11) skip collection, entries and position marks until it recovers.
+            Direct-mode apps (SPX) are not served by the gateway, but they use the same
+            token file, so check whether the token itself is the cause.
 
       - alert: SchwabGatewayProtectedRequestFailure
         # Protected reads are on the trading decision path, so a short incident must
@@ -142,10 +149,17 @@ groups:
         # below. An isolated Schwab 429 or slow chain (one failed read that the next
         # poll recovers) stays on the counters instead of paging; three in ten minutes
         # is a cluster worth a look.
+        #
+        # Counts by the authenticated caller's priority class, not by route: background
+        # callers also read history, and ButterflyGuy's held-leg quotes are protected.
+        # Order-book routes are excluded; the stream is disabled and 503s by design.
+        # The series first ships in v0.8.4. Deploy that image before
+        # this rule: against v0.8.3 the rule has no data and stays silent.
         expr: >-
-          sum(increase(gateway_client_requests_total{
+          sum(increase(gateway_priority_requests_total{
             job="schwab_gateway",
-            operation=~"spot_v1|option_chain_v1|history_v1",
+            priority_class="protected",
+            operation=~"quotes_v1|spot_v1|chain_v1|option_chain_v1|history_v1|movers_v1|session_history_v1",
             status=~"503|504"
           }[10m])) >= 3
         labels:
@@ -153,9 +167,11 @@ groups:
         annotations:
           summary: Schwab gateway returned a protected-path failure
           description: >-
-            Three or more protected market-data requests returned 503 or 504 in the
-            last 10 minutes. Check scheduler queue-wait and upstream-timeout counters
-            before promoting or increasing PAPER consumer load.
+            Three or more market-data requests from protected callers returned 503 or
+            504 in the last 10 minutes. A Schwab 429 alone counts twice while
+            ButterflyGuy retries once inside the gateway's cooldown. Check
+            schwab_gateway_upstream_failures_total by cause and the scheduler
+            queue-wait and upstream-timeout counters before increasing consumer load.
 
       - alert: SchwabGatewayProtectedSchedulerFailure
         # Keep scheduler failures independently observable from HTTP status mapping so
