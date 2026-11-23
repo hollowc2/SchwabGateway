@@ -1,7 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.8.4 - unreleased
 
+- Option-chain contracts take their freshness from the quote time only. Taking the
+  newer of the quote and trade times let a one-second-old print make a ten-minute-old
+  bid/ask look fresh, while `/v1/quotes` called the same contract stale. A contract
+  with no usable quote time is now unknown, and so stale. A time beyond `datetime`'s
+  range, non-finite, or more than 60s ahead of the gateway clock is unusable; it used to
+  fail the whole chain, or read as fresh with age zero. `event_timestamp` keeps its
+  name and shape on the wire; the chain aggregate is the freshest contract quote.
+  Stored data lacks both timestamps, so the impact is a proxy estimate: over
+  2026-11-09..20, 984 NDX and 814 XSP kept contract-observations (0.03%) had an
+  unchanged bid/ask for over 5 minutes while volume rose, nearly all more than 2% from
+  spot.
+- A Schwab 429 now cools only its own operation family (chains, quotes, price history,
+  movers) instead of every read. Every 429 seen from 2026-11-07 to 11-22 (36) was an
+  option chain, yet the shared cooldown also turned spot and quote reads into 503s.
+  The gateway escalates to an account-wide cooldown when a second family is throttled
+  while another is still cooling. Only an observed 429 arms a cooldown: a read shed at
+  dispatch used to re-arm it to at least 1s. Rate-limited 503s always carry
+  `Retry-After`, including the default 1s cooldown when Schwab omits the header. A
+  Schwab `Retry-After` above 60s is now honored up to 3600s instead of being read as
+  missing, and the SDK's `GatewayRateLimitError.retry_after_seconds` reports it.
+- New `gateway_priority_requests_total{priority_class,operation,status}` counts
+  authenticated requests by the caller's class. `SchwabGatewayProtectedRequestFailure`
+  now uses it, so background history failures no longer count and protected
+  `quotes_v1` failures do. Deploy this image before the new rules; see
+  `docs/operations.md`. `gateway_client_requests_total` is unchanged.
+- `SchwabGatewayDown` and `SchwabGatewayNotReady` describe the real impact: NDX and XSP
+  run in gateway mode, and only direct-mode SPX keeps trading through an outage.
+- `/v1/chain` is deprecated in the OpenAPI contract; see `docs/operations.md`.
 - Page on clusters of protected-path failures, not single blips.
   `SchwabGatewayProtectedRequestFailure` and `SchwabGatewayProtectedSchedulerFailure` now
   need three failures in 10 minutes instead of one in 5. Between 2026-11-10 and 11-12

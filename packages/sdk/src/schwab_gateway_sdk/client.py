@@ -211,8 +211,11 @@ class GatewayMarketDataClient:
             raise GatewayTimeoutError(f"gateway {noun} upstream timed out")
         if response.status_code == 503 and _error_code(response) == "upstream_rate_limited":
             raw = response.headers.get("Retry-After", "")
-            seconds = int(raw) if len(raw) <= 2 and raw.isascii() and raw.isdigit() else None
-            raise GatewayRateLimitError(seconds if seconds is not None and seconds <= 60 else None)
+            # The gateway caps its cooldown at 3600s and sends whole seconds.
+            seconds = int(raw) if len(raw) <= 4 and raw.isascii() and raw.isdigit() else None
+            raise GatewayRateLimitError(
+                seconds if seconds is not None and seconds <= 3600 else None
+            )
         if response.status_code == 503 and _error_code(response) == "upstream_connect_timeout":
             raise GatewayConnectionTimeoutError("gateway upstream connection timed out")
         if response.status_code in {502, 503}:

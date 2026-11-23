@@ -39,6 +39,10 @@ from schwab_gateway.symbols import is_option_symbol
 
 UTC = dt.timezone.utc
 FreshnessModelT = TypeVar("FreshnessModelT", OptionContractV1, SessionHistoryV1)
+# Schwab stamps run slightly ahead of this host's clock: stored NDX/XSP/SPX contracts
+# were at most 6.8s ahead of ButterflyGuy's snapshot times over 2026-11-09..20, and
+# never 60s. A stamp further ahead is unusable, not fresh.
+MAX_EVENT_TIME_AHEAD = dt.timedelta(seconds=60)
 DEFAULT_OPTION_CHAIN_CACHE_TTL_SECONDS = 4.0
 # End-to-end cache-miss latency for option-chain fetches is dominated by scheduler
 # queue wait, not the Schwab call itself (see docs/runbooks for the investigation
@@ -307,7 +311,7 @@ def _integer(payload: dict[str, Any], name: str) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -319,15 +323,34 @@ def _first_integer(payload: dict[str, Any], *names: str) -> int | None:
     return next((value for name in names if (value := _integer(payload, name)) is not None), None)
 
 
-def _event_time(payload: dict[str, Any]) -> dt.datetime | None:
-    candidates = [
-        value
-        for name in ("quoteTime", "tradeTime", "quoteTimeInLong", "tradeTimeInLong")
-        if (value := _integer(payload, name)) is not None and value > 0
-    ]
-    if not candidates:
-        return None
-    return dt.datetime.fromtimestamp(max(candidates) / 1000, tz=UTC)
+def _event_time(payload: dict[str, Any], *, received_at: dt.datetime) -> dt.datetime | None:
+    """The newest usable stamp; one that cannot be a real time is skipped, not fatal."""
+    candidates: list[dt.datetime] = []
+    for name in ("quoteTime", "tradeTime", "quoteTimeInLong", "tradeTimeInLong"):
+        value = _integer(payload, name)
+        if value is None or value <= 0:
+            continue
+        try:
+            stamp = dt.datetime.fromtimestamp(value / 1000, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            continue
+        if stamp - received_at <= MAX_EVENT_TIME_AHEAD:
+            candidates.append(stamp)
+    return max(candidates, default=None)
+
+
+def _quote_time(payload: dict[str, Any], *, received_at: dt.datetime) -> dt.datetime | None:
+    """When an option's bid/ask was last quoted; a newer trade does not renew it.
+
+    Schwab stamps a trade separately from the quote. Taking the newer of the two let a
+    one-second-old print make a ten-minute-old bid/ask look fresh on the chain while
+    the targeted quote endpoint called the same contract stale. A missing or unusable
+    quote time is unknown, and unknown is stale.
+    """
+    return _event_time(
+        {name: payload.get(name) for name in ("quoteTime", "quoteTimeInLong")},
+        received_at=received_at,
+    )
 
 
 def _age_seconds(event_timestamp: dt.datetime | None, at: dt.datetime) -> float | None:
@@ -368,11 +391,10 @@ def normalize_schwab_quote(
     # Option bid/ask freshness must follow the quote, not a newer last trade.
     # A successful REST response does not renew an unchanged option quote.
     option_symbol = is_option_symbol(symbol)
-    regular_time = (
-        _event_time({name: regular.get(name) for name in ("quoteTime", "quoteTimeInLong")})
-        if option_symbol else _event_time(regular)
+    regular_time = (_quote_time if option_symbol else _event_time)(
+        regular, received_at=received_at
     )
-    extended_time = _event_time(extended)
+    extended_time = _event_time(extended, received_at=received_at)
     if not option_symbol and extended_time is not None and (
         regular_time is None or extended_time > regular_time
     ):
@@ -514,7 +536,10 @@ def _normalize_contract(
     received_at: dt.datetime,
     stale_after_seconds: float,
 ) -> OptionContractV1:
-    event_timestamp = _event_time(option)
+    # ``event_timestamp`` is the quote time, matching ``normalize_schwab_quote`` for the
+    # same contract. The wire model forbids extra fields, so the trade time is not added
+    # here; no consumer reads it, and ``last`` still carries the traded price.
+    event_timestamp = _quote_time(option, received_at=received_at)
     age_seconds, stale = _freshness(event_timestamp, received_at, stale_after_seconds)
     flags: list[str] = []
     bid, ask, crossed_market_normalized = _normalized_bid_ask(option)
@@ -595,9 +620,10 @@ def normalize_schwab_option_chain(
     event_timestamp = max(contract_timestamps) if contract_timestamps else None
     age_seconds = _age_seconds(event_timestamp, received_at)
     stale_contract_count = sum(contract.stale for contract in contracts)
-    # The aggregate describes the freshest delivered snapshot, while each row retains
-    # its own freshness. Consumers validate counts first, then omit stale/unknown rows;
-    # one stale deep contract must not invalidate otherwise fresh strikes.
+    # The aggregate answers "is this a live chain at all": its time is the freshest
+    # contract quote, and it is stale only when every contract is. Whether a given leg
+    # is usable is each row's own quote freshness. Consumers validate counts first, then
+    # omit stale/unknown rows; one stale deep contract must not invalidate fresh strikes.
     stale = not contracts or stale_contract_count == len(contracts)
     flags = [flag for flag in fields.data_quality_flags if flag != "missing_event_timestamp"]
     if not all_contracts_timestamped:

@@ -99,6 +99,90 @@ states, and reload the user manager. If all three files were previously absent,
 the disabled inert files may remain; no file deletion or application restart is
 needed. Installing the capture timer does not change resolver configuration.
 
+## Schwab throttling
+
+The gateway never retries a Schwab 429. It fails the read with
+`503 upstream_rate_limited` and a `Retry-After` header, then sheds further reads in
+the same Schwab family locally until the cooldown ends. The cooldown is Schwab's
+`Retry-After`, or 1s when Schwab omits or garbles the header. A long value is passed
+on unshortened; only one above 3600s is capped, so a bad header cannot shed a family
+until restart. No Schwab 429 through 2026-11-22 asked for more than 1s.
+
+| Family | Gateway operations |
+| --- | --- |
+| `chains` | `option_chain`, `chain_metadata` |
+| `quotes` | `quotes`, `spot` |
+| `price_history` | `history`, `session_history` |
+| `movers` | `movers` |
+
+Evidence for family scope: every Schwab 429 from 2026-11-07 to 11-22 (36) was an
+option chain, at three to five upstream calls in the 10s before each one. No quote,
+spot or history read on the same key was throttled. The shared cooldown that this
+replaced shed at least 14 arriving spot and quote reads with 503s during those
+chain cooldowns. Assumptions: spot and batch quotes share a family, and no Schwab
+429 so far has told them apart. A second family throttled while another is still
+cooling is taken as account-wide throttling and cools every family. Schwab's
+published limits sit behind the developer portal; re-check this table against them
+when they are available.
+
+Signals that look alike:
+
+- `schwab_gateway_upstream_failures_total{cause="rate_limited"}`: real Schwab 429s.
+- `schwab_gateway_read_recovery_total{outcome="cooldown_rejected"}`: reads the gateway
+  shed locally during a cooldown, before or at dispatch. No Schwab call was made.
+- `gateway_capacity_exceeded` (HTTP 429), `schwab_gateway_scheduler_capacity_rejections_total`:
+  the caller's bounded pool was full. Unrelated to Schwab.
+- The `gateway_upstream_cooldown_armed` log line names the operation, the scope armed
+  and whether Schwab sent `Retry-After`.
+
+ButterflyGuy (SDK 0.8.0 pinned) retries a failed read once after 250ms. That retry
+always lands inside the 1s minimum cooldown and is shed locally, so one Schwab 429
+shows as two protected 503s. Direct-mode SPX shares the gateway's Schwab app key and
+token file but not its scheduler or cooldowns; the gateway cannot see its 429s.
+
+## Protected-failure alert rollout
+
+`SchwabGatewayProtectedRequestFailure` reads `gateway_priority_requests_total`, which
+first ships in v0.8.4. Roll out in this order:
+
+1. Deploy the gateway image. The rule file on Helios keeps working because
+   `gateway_client_requests_total` is unchanged.
+2. Confirm the new series is scraped:
+   `gateway_priority_requests_total{priority_class="protected",status="503"}`.
+3. Install `infra/alerts.yml` to `/opt/monitoring/prometheus-alerts/schwab-gateway.yml`,
+   validate with `promtool check rules`, and reload Prometheus. This also brings the
+   three-in-ten-minutes thresholds from #59, which were never installed.
+
+If the rules land before the image, the request rule has no data and stays silent.
+`SchwabGatewayProtectedSchedulerFailure` still pages on protected queue timeouts,
+upstream timeouts and pool rejections, but Schwab 429s and other upstream 503s go
+unpaged until the image is deployed. To roll back the image, restore the previous rule
+file first.
+
+The two protected rules overlap by design. A protected upstream timeout is both a 504
+and a scheduler upstream timeout, so a timeout cluster pages twice. A cluster of Schwab
+429s pages only the request rule, and protected pool rejections (HTTP 429) page only
+the scheduler rule.
+
+## Deprecated: `/v1/chain`
+
+The chain summary repeats counts that `/v1/option-chain` already returns. It had no
+production traffic between 2026-11-05 and 2026-11-22. Its only known caller is
+ButterflyGuy's shadow-read comparator (`gateway_client/shadow.py`), which is disabled
+(`SCHWAB_GATEWAY_SHADOW_READS=false`) and is a cutover-validation and rollback tool.
+`schwab_gateway_sdk.chain_metadata.extract_chain_metadata` is not deprecated; the
+full-chain normalizer uses it.
+
+To retire it:
+
+1. Point ButterflyGuy's shadow comparator at `/v1/option-chain` counts, or retire
+   shadow mode, and release that.
+2. Watch `gateway_request` logs and `gateway_client_requests_total{operation="chain_v1"}`
+   for zero calls across a full month, including a monthly backfill on the 1st and a
+   quarterly expiration.
+3. Remove the route and its upstream. Remove `get_chain_metadata` and the chain-metadata
+   models from the SDK in a minor release only after no pinned consumer imports them.
+
 ## Runbooks
 
 - Deploy: [`runbooks/deploy.md`](runbooks/deploy.md)
